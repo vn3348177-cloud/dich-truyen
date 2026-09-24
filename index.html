@@ -3138,51 +3138,55 @@ async function runEngine(indices){
   if(!translateStartTime) translateStartTime = Date.now();
   document.getElementById('startBtn').disabled = true;
   document.getElementById('stopBtn').style.display = 'inline-block';
+  const pauseBtnEl = document.getElementById('pauseBtn');
+  if(pauseBtnEl){ pauseBtnEl.style.display = 'inline-block'; pauseBtnEl.textContent = pauseFlag ? '▶ Tiếp tục' : '⏸ Tạm dừng'; }
   document.getElementById('progwrap').classList.add('show');
   showAllKeysWarning(false);
   document.getElementById('retryFailedBox').style.display = 'none';
   updateProgress(computeChunkCounts().done, currentChunks.length);
   setQueue(indices.length, currentChunks.length);
+  renderQueuePanel();
 
-  /* BATCH_SIZE = số "Parallel Requests" người dùng chọn — hoàn toàn động,
-     không hard-code. Mỗi batch chứa đúng BATCH_SIZE chunk liên tiếp (batch
-     cuối có thể ít hơn nếu không chia hết). Batch sau chỉ bắt đầu khi TOÀN
-     BỘ chunk của batch trước đã ở trạng thái cuối (thành công hoặc lỗi sau
-     khi retry hết), dù các key có rảnh sớm hơn cũng phải chờ. */
-  const BATCH_SIZE = Math.max(1, parallelVal());
+  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
+  const batchWrapEl = document.getElementById('batchWrap');
+  if(batchWrapEl) batchWrapEl.style.display = 'none';
+  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
+
+  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
+  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
+  // cả cụm (batch) như Promise.all theo batch trước đây.
+  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
+  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
+  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
   const nKeys = Math.max(1, state.keys.length);
-  const batches = [];
-  for(let i=0;i<indices.length;i+=BATCH_SIZE) batches.push(indices.slice(i, i+BATCH_SIZE));
-  totalBatches = batches.length;
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) theo ${totalBatches} batch × tối đa ${BATCH_SIZE} chunk/batch, ${nKeys} key...`);
 
-  for(let b=0; b<batches.length; b++){
-    if(stopFlag) break;
-    currentBatch = b+1;
-    const batch = batches[b];
-    currentBatchSize = batch.length;
-    batch.forEach(idx=>{ if(chunkState[idx]) chunkState[idx].batchIndex = currentBatch; });
-    updateBatchUI(0, batch.length);
-    logLine('info', null, null, `📦 Batch ${currentBatch}/${totalBatches}: chunk ${batch[0]+1} → ${batch[batch.length-1]+1} (${batch.length} chunk, chia xen kẽ cho ${nKeys} key)...`);
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
 
-    let batchDone = 0;
-    const tasks = batch.map((idx, pos) => processChunkInBatch(idx, pos % nKeys).then(()=>{
-      batchDone++;
-      updateBatchUI(batchDone, batch.length);
-    }));
-    await Promise.all(tasks);
+  let globalTaskIndex = 0;
 
-    if(!stopFlag){
-      const failedInBatch = batch.filter(idx=>chunkState[idx] && chunkState[idx].status==='error').length;
-      logLine(failedInBatch>0?'warn':'ok', null, null, `✅ Batch ${currentBatch}/${totalBatches} hoàn tất${failedInBatch>0?` (${failedInBatch} chunk lỗi)`:''}.`);
+  async function worker(workerId){
+    while(globalTaskIndex < indices.length){
+      if(stopFlag) return;
+      await waitWhilePaused();
+      if(stopFlag) return;
+      const chunkIdx = indices[globalTaskIndex++];
+      await processChunkInBatch(chunkIdx, workerId % nKeys);
     }
   }
+
+  const workers = [];
+  for(let w = 0; w < nWorkers; w++){
+    workers.push(worker(w));
+  }
+  await Promise.all(workers);
 
   running = false;
   document.getElementById('startBtn').disabled = false;
   document.getElementById('stopBtn').style.display = 'none';
+  if(pauseBtnEl) pauseBtnEl.style.display = 'none';
   showAllKeysWarning(false);
   setQueue(0, currentChunks.length);
+  renderQueuePanel();
 
   const finalText = currentResults.map((r,i)=>{
     if(r!=null) return r;
@@ -4053,36 +4057,38 @@ async function runEngine(indices){
   setQueue(indices.length, currentChunks.length);
   renderQueuePanel();
 
-  const BATCH_SIZE = Math.max(1, parallelVal());
+  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
+  const batchWrapEl = document.getElementById('batchWrap');
+  if(batchWrapEl) batchWrapEl.style.display = 'none';
+  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
+
+  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
+  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
+  // cả cụm (batch) như Promise.all theo batch trước đây.
+  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
+  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
+  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
   const nKeys = Math.max(1, state.keys.length);
-  const batches = [];
-  for(let i=0;i<indices.length;i+=BATCH_SIZE) batches.push(indices.slice(i, i+BATCH_SIZE));
-  totalBatches = batches.length;
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) theo ${totalBatches} batch × tối đa ${BATCH_SIZE} chunk/batch, ${nKeys} key...`);
 
-  for(let b=0; b<batches.length; b++){
-    if(stopFlag) break;
-    await waitWhilePaused();
-    if(stopFlag) break;
-    currentBatch = b+1;
-    const batch = batches[b];
-    currentBatchSize = batch.length;
-    batch.forEach(idx=>{ if(chunkState[idx]) chunkState[idx].batchIndex = currentBatch; });
-    updateBatchUI(0, batch.length);
-    logLine('info', null, null, `📦 Batch ${currentBatch}/${totalBatches}: chunk ${batch[0]+1} → ${batch[batch.length-1]+1} (${batch.length} chunk, chia xen kẽ cho ${nKeys} key)...`);
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
 
-    let batchDone = 0;
-    const tasks = batch.map((idx, pos) => processChunkInBatch(idx, pos % nKeys).then(()=>{
-      batchDone++;
-      updateBatchUI(batchDone, batch.length);
-    }));
-    await Promise.all(tasks);
+  let globalTaskIndex = 0;
 
-    if(!stopFlag){
-      const failedInBatch = batch.filter(idx=>chunkState[idx] && chunkState[idx].status==='error').length;
-      logLine(failedInBatch>0?'warn':'ok', null, null, `✅ Batch ${currentBatch}/${totalBatches} hoàn tất${failedInBatch>0?` (${failedInBatch} chunk lỗi)`:''}.`);
+  async function worker(workerId){
+    while(globalTaskIndex < indices.length){
+      if(stopFlag) return;
+      await waitWhilePaused();
+      if(stopFlag) return;
+      const chunkIdx = indices[globalTaskIndex++];
+      await processChunkInBatch(chunkIdx, workerId % nKeys);
     }
   }
+
+  const workers = [];
+  for(let w = 0; w < nWorkers; w++){
+    workers.push(worker(w));
+  }
+  await Promise.all(workers);
 
   running = false;
   document.getElementById('startBtn').disabled = false;
@@ -4305,39 +4311,38 @@ async function runEngine(indices){
   setQueue(indices.length, currentChunks.length);
   renderQueuePanel();
 
-  // Waterfall: buộc chạy tuần tự từng chunk 1 để chunk sau luôn lấy được
-  // đúng 100% bản dịch tiếng Việt của chunk liền trước làm ngữ cảnh.
-  // Hybrid: giữ nguyên số luồng song song người dùng chọn.
-  const BATCH_SIZE = (contextMode==='waterfall') ? 1 : Math.max(1, parallelVal());
+  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
+  const batchWrapEl = document.getElementById('batchWrap');
+  if(batchWrapEl) batchWrapEl.style.display = 'none';
+  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
+
+  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
+  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
+  // cả cụm (batch) như Promise.all theo batch trước đây.
+  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
+  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
+  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
   const nKeys = Math.max(1, state.keys.length);
-  const batches = [];
-  for(let i=0;i<indices.length;i+=BATCH_SIZE) batches.push(indices.slice(i, i+BATCH_SIZE));
-  totalBatches = batches.length;
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) theo ${totalBatches} batch × tối đa ${BATCH_SIZE} chunk/batch, ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
 
-  for(let b=0; b<batches.length; b++){
-    if(stopFlag) break;
-    await waitWhilePaused();
-    if(stopFlag) break;
-    currentBatch = b+1;
-    const batch = batches[b];
-    currentBatchSize = batch.length;
-    batch.forEach(idx=>{ if(chunkState[idx]) chunkState[idx].batchIndex = currentBatch; });
-    updateBatchUI(0, batch.length);
-    logLine('info', null, null, `📦 Batch ${currentBatch}/${totalBatches}: chunk ${batch[0]+1} → ${batch[batch.length-1]+1} (${batch.length} chunk, chia xen kẽ cho ${nKeys} key)...`);
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
 
-    let batchDone = 0;
-    const tasks = batch.map((idx, pos) => processChunkInBatch(idx, pos % nKeys).then(()=>{
-      batchDone++;
-      updateBatchUI(batchDone, batch.length);
-    }));
-    await Promise.all(tasks);
+  let globalTaskIndex = 0;
 
-    if(!stopFlag){
-      const failedInBatch = batch.filter(idx=>chunkState[idx] && chunkState[idx].status==='error').length;
-      logLine(failedInBatch>0?'warn':'ok', null, null, `✅ Batch ${currentBatch}/${totalBatches} hoàn tất${failedInBatch>0?` (${failedInBatch} chunk lỗi)`:''}.`);
+  async function worker(workerId){
+    while(globalTaskIndex < indices.length){
+      if(stopFlag) return;
+      await waitWhilePaused();
+      if(stopFlag) return;
+      const chunkIdx = indices[globalTaskIndex++];
+      await processChunkInBatch(chunkIdx, workerId % nKeys);
     }
   }
+
+  const workers = [];
+  for(let w = 0; w < nWorkers; w++){
+    workers.push(worker(w));
+  }
+  await Promise.all(workers);
 
   running = false;
   document.getElementById('startBtn').disabled = false;
