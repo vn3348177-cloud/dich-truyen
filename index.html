@@ -1893,63 +1893,25 @@ function updateGeneralSummary(){
 });
 
 function splitChunks(text, size){
-  if(!text) return [];
-  size = Math.max(1, parseInt(size) || 1);
-  const n = text.length;
+  const paras = text.split(/\n{1,}/);
   const chunks = [];
-  const minBreak = size * 0.5;
-
-  // khoảng trắng / xuống dòng / BOM / khoảng trắng CJK
-  function isWs(c){
-    return c <= 32 || c === 0xA0 || c === 0x3000 || c === 0xFEFF || c === 0x2028 || c === 0x2029;
-  }
-  // . ! ? 。 ！ ？ " ' ” ’ ]   (KHÔNG cần khoảng trắng phía sau)
-  function isPunct(c){
-    return c === 46 || c === 33 || c === 63 ||       // . ! ?
-           c === 0x3002 || c === 0xFF01 || c === 0xFF1F || // 。 ！ ？
-           c === 34 || c === 39 ||                   // " '
-           c === 0x201D || c === 0x2019 || c === 93; // ” ’ ]
-  }
-
-  let i = 0;
-  while(i < n && isWs(text.charCodeAt(i))) i++;
-
-  while(i < n){
-    // Phần còn lại vừa 1 chunk -> chốt luôn
-    if(i + size >= n){
-      const tail = text.slice(i).trim();
-      if(tail.length > 0) chunks.push(tail);
-      break;
-    }
-
-    const chunk = text.slice(i, i + size);
-    let breakIdx = -1;
-
-    // Ưu tiên 1: \n\n gần cuối nhất
-    let idx = chunk.lastIndexOf('\n\n');
-    if(idx > minBreak){
-      breakIdx = idx;
+  let cur = '';
+  for(const p of paras){
+    if((cur + '\n' + p).length > size && cur.length>0){
+      chunks.push(cur.trim());
+      cur = p;
     } else {
-      // Ưu tiên 2: \n
-      idx = chunk.lastIndexOf('\n');
-      if(idx > minBreak){
-        breakIdx = idx;
-      } else {
-        // Ưu tiên 3: dấu câu, quét ngược từ cuối chunk
-        for(let k = chunk.length - 1; k > minBreak; k--){
-          if(isPunct(chunk.charCodeAt(k))){ breakIdx = k + 1; break; }
-        }
+      cur = cur ? cur + '\n' + p : p;
+    }
+    if(cur.length > size){
+      while(cur.length > size){
+        chunks.push(cur.slice(0,size));
+        cur = cur.slice(size);
       }
     }
-
-    const cut = (breakIdx > 0) ? breakIdx : size;   // không tìm được điểm ngắt tốt -> cắt cứng
-    const piece = (cut === chunk.length ? chunk : chunk.slice(0, cut)).trim();
-    if(piece.length > 0) chunks.push(piece);
-
-    i += cut;
-    while(i < n && isWs(text.charCodeAt(i))) i++;   // bỏ khoảng trắng / xuống dòng thừa
   }
-  return chunks;
+  if(cur.trim()) chunks.push(cur.trim());
+  return chunks.filter(c=>c.length>0);
 }
 
 function updateStats(){
@@ -3109,6 +3071,89 @@ async function processChunkInBatch(idx, preferredKeyPos){
   updateProgress(counts.done, currentChunks.length);
   setQueue(currentChunks.length-counts.done, currentChunks.length);
 }
+async function runEngine(indices){
+  running = true; stopFlag = false;
+  if(!translateStartTime) translateStartTime = Date.now();
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').style.display = 'inline-block';
+  const pauseBtnEl = document.getElementById('pauseBtn');
+  if(pauseBtnEl){ pauseBtnEl.style.display = 'inline-block'; pauseBtnEl.textContent = pauseFlag ? '▶ Tiếp tục' : '⏸ Tạm dừng'; }
+  document.getElementById('progwrap').classList.add('show');
+  showAllKeysWarning(false);
+  document.getElementById('retryFailedBox').style.display = 'none';
+  updateProgress(computeChunkCounts().done, currentChunks.length);
+  setQueue(indices.length, currentChunks.length);
+  renderQueuePanel();
+
+  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
+  const batchWrapEl = document.getElementById('batchWrap');
+  if(batchWrapEl) batchWrapEl.style.display = 'none';
+  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
+
+  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
+  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
+  // cả cụm (batch) như Promise.all theo batch trước đây.
+  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
+  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
+  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
+  const nKeys = Math.max(1, state.keys.length);
+
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
+
+  let globalTaskIndex = 0;
+
+  async function worker(workerId){
+    while(globalTaskIndex < indices.length){
+      if(stopFlag) return;
+      await waitWhilePaused();
+      if(stopFlag) return;
+      const chunkIdx = indices[globalTaskIndex++];
+      await processChunkInBatch(chunkIdx, workerId % nKeys);
+    }
+  }
+
+  const workers = [];
+  for(let w = 0; w < nWorkers; w++){
+    workers.push(worker(w));
+  }
+  await Promise.all(workers);
+
+  running = false;
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').style.display = 'none';
+  if(pauseBtnEl) pauseBtnEl.style.display = 'none';
+  showAllKeysWarning(false);
+  setQueue(0, currentChunks.length);
+  renderQueuePanel();
+
+  const finalText = currentResults.map((r,i)=>{
+    if(r!=null) return r;
+    if(chunkState[i] && chunkState[i].status==='error') return `\n[LỖI DỊCH CHUNK ${i+1}]\n${currentChunks[i]}`;
+    return '';
+  }).join('\n\n');
+  document.getElementById('outputText').value = finalText;
+
+  const counts = computeChunkCounts();
+  const durationSec = translateStartTime ? Math.round((Date.now()-translateStartTime)/1000) : 0;
+  const statusLabel = stopFlag ? 'Đã dừng' : (counts.error>0 ? `Hoàn tất (${counts.error} lỗi)` : 'Hoàn tất');
+  historyArr.push({
+    time: new Date().toLocaleTimeString('vi-VN'),
+    chunks: currentChunks.length,
+    chars: currentChunks.reduce((a,c)=>a+c.length,0),
+    status: statusLabel,
+    duration: formatDuration(durationSec),
+    keys: state.keys.length
+  });
+  renderHistory();
+
+  if(stopFlag){
+    logLine('warn', null, null, '⏹ Đã dừng theo yêu cầu. Tiến độ đã được lưu tự động — có thể Tiếp tục sau khi tải lại trang.');
+  }else{
+    logLine('ok', null, null, counts.error>0 ? `Hoàn tất với ${counts.error} chunk lỗi.` : '🎉 Hoàn tất!');
+  }
+  saveTranslationProgress(true);
+  renderRetryFailedBox();
+}
 
 function renderRetryFailedBox(){
   const box = document.getElementById('retryFailedBox');
@@ -3368,6 +3413,113 @@ function downloadOutputByChapter(){
    8) Nút bật/tắt tạm dừng dịch
    ===================================================================== */
 
+/* ---- 1) SMART SEMANTIC SPLITTING theo chỉ mục vị trí (index-based) ----
+   Duyệt qua văn bản MỘT LẦN bằng chỉ mục ký tự (charCodeAt), không dùng
+   RegExp.exec lặp lại trên từng câu. Đảm bảo cắt chunk xong dưới 0.5s
+   kể cả với file 5–10 MB. (ghi đè splitChunks) */
+const SF_SENTENCE_END_CHARS = new Set(['.','!','?','。','！','？']);
+const SF_SENTENCE_TRAIL_CHARS = new Set(['"',"'",'”','’',')',']']);
+function splitChunks(text, size){
+  if(!text) return [];
+  const chunks = [];
+
+  // Bước 1: tìm ranh giới đoạn văn (2+ dòng trống liên tiếp) bằng indexOf,
+  // không dùng regex.split trên toàn văn bản.
+  function splitParagraphs(str){
+    const out = [];
+    let start = 0;
+    const n = str.length;
+    let i = 0;
+    while(i < n){
+      if(str.charCodeAt(i) === 10){ // '\n'
+        let j = i;
+        while(j < n && str.charCodeAt(j) === 10) j++;
+        if(j - i >= 2){ // >=2 dấu xuống dòng liên tiếp = ranh giới đoạn
+          out.push(str.slice(start, i));
+          start = j;
+        }
+        i = j;
+      } else {
+        i++;
+      }
+    }
+    out.push(str.slice(start, n));
+    return out.filter(p=>p.length>0);
+  }
+
+  // Bước 2: tách 1 đoạn quá dài thành câu bằng cách quét từng ký tự, tìm
+  // dấu kết câu rồi khoảng trắng theo sau — không dùng RegExp.exec lặp.
+  function splitIntoSentences(p){
+    const parts = [];
+    const n = p.length;
+    let last = 0;
+    let i = 0;
+    while(i < n){
+      const ch = p[i];
+      if(SF_SENTENCE_END_CHARS.has(ch)){
+        let j = i + 1;
+        if(j < n && SF_SENTENCE_TRAIL_CHARS.has(p[j])) j++;
+        if(j < n && /\s/.test(p[j])){
+          j++;
+          parts.push(p.slice(last, j));
+          last = j;
+          i = j;
+          continue;
+        }
+      }
+      i++;
+    }
+    if(last < n) parts.push(p.slice(last));
+    return parts.filter(s=>s.length>0);
+  }
+
+  const paragraphs = splitParagraphs(text);
+  let cur = '';
+  function flush(){
+    if(cur.trim().length>0) chunks.push(cur.trim());
+    cur = '';
+  }
+
+  for(const p of paragraphs){
+    if(p.length===0) continue;
+
+    // Đoạn văn vẫn vừa trong chunk hiện tại
+    if((cur ? cur.length + 2 : 0) + p.length <= size){
+      cur = cur ? cur + '\n\n' + p : p;
+      continue;
+    }
+
+    if(cur.length>0) flush();
+
+    if(p.length <= size){
+      cur = p;
+      continue;
+    }
+
+    // Một đoạn văn DUY NHẤT vượt quá size → cắt theo câu
+    const sentences = splitIntoSentences(p);
+    for(const s of sentences){
+      if((cur ? cur.length + 1 : 0) + s.length <= size){
+        cur = cur ? cur + ' ' + s : s;
+      } else {
+        if(cur.length>0) flush();
+        if(s.length <= size){
+          cur = s;
+        } else {
+          // câu đơn lẻ vẫn dài hơn size → buộc phải cắt cứng theo ký tự
+          let rest = s;
+          while(rest.length > size){
+            chunks.push(rest.slice(0, size));
+            rest = rest.slice(size);
+          }
+          cur = rest;
+        }
+      }
+    }
+  }
+  flush();
+  return chunks.filter(c=>c.length>0);
+}
 
 /* ---- 2) SLIDING WINDOW CONTEXT (ghi đè callModelWithRetry) ---- */
 function buildContextPrefix(idx){
@@ -3784,6 +3936,90 @@ function renderHistory(){
   body.innerHTML = html;
 }
 
+/* ---- Ghi đè runEngine: thêm hiển thị nút Tạm dừng + tôn trọng pauseFlag giữa các batch ---- */
+async function runEngine(indices){
+  running = true; stopFlag = false;
+  if(!translateStartTime) translateStartTime = Date.now();
+  document.getElementById('startBtn').disabled = true;
+  document.getElementById('stopBtn').style.display = 'inline-block';
+  const pauseBtnEl = document.getElementById('pauseBtn');
+  if(pauseBtnEl){ pauseBtnEl.style.display = 'inline-block'; pauseBtnEl.textContent = pauseFlag ? '▶ Tiếp tục' : '⏸ Tạm dừng'; }
+  document.getElementById('progwrap').classList.add('show');
+  showAllKeysWarning(false);
+  document.getElementById('retryFailedBox').style.display = 'none';
+  updateProgress(computeChunkCounts().done, currentChunks.length);
+  setQueue(indices.length, currentChunks.length);
+  renderQueuePanel();
+
+  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
+  const batchWrapEl = document.getElementById('batchWrap');
+  if(batchWrapEl) batchWrapEl.style.display = 'none';
+  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
+
+  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
+  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
+  // cả cụm (batch) như Promise.all theo batch trước đây.
+  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
+  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
+  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
+  const nKeys = Math.max(1, state.keys.length);
+
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
+
+  let globalTaskIndex = 0;
+
+  async function worker(workerId){
+    while(globalTaskIndex < indices.length){
+      if(stopFlag) return;
+      await waitWhilePaused();
+      if(stopFlag) return;
+      const chunkIdx = indices[globalTaskIndex++];
+      await processChunkInBatch(chunkIdx, workerId % nKeys);
+    }
+  }
+
+  const workers = [];
+  for(let w = 0; w < nWorkers; w++){
+    workers.push(worker(w));
+  }
+  await Promise.all(workers);
+
+  running = false;
+  document.getElementById('startBtn').disabled = false;
+  document.getElementById('stopBtn').style.display = 'none';
+  if(pauseBtnEl) pauseBtnEl.style.display = 'none';
+  showAllKeysWarning(false);
+  setQueue(0, currentChunks.length);
+  renderQueuePanel();
+
+  const finalText = currentResults.map((r,i)=>{
+    if(r!=null) return r;
+    if(chunkState[i] && chunkState[i].status==='error') return `\n[LỖI DỊCH CHUNK ${i+1}]\n${currentChunks[i]}`;
+    return '';
+  }).join('\n\n');
+  document.getElementById('outputText').value = finalText;
+
+  const counts = computeChunkCounts();
+  const durationSec = translateStartTime ? Math.round((Date.now()-translateStartTime)/1000) : 0;
+  const statusLabel = stopFlag ? 'Đã dừng' : (counts.error>0 ? `Hoàn tất (${counts.error} lỗi)` : 'Hoàn tất');
+  historyArr.push({
+    time: new Date().toLocaleTimeString('vi-VN'),
+    chunks: currentChunks.length,
+    chars: currentChunks.reduce((a,c)=>a+c.length,0),
+    status: statusLabel,
+    duration: formatDuration(durationSec),
+    keys: state.keys.length
+  });
+  renderHistory();
+
+  if(stopFlag){
+    logLine('warn', null, null, '⏹ Đã dừng theo yêu cầu. Tiến độ đã được lưu tự động — có thể Tiếp tục sau khi tải lại trang.');
+  }else{
+    logLine('ok', null, null, counts.error>0 ? `Hoàn tất với ${counts.error} chunk lỗi.` : '🎉 Hoàn tất!');
+  }
+  saveTranslationProgress(true);
+  renderRetryFailedBox();
+}
 
 /* ---- Ghi đè processChunkInBatch: tôn trọng pauseFlag trước mỗi lần thử ---- */
 async function processChunkInBatch(idx, preferredKeyPos){
@@ -3952,7 +4188,9 @@ async function callModelWithRetry(chunkText, keyIndex, idx){
   }
 }
 
-/* ---- runEngine (bản duy nhất): Worker Queue, không Batch. ---- */
+/* ---- runEngine: ghi đè LẦN CUỐI — thêm chế độ Waterfall (buộc BATCH_SIZE=1,
+   chunk sau chỉ khởi động khi chunk trước đã ở trạng thái cuối cùng thật sự
+   xong), giữ nguyên toàn bộ logic xoay vòng key / RPM / pause / stop / IndexedDB. ---- */
 async function runEngine(indices){
   running = true; stopFlag = false;
   if(!translateStartTime) translateStartTime = Date.now();
@@ -3967,31 +4205,37 @@ async function runEngine(indices){
   setQueue(indices.length, currentChunks.length);
   renderQueuePanel();
 
-  // Không còn khái niệm Batch: ẩn panel Batch cũ
+  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
   const batchWrapEl = document.getElementById('batchWrap');
   if(batchWrapEl) batchWrapEl.style.display = 'none';
   totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
 
-  // Worker Queue: mỗi worker là 1 luồng độc lập, rảnh là bốc chunk tiếp theo ngay.
-  // Waterfall ép 1 worker để chunk sau luôn có đủ bản dịch chunk trước làm ngữ cảnh.
+  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
+  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
+  // cả cụm (batch) như Promise.all theo batch trước đây.
+  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
+  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
   const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
   const nKeys = Math.max(1, state.keys.length);
-  let globalTaskIndex = 0;
 
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng (worker queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
+
+  let globalTaskIndex = 0;
 
   async function worker(workerId){
     while(globalTaskIndex < indices.length){
       if(stopFlag) return;
-      await waitWhilePaused();          // đang tạm dừng -> chờ tại đây
-      if(stopFlag) return;              // dừng khi đang tạm dừng
-      const chunkIdx = indices[globalTaskIndex++];   // không có await giữa check và ++ => an toàn
+      await waitWhilePaused();
+      if(stopFlag) return;
+      const chunkIdx = indices[globalTaskIndex++];
       await processChunkInBatch(chunkIdx, workerId % nKeys);
     }
   }
 
   const workers = [];
-  for(let w = 0; w < nWorkers; w++) workers.push(worker(w));
+  for(let w = 0; w < nWorkers; w++){
+    workers.push(worker(w));
+  }
   await Promise.all(workers);
 
   running = false;
