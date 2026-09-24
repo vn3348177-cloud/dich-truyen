@@ -370,6 +370,44 @@
     .perfrow{font-size:10.5px;}
     #resumeBanner{flex-direction:column; align-items:flex-start;}
   }
+
+  /* ===== ĐỌC THEO CHƯƠNG (Modal) ===== */
+  .read-overlay{
+    display:none; position:fixed; inset:0; z-index:9999;
+    background:rgba(4,5,12,.72); backdrop-filter:blur(2px);
+    align-items:center; justify-content:center; padding:24px;
+  }
+  .read-modal{
+    width:min(880px, 100%); max-height:92vh; display:flex; flex-direction:column;
+    background:var(--panel-solid); border:1px solid var(--panel-border); border-radius:16px;
+    box-shadow:0 20px 60px rgba(0,0,0,.5); overflow:hidden;
+  }
+  .read-head{
+    display:flex; align-items:center; gap:12px; padding:16px 20px;
+    border-bottom:1px solid var(--panel-border); flex-wrap:wrap;
+  }
+  .read-head h2{margin:0; font-size:15px; flex-shrink:0;}
+  .read-head select{flex:1; min-width:180px;}
+  .read-close{
+    margin-left:auto; background:none; border:none; color:var(--text-dim);
+    font-size:20px; cursor:pointer; line-height:1; padding:4px 8px; border-radius:8px;
+  }
+  .read-close:hover{color:var(--text); background:#1c1f34;}
+  .read-body{
+    flex:1; overflow-y:auto; padding:26px 34px; font-size:16.5px; line-height:1.85;
+    font-family:Georgia,"Times New Roman",serif; white-space:pre-wrap; word-break:break-word;
+  }
+  .read-body-title{font-size:19px; font-weight:800; margin-bottom:16px; font-family:inherit; color:var(--accent2);}
+  .read-foot{
+    display:flex; align-items:center; gap:10px; padding:14px 20px;
+    border-top:1px solid var(--panel-border); flex-wrap:wrap;
+  }
+  .read-foot .read-info{color:var(--text-dim); font-size:12px; margin-right:auto;}
+  @media (max-width:640px){
+    .read-body{padding:18px 18px; font-size:15.5px;}
+    .read-overlay{padding:0;}
+    .read-modal{max-height:100vh; height:100vh; border-radius:0;}
+  }
 </style>
 </head>
 <body>
@@ -452,11 +490,15 @@
         </div>
       </div>
       <div class="histpanel" id="histPanel">
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn small danger" onclick="clearEntireFileLibrary()">🗑️ Dọn dẹp toàn bộ thư viện</button>
+        </div>
         <div id="histBody" class="hint">Chưa có lịch sử dịch nào trong phiên này.</div>
       </div>
       <div class="histpanel" id="queuePanel">
         <div class="btn-row" style="margin-top:0;">
           <button class="btn primary small" onclick="document.getElementById('queueFileInput').click()">＋ Thêm file vào hàng đợi</button>
+          <button class="btn small danger" onclick="clearEntireFileLibrary()">🗑️ Dọn dẹp toàn bộ thư viện</button>
           <input type="file" id="queueFileInput" accept=".txt" multiple style="display:none;">
         </div>
         <div class="hint" style="margin:8px 0;">Mỗi file thêm vào sẽ tự động được cắt chunk và xếp hàng. Khi file đang dịch xong, file tiếp theo trong hàng đợi sẽ tự động chạy tiếp.</div>
@@ -577,8 +619,15 @@
             <button class="btn primary small" onclick="addKey()">＋ Thêm key</button>
           </div>
           <div class="btn-row">
-            <button class="btn small" onclick="importKeys()">⬇️ Nhập nhiều</button>
+            <button class="btn small" onclick="toggleBulkKeyBox()">⬇️ Nhập nhiều</button>
             <button class="btn small" onclick="exportKeys()">⬆️ Xuất key</button>
+          </div>
+          <div id="bulkKeyBox" style="display:none; margin-top:8px;">
+            <textarea id="bulkKeyInput" rows="5" placeholder="Dán danh sách key vào đây, mỗi key một dòng..." style="width:100%;"></textarea>
+            <div class="btn-row" style="margin-top:6px;">
+              <button class="btn primary small" onclick="confirmBulkImportKeys()">✔ Thêm các key này</button>
+              <button class="btn small" onclick="toggleBulkKeyBox(false)">Huỷ</button>
+            </div>
           </div>
           <div class="hint">Key này dùng riêng cho Custom Proxy và chỉ lưu trong trình duyệt này. Key luôn được ẩn bớt (mask), không hiển thị đầy đủ.</div>
 
@@ -656,6 +705,13 @@
           <div class="status-banner" style="margin-top:14px; margin-bottom:0;" id="rpmEstimate">
             Ước tính: 1 key × 15 RPM = tối đa 15 request/phút.
           </div>
+          <div class="row" style="margin-top:14px;">
+            <div class="col">
+              <label>🧯 Trần token đầu ra (max_tokens)</label>
+              <input type="number" id="maxTokensCap" value="0" min="0" max="32000" step="256" placeholder="0 = tự động tính theo chunk">
+              <div class="hint">Để <b>0</b> để tự động tính (4096–8192 tuỳ độ dài chunk), tránh bị proxy cắt cụt bản dịch. Nếu dùng model context siêu lớn, có thể tự đặt số cao hơn (vd 16000).</div>
+            </div>
+          </div>
           <label style="margin-top:14px;">🧠 Chế độ giữ ngữ cảnh giữa các chunk</label>
           <div class="btn-row" style="margin-top:0;">
             <button type="button" class="btn small ctxmode-preset active" data-cm="hybrid" onclick="setContextMode('hybrid')">⚡ Song song + Ngữ cảnh gốc (Hybrid)</button>
@@ -685,7 +741,12 @@
             <div class="switch" id="canonSwitch" onclick="toggleCanon()"></div>
             <span style="font-size:13px;">Áp dụng bảng thuật ngữ / tên riêng cố định (Canon Pack) khi dịch</span>
           </div>
-          <div class="locked-note">Tính năng quản lý Canon Pack (tên nhân vật, địa danh, thuật ngữ cố định) chưa khả dụng ở bản này — công tắc chỉ ghi nhận lựa chọn của bạn.</div>
+          <textarea id="canonInput" rows="6" placeholder="Nhập hoặc trích xuất danh sách thuật ngữ (mỗi dòng một cặp dạng: TừGốc = TênDịch hoặc TừGốc: TênDịch)..."></textarea>
+          <div class="btn-row" style="margin-top:8px;">
+            <button type="button" class="btn small" id="canonExtractBtn" onclick="autoExtractCanon()">🔍 AI Tự trích xuất Canon</button>
+            <button type="button" class="btn small danger" onclick="clearCanonTable()">🗑 Xóa bảng Canon</button>
+          </div>
+          <div class="hint" id="canonExtractHint" style="margin-top:6px;">Trích xuất dựa trên ~10.000 ký tự đầu truyện (2-3 chương đầu). Bạn có thể chỉnh sửa tay trước khi dịch.</div>
         </div>
       </div>
 
@@ -824,10 +885,10 @@
         <button class="btn small active" id="modeBtn-parallel" onclick="setViewerMode('parallel')">☷ Song song</button>
         <button class="btn small" id="modeBtn-orig" onclick="setViewerMode('orig')">📄 Chỉ bản gốc</button>
         <button class="btn small" id="modeBtn-trans" onclick="setViewerMode('trans')">🇻🇳 Chỉ bản dịch</button>
-        <button class="btn small" onclick="openCompare()">👁 Đối chiếu</button>
       </div>
       <div class="cd-toolbar">
         <span class="cd-pageinfo" id="cdPageInfo">Chưa có chunk nào.</span>
+        <button class="btn small" id="chunkListToggleBtn" onclick="toggleChunkListVisible()" style="display:none;">👁 Hiện lại danh sách</button>
         <div class="cd-pagenav">
           <button class="btn small" onclick="chunkPrevPage()">◀</button>
           <button class="btn small" onclick="chunkNextPage()">▶</button>
@@ -835,26 +896,6 @@
       </div>
       <div class="viewer-list mode-parallel" id="chunkViewer">
         <div class="viewer-empty">Chưa có chunk nào. Bắt đầu dịch để xem theo dõi từng chunk tại đây.</div>
-      </div>
-    </div>
-
-    <!-- ĐỐI CHIẾU -->
-    <div class="card" id="compareBox" style="display:none;">
-      <h2>👁 Đối chiếu bản gốc / bản dịch</h2>
-      <div class="sub" id="compareTitle">CHUNK 1</div>
-      <div class="chunkcols">
-        <div class="chunkcol">
-          <div class="chunkcol-title">📄 Bản gốc</div>
-          <div class="chunkcol-body" id="compareOrig" style="max-height:340px;"></div>
-        </div>
-        <div class="chunkcol">
-          <div class="chunkcol-title">🇻🇳 Bản dịch</div>
-          <div class="chunkcol-body" id="compareTrans" style="max-height:340px;"></div>
-        </div>
-      </div>
-      <div class="btn-row">
-        <button class="btn small" onclick="comparePrev()">← Chunk trước</button>
-        <button class="btn small" onclick="compareNext()">Chunk tiếp →</button>
       </div>
     </div>
 
@@ -894,6 +935,27 @@
   </div>
 </div>
 
+<!-- ĐỌC THEO CHƯƠNG -->
+<div class="read-overlay" id="readModalOverlay">
+  <div class="read-modal">
+    <div class="read-head">
+      <h2>📖 Đọc theo chương</h2>
+      <select id="readChapterSelect" onchange="readGotoSelect()"></select>
+      <button class="read-close" onclick="closeReadModal()" title="Đóng">✕</button>
+    </div>
+    <div class="read-body" id="readChapterBodyWrap">
+      <div class="read-body-title" id="readChapterTitle"></div>
+      <div id="readChapterBody"></div>
+    </div>
+    <div class="read-foot">
+      <span class="read-info" id="readChapterInfo"></span>
+      <button class="btn small" onclick="readPrevChapter()">← Chương trước</button>
+      <button class="btn small" onclick="readNextChapter()">Chương sau →</button>
+      <button class="btn primary small" onclick="exportOfflineReader()">⬇️ Xuất HTML đọc offline</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ---------------- STATE ---------------- */
 let state = {
@@ -912,6 +974,43 @@ let stopFlag = false;
 let historyArr = [];
 let chunkState = [];
 let translateStartTime = 0;
+
+/* ---------------- CHỐNG ĐƠ MÁY VỚI FILE LỚN ----------------
+   window.__loadedSourceText: giữ TOÀN BỘ nội dung nguồn trong bộ nhớ (biến JS),
+   độc lập với DOM. Khi văn bản quá dài, ô #sourceText chỉ hiển thị bản xem
+   trước rút gọn (không gán toàn bộ vào DOM) để tránh treo trình duyệt.
+   Mọi nơi cần nội dung ĐẦY ĐỦ để dịch / build TOC / trích Canon... phải gọi
+   sf_getFullSourceText() thay vì đọc trực tiếp #sourceText.value. */
+window.__loadedSourceText = null;
+window.__sourceIsTruncatedPreview = false;
+const SF_LARGE_TEXT_THRESHOLD = 300000; // ký tự
+// Khai báo SỚM (trước mọi lệnh gọi updateDashboard() lúc khởi tạo trang) để
+// tránh lỗi TDZ "Cannot access before initialization" làm gãy toàn bộ script.
+let __sf_statsCache = { chunks: 0, n: 0 };
+function sf_getFullSourceText(){
+  if(typeof window.__loadedSourceText === 'string' && window.__loadedSourceText.length > 0){
+    return window.__loadedSourceText;
+  }
+  const ta = document.getElementById('sourceText');
+  return ta ? ta.value : '';
+}
+function sf_setSourceText(fullText, opts){
+  fullText = fullText || '';
+  opts = opts || {};
+  window.__loadedSourceText = fullText;
+  const ta = document.getElementById('sourceText');
+  if(fullText.length > SF_LARGE_TEXT_THRESHOLD){
+    window.__sourceIsTruncatedPreview = true;
+    if(ta){
+      ta.value = '[Tệp dung lượng lớn (' + fullText.length.toLocaleString('vi-VN') +
+        ' ký tự) đã nạp thành công vào bộ nhớ ngầm. Chỉ hiển thị xem trước đoạn đầu để chống đơ máy.]\n\n' +
+        fullText.slice(0, 1000) + '...';
+    }
+  } else {
+    window.__sourceIsTruncatedPreview = false;
+    if(ta) ta.value = fullText;
+  }
+}
 
 /* ---------------- KEY META HELPERS ---------------- */
 function newKeyMeta(){
@@ -1051,6 +1150,7 @@ function toggleCors(){
   corsOn = !corsOn;
   document.getElementById('corsSwitch').classList.toggle('on', corsOn);
   document.getElementById('corsRow').style.display = corsOn ? 'block' : 'none';
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
 }
 function wrapUrl(target){
   if(!corsOn) return target;
@@ -1267,6 +1367,31 @@ function importKeys(){
   state.keys.push(...lines);
   lines.forEach(()=> state.keyMeta.push(newKeyMeta()));
   renderKeys();
+}
+function toggleBulkKeyBox(show){
+  const box = document.getElementById('bulkKeyBox');
+  if(!box) return;
+  const willShow = (show===undefined) ? (box.style.display==='none') : !!show;
+  box.style.display = willShow ? 'block' : 'none';
+  if(willShow){
+    const ta = document.getElementById('bulkKeyInput');
+    if(ta) ta.focus();
+  } else {
+    const ta = document.getElementById('bulkKeyInput');
+    if(ta) ta.value = '';
+  }
+}
+function confirmBulkImportKeys(){
+  const ta = document.getElementById('bulkKeyInput');
+  if(!ta) return;
+  // Chấp nhận cả key cách nhau bằng dấu phẩy/chấm phẩy lẫn xuống dòng, để không phụ thuộc
+  // vào việc người dùng dán đúng định dạng "mỗi dòng một key".
+  const lines = ta.value.split(/[\r\n,;]+/).map(s=>s.trim()).filter(Boolean);
+  if(lines.length===0){ alert('Chưa dán key nào.'); return; }
+  state.keys.push(...lines);
+  lines.forEach(()=> state.keyMeta.push(newKeyMeta()));
+  renderKeys();
+  toggleBulkKeyBox(false);
 }
 function exportKeys(){
   if(state.keys.length===0){ alert('Chưa có key nào để xuất.'); return; }
@@ -1531,18 +1656,239 @@ dropzone.addEventListener('drop', e=>{
 function readFile(f){
   const reader = new FileReader();
   reader.onload = ()=>{
-    document.getElementById('sourceText').value = reader.result;
+    sf_setSourceText(reader.result);
     updateStats();
   };
   reader.readAsText(f, 'UTF-8');
 }
 
-/* action tiles (không khả dụng ở bản này) */
+/* ---------------- TILE: QUÉT HÁN TỰ CÒN SÓT TRONG BẢN DỊCH ---------------- */
 function scanHanTu(){
-  alert('Tính năng "Quét Hán tự trong file đã dịch" chưa khả dụng trong bản này.');
+  const outputEl = document.getElementById('outputText');
+  const text = outputEl.value;
+  if(!text || !text.trim()){
+    alert('⚠️ Chưa có bản dịch trong khung "Kết quả dịch". Hãy dịch xong (hoặc dịch một phần) trước khi quét Hán tự còn sót.');
+    return;
+  }
+  const cjkRegex = /[\u4e00-\u9fa5]+/g;
+  const matches = text.match(cjkRegex);
+  if(!matches || matches.length===0){
+    alert('✅ Tuyệt vời! Không phát hiện Hán tự nào còn sót trong bản dịch.');
+    return;
+  }
+  const first = matches[0];
+  const firstIdx = text.indexOf(first);
+  outputEl.focus();
+  if(firstIdx>=0) outputEl.setSelectionRange(firstIdx, firstIdx + first.length);
+  const searchTargetEl = document.getElementById('searchTarget');
+  const searchBoxEl = document.getElementById('searchBox');
+  if(searchTargetEl) searchTargetEl.value = 'output';
+  if(searchBoxEl) searchBoxEl.value = first;
+  if(typeof runSearch==='function') runSearch();
+  if(typeof logLine==='function'){
+    logLine('warn', null, null, `⚠️ Quét Hán tự: phát hiện ${matches.length} cụm còn sót trong bản dịch, đã bôi đen cụm đầu tiên "${first}".`);
+  }
+  alert(`⚠️ Phát hiện ${matches.length} cụm Hán/Trung còn sót trong bản dịch!\n\nĐã bôi đen cụm đầu tiên: "${first}"\nTừ khoá đã được đưa vào ô Tìm kiếm bên dưới — bấm nút [Tiếp →] để duyệt và sửa từng cụm một cách thuận tiện.`);
+}
+
+/* ---------------- TILE: ĐỌC THEO CHƯƠNG & XUẤT FILE ĐỌC OFFLINE ---------------- */
+let readChapters = [];
+let readChapterIdx = 0;
+function escapeHtmlText(s){
+  return String(s==null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+function buildReadingChapters(){
+  const text = document.getElementById('outputText').value;
+  // Ưu tiên nhận diện chương ngay trong bản dịch (tiêu đề chương thường được giữ/dịch lại)
+  const chaptersInOutput = (typeof detectChapters==='function') ? detectChapters(text) : [];
+  if(chaptersInOutput.length >= 2){
+    return chaptersInOutput.map((c,i)=>{
+      const start = c.charOffset;
+      const end = (i+1 < chaptersInOutput.length) ? chaptersInOutput[i+1].charOffset : text.length;
+      return { title: c.line || ('Chương ' + (i+1)), content: text.slice(start, end).trim() };
+    });
+  }
+  // Fallback 1: dùng danh sách chương của bản gốc (window.__chapterList) nếu số lượng khớp tương đối
+  const srcChapters = window.__chapterList || [];
+  if(srcChapters.length >= 2){
+    const blocks = text.split(/\n{2,}/).filter(b=>b.trim());
+    if(blocks.length >= 2){
+      // Gộp các block lại thành đúng số "chương" của bản gốc theo tỉ lệ
+      const per = Math.max(1, Math.ceil(blocks.length / srcChapters.length));
+      const grouped = [];
+      for(let i=0;i<blocks.length;i+=per){
+        grouped.push(blocks.slice(i, i+per).join('\n\n'));
+      }
+      return grouped.map((b,i)=>({
+        title: srcChapters[i] ? srcChapters[i].line : ('Chương ' + (i+1)),
+        content: b.trim()
+      }));
+    }
+  }
+  // Fallback 2: chia theo từng khối cách nhau bởi dòng trống (mỗi khối = 1 phần)
+  const blocks = text.split(/\n{2,}/).filter(b=>b.trim());
+  if(blocks.length >= 2){
+    return blocks.map((b,i)=>({ title: 'Phần ' + (i+1), content: b.trim() }));
+  }
+  return [{ title: 'Toàn bộ nội dung', content: text.trim() }];
 }
 function openReadByChapter(){
-  alert('Tính năng "Đọc theo chương" (mục lục, xuất EPUB) chưa khả dụng trong bản này.');
+  const text = document.getElementById('outputText').value;
+  if(!text || !text.trim()){
+    alert('⚠️ Chưa có bản dịch trong khung "Kết quả dịch". Hãy dịch xong trước khi mở chế độ đọc theo chương.');
+    return;
+  }
+  readChapters = buildReadingChapters();
+  const sel = document.getElementById('readChapterSelect');
+  sel.innerHTML = readChapters.map((c,i)=>
+    `<option value="${i}">${escapeHtmlText((i+1) + '. ' + c.title.slice(0,80))}</option>`
+  ).join('');
+  readChapterIdx = 0;
+  sel.value = '0';
+  renderReadChapter();
+  document.getElementById('readModalOverlay').style.display = 'flex';
+}
+function renderReadChapter(){
+  const c = readChapters[readChapterIdx];
+  if(!c) return;
+  document.getElementById('readChapterTitle').textContent = c.title;
+  document.getElementById('readChapterBody').textContent = c.content;
+  document.getElementById('readChapterInfo').textContent = `Chương ${readChapterIdx+1}/${readChapters.length}`;
+  const wrap = document.getElementById('readChapterBodyWrap');
+  if(wrap) wrap.scrollTop = 0;
+}
+function readGotoSelect(){
+  const sel = document.getElementById('readChapterSelect');
+  readChapterIdx = parseInt(sel.value)||0;
+  renderReadChapter();
+}
+function readPrevChapter(){
+  if(readChapterIdx>0){
+    readChapterIdx--;
+    document.getElementById('readChapterSelect').value = String(readChapterIdx);
+    renderReadChapter();
+  }
+}
+function readNextChapter(){
+  if(readChapterIdx < readChapters.length-1){
+    readChapterIdx++;
+    document.getElementById('readChapterSelect').value = String(readChapterIdx);
+    renderReadChapter();
+  }
+}
+function closeReadModal(){
+  document.getElementById('readModalOverlay').style.display = 'none';
+}
+function buildOfflineReaderHtml(title, chapters){
+  const safeTitle = escapeHtmlText(title || 'Bản dịch');
+  const toc = chapters.map((c,i)=>`<option value="ch-${i}">${escapeHtmlText((i+1)+'. '+c.title.slice(0,80))}</option>`).join('');
+  const body = chapters.map((c,i)=>`
+    <section class="chapter" id="ch-${i}">
+      <h2>${escapeHtmlText(c.title)}</h2>
+      <div class="chapter-content">${escapeHtmlText(c.content)}</div>
+    </section>`).join('\n');
+  return `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle} · Đọc offline</title>
+<style>
+  :root{
+    --bg:#f7f3ea; --text:#26241d; --panel:#fffdf7; --border:#e4ddc9; --accent:#7c5cff;
+  }
+  [data-theme="dark"]{
+    --bg:#0b0d17; --text:#e7e8f2; --panel:#141726; --border:#262a42; --accent:#8f7dff;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);}
+  body{font-family:Georgia,"Times New Roman",serif; transition:background .2s,color .2s;}
+  header{
+    position:sticky; top:0; z-index:5; background:var(--panel); border-bottom:1px solid var(--border);
+    padding:12px 16px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+  }
+  header h1{font-size:15px; margin:0; flex:1; min-width:160px; font-family:system-ui,sans-serif;}
+  header select{max-width:260px; flex:1;}
+  select, button{
+    font-family:system-ui,sans-serif; background:var(--bg); color:var(--text); border:1px solid var(--border);
+    border-radius:8px; padding:7px 10px; font-size:13px; cursor:pointer;
+  }
+  main{max-width:720px; margin:0 auto; padding:28px 20px 80px;}
+  .chapter{display:none;}
+  .chapter.active{display:block;}
+  .chapter h2{font-size:20px; color:var(--accent); margin-bottom:18px;}
+  .chapter-content{font-size:17px; line-height:1.9; white-space:pre-wrap; word-break:break-word;}
+  footer{
+    position:sticky; bottom:0; background:var(--panel); border-top:1px solid var(--border);
+    padding:10px 16px; display:flex; justify-content:center; gap:10px;
+  }
+  .hint{font-family:system-ui,sans-serif; font-size:11.5px; color:#8a8570; text-align:center; margin-top:24px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>📖 ${safeTitle}</h1>
+  <select id="tocSelect">${toc}</select>
+  <button onclick="toggleTheme()" id="themeBtn">🌙 Dark</button>
+</header>
+<main id="main">
+${body}
+</main>
+<footer>
+  <button onclick="gotoChapter(-1)">← Chương trước</button>
+  <button onclick="gotoChapter(1)">Chương sau →</button>
+</footer>
+<div class="hint">Tạo bởi StoryForge · Dịch truyện — tệp này hoạt động hoàn toàn offline, không cần mạng.</div>
+<script>
+  var chapters = ${JSON.stringify(chapters.map((c,i)=>'ch-'+i))};
+  var cur = 0;
+  function showChapter(i){
+    if(i<0||i>=chapters.length) return;
+    cur = i;
+    document.querySelectorAll('.chapter').forEach(function(el){ el.classList.remove('active'); });
+    var el = document.getElementById(chapters[i]);
+    if(el) el.classList.add('active');
+    document.getElementById('tocSelect').value = chapters[i];
+    window.scrollTo(0,0);
+  }
+  function gotoChapter(delta){ showChapter(cur+delta); }
+  document.getElementById('tocSelect').addEventListener('change', function(e){
+    var idx = chapters.indexOf(e.target.value);
+    if(idx>=0) showChapter(idx);
+  });
+  function toggleTheme(){
+    var isDark = document.documentElement.getAttribute('data-theme')==='dark';
+    document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
+    document.getElementById('themeBtn').textContent = isDark ? '🌙 Dark' : '☀️ Light';
+    try{ localStorage.setItem('sf_reader_theme', isDark?'light':'dark'); }catch(e){}
+  }
+  (function(){
+    try{
+      var saved = localStorage.getItem('sf_reader_theme');
+      if(saved==='dark'){ document.documentElement.setAttribute('data-theme','dark'); document.getElementById('themeBtn').textContent='☀️ Light'; }
+    }catch(e){}
+    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if(!localStorage.getItem('sf_reader_theme') && prefersDark){
+      document.documentElement.setAttribute('data-theme','dark');
+      document.getElementById('themeBtn').textContent='☀️ Light';
+    }
+  })();
+  showChapter(0);
+<\/script>
+</body>
+</html>`;
+}
+function exportOfflineReader(){
+  if(!readChapters || readChapters.length===0) return;
+  const title = (currentFileName || 'ban-dich').replace(/\.[^.]+$/,'');
+  const html = buildOfflineReaderHtml(title, readChapters);
+  const blob = new Blob([html], {type:'text/html;charset=utf-8'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = title + '_doc-offline.html';
+  a.click();
+  if(typeof logLine==='function') logLine('ok', null, null, `⬇️ Đã xuất file đọc offline (${readChapters.length} chương): ${title}_doc-offline.html`);
 }
 
 /* ---------------- STATS / CHUNKING ---------------- */
@@ -1590,10 +1936,14 @@ function splitChunks(text, size){
 }
 
 function updateStats(){
-  const text = document.getElementById('sourceText').value;
+  const text = sf_getFullSourceText();
   const size = chunkSizeVal();
   const n = text.length;
+  // Với văn bản rất lớn, việc chia chunk vẫn nhanh (thuật toán index-based),
+  // nhưng ta vẫn cache lại để tránh tính toán lặp lại không cần thiết khi
+  // các sự kiện input dội liên tục (ví dụ trong lúc gõ ở ô preview).
   const chunks = text ? splitChunks(text, size).length : 0;
+  __sf_statsCache = { chunks, n };
   document.getElementById('chOrig').textContent = n.toLocaleString('vi-VN') + ' ký tự';
   document.getElementById('chChunks').textContent = chunks + ' chunk';
   const estSec = chunks>0 ? Math.ceil(chunks / parallelVal()) * 6 : 0;
@@ -1603,13 +1953,22 @@ function updateStats(){
     : 'Chưa có nội dung. Tải file hoặc dán nội dung truyện để bắt đầu.';
   updateDashboard();
 }
-document.getElementById('sourceText').addEventListener('input', updateStats);
+/* Chống dội sự kiện input: gộp các lần gõ liên tiếp thành 1 lần tính toán,
+   tránh chạy splitChunks/updateDashboard đồng bộ trên mỗi ký tự gõ. */
+let __sf_statsDebounce = null;
+document.getElementById('sourceText').addEventListener('input', ()=>{
+  // Nếu đang ở chế độ xem trước (văn bản gốc thật sự nằm trong bộ nhớ
+  // ngầm), việc gõ vào ô preview không đại diện cho toàn bộ nội dung nên
+  // không cần tính lại thống kê nặng — chỉ giữ nguyên bộ nhớ ngầm.
+  if(window.__sourceIsTruncatedPreview) return;
+  clearTimeout(__sf_statsDebounce);
+  __sf_statsDebounce = setTimeout(updateStats, 250);
+});
 
 /* ---------------- DASHBOARD TỔNG QUAN ---------------- */
 function updateDashboard(){
-  const text = document.getElementById('sourceText').value;
-  const n = text.length;
-  const chunks = text ? splitChunks(text, chunkSizeVal()).length : 0;
+  const n = __sf_statsCache.n;
+  const chunks = __sf_statsCache.chunks;
   document.getElementById('dashChars').textContent = n.toLocaleString('vi-VN');
   document.getElementById('dashChunks').textContent = chunks;
   const active = state.keyMeta.filter(m=>m.status==='active').length;
@@ -1645,7 +2004,7 @@ function toggleProgDetail(){
 /* ---------------- CHUNK PARALLEL VIEWER ---------------- */
 let viewerMode = 'parallel';
 let chunkPage = 0;
-const CHUNK_PAGE_SIZE = 50;
+const CHUNK_PAGE_SIZE = 100;
 let chunkExpanded = new Set();
 function setViewerMode(mode){
   viewerMode = mode;
@@ -1738,13 +2097,44 @@ function renderChunkPage(){
   }
   updateCdPageInfo();
 }
-function chunkPrevPage(){ chunkPage--; renderChunkPage(); }
-function chunkNextPage(){ chunkPage++; renderChunkPage(); }
+function chunkPrevPage(){ chunkPage--; chunkListCollapsed=false; renderChunkPage(); }
+function chunkNextPage(){ chunkPage++; chunkListCollapsed=false; renderChunkPage(); }
 function buildChunkViewer(chunks){
   chunkState = chunks.map(c=>({status:'waiting', orig:c, trans:'', key:null, batchIndex:null, retryCount:0}));
   chunkPage = 0;
   chunkExpanded = new Set();
+  chunkListCollapsed = false;
   renderChunkPage();
+}
+
+/* ---- Tự động ẩn "Chi tiết Chunks" khi 100 chunk của trang hiện tại đã
+   dịch xong (done/error), theo yêu cầu: chỉ cần hiện chunk đang/sẽ dịch,
+   xong rồi thì ẩn đi để đỡ rối mắt & đỡ tốn hiệu năng render. ---- */
+let chunkListCollapsed = false;
+function toggleChunkListVisible(){
+  chunkListCollapsed = !chunkListCollapsed;
+  applyChunkListCollapsedState();
+}
+function applyChunkListCollapsedState(){
+  const el = document.getElementById('chunkViewer');
+  const btn = document.getElementById('chunkListToggleBtn');
+  if(el) el.style.display = chunkListCollapsed ? 'none' : '';
+  if(btn) btn.style.display = chunkListCollapsed ? 'inline-block' : 'none';
+}
+function checkAutoCollapseChunkPage(){
+  if(!chunkState || chunkState.length===0) return;
+  const start = chunkPage*CHUNK_PAGE_SIZE;
+  const end = Math.min(start+CHUNK_PAGE_SIZE, chunkState.length);
+  if(end<=start) return;
+  let allDone = true;
+  for(let i=start;i<end;i++){
+    const st = chunkState[i].status;
+    if(st!=='done' && st!=='error'){ allDone = false; break; }
+  }
+  if(allDone !== chunkListCollapsed){
+    chunkListCollapsed = allDone;
+    applyChunkListCollapsedState();
+  }
 }
 
 async function callModel(chunkText, keyIndex){
@@ -2338,6 +2728,7 @@ function refreshChunkRow(idx){
     else { keyEl.textContent=''; keyEl.style.color=''; }
   }
   updateCdPageInfo();
+  checkAutoCollapseChunkPage();
 }
 function markChunkRunning(idx, keyIndex){
   const c = chunkState[idx];
@@ -2425,6 +2816,21 @@ function updateProgress(done, total){
   updateDashboard();
 }
 
+/* ---------------- CHỐNG TRÀN/CẮT CỤT TOKEN (max_tokens động) ---------------- */
+function maxTokensCapVal(){
+  const el = document.getElementById('maxTokensCap');
+  const v = el ? parseInt(el.value) : NaN;
+  return (v && v>0) ? v : 0; // 0 = để hệ thống tự tính
+}
+function computeMaxTokens(chunkText){
+  const manualCap = maxTokensCapVal();
+  if(manualCap>0) return manualCap;
+  const len = (chunkText||'').length;
+  // Ước tính linh động dựa trên độ dài chunk gửi đi (đã gồm prompt hệ thống + ngữ cảnh Hybrid),
+  // chặn trong khoảng an toàn 4096–8192 để tránh bị proxy/model mặc định cắt cụt bản dịch cuối chunk.
+  return Math.min(8192, Math.max(4096, Math.ceil(len * 2.5)));
+}
+
 /* ---------------- CALL MODEL: track inFlight + latency (ghi đè) ---------------- */
 async function callModel(chunkText, keyIndex){
   ensureKeyMetaExt();
@@ -2436,6 +2842,7 @@ async function callModel(chunkText, keyIndex){
   if(meta.status!=='ratelimited' && meta.status!=='error') meta.status = 'active';
   renderKeys();
   const t0 = (typeof performance!=='undefined') ? performance.now() : Date.now();
+  const maxTok = computeMaxTokens(chunkText);
   let res;
   try{
     res = await fetch(wrapUrl(chatUrl()), {
@@ -2446,7 +2853,12 @@ async function callModel(chunkText, keyIndex){
         messages: [
           { role:'user', content: document.getElementById('promptBox').value + '\n' + chunkText }
         ],
-        temperature: 0.6
+        temperature: 0.6,
+        // Gửi cả 2 tên tham số để tương thích cả proxy/model cũ (max_tokens) lẫn
+        // các model/API mới theo chuẩn OpenAI (max_completion_tokens, vd o1/gpt-4o/gemini
+        // qua endpoint tương thích) — proxy không hiểu field nào sẽ tự bỏ qua field đó.
+        max_tokens: maxTok,
+        max_completion_tokens: maxTok
       })
     });
   }catch(networkErr){
@@ -2577,7 +2989,7 @@ function saveTranslationProgress(force){
   }
   lastAutosaveTs = now;
   if(!currentChunks || currentChunks.length===0) return;
-  const sourceText = document.getElementById('sourceText').value;
+  const sourceText = sf_getFullSourceText();
   const payload = {
     fileName: currentFileName || '',
     sourceText: sourceText,
@@ -2619,7 +3031,7 @@ async function checkResumeOnLoad(){
 function resumeContinue(){
   const saved = window.__pendingResume;
   if(!saved) return;
-  document.getElementById('sourceText').value = saved.sourceText;
+  sf_setSourceText(saved.sourceText || '');
   if(saved.chunkSize) document.getElementById('chunkSize').value = saved.chunkSize;
   if(saved.parallel) document.getElementById('parallel').value = saved.parallel;
   if(saved.rpm) document.getElementById('rpm').value = saved.rpm;
@@ -2636,7 +3048,7 @@ function resumeContinue(){
 }
 function resumeRestart(){
   const saved = window.__pendingResume;
-  if(saved){ document.getElementById('sourceText').value = saved.sourceText; updateStats(); }
+  if(saved){ sf_setSourceText(saved.sourceText || ''); updateStats(); }
   clearTranslationProgress();
   document.getElementById('resumeBanner').style.display = 'none';
 }
@@ -2833,7 +3245,7 @@ async function startTranslate(){
   if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL của proxy.'); return; }
   if(state.keys.length===0){ alert('Thêm ít nhất 1 API key.'); return; }
   if(!state.model){ alert('Nhập hoặc chọn model.'); return; }
-  let sourceText = document.getElementById('sourceText').value;
+  let sourceText = sf_getFullSourceText();
   if(!sourceText.trim()){ alert('Dán hoặc tải nội dung truyện trước.'); return; }
 
   if(window.__chapterRangeActive && window.__chapterRangeText){
@@ -2893,22 +3305,34 @@ function applySpeedPreset(p){
 }
 
 /* ---------------- PHẦN 17: NHẬN DIỆN CHƯƠNG / MỤC LỤC ---------------- */
+/* Với văn bản cực dài, chỉ quét tối đa SF_MAX_SCAN_LINES dòng ở đầu và
+   SF_MAX_SCAN_LINES dòng ở cuối (nơi thường chứa hầu hết tiêu đề chương),
+   thay vì duyệt Regex tuần tự trên toàn bộ hàng trăm nghìn dòng — tránh
+   khóa cứng Main Thread. */
+const SF_MAX_SCAN_LINES = 2000;
 function detectChapters(text){
   const lines = text.split(/\n/);
   const chapters = [];
+  const total = lines.length;
+  const scanAll = total <= SF_MAX_SCAN_LINES * 2;
   let offset = 0;
-  for(let i=0;i<lines.length;i++){
+  // Vì cần charOffset chính xác, ta vẫn phải cộng dồn độ dài qua mọi dòng,
+  // nhưng chỉ chạy Regex (bước tốn CPU) trên các dòng nằm trong vùng quét.
+  for(let i=0;i<total;i++){
     const line = lines[i];
-    const m = line.match(CHAPTER_REGEX);
-    if(m && line.trim().length < 120){
-      chapters.push({ line: line.trim(), lineIndex: i, charOffset: offset });
+    const inScanRange = scanAll || i < SF_MAX_SCAN_LINES || i >= total - SF_MAX_SCAN_LINES;
+    if(inScanRange){
+      const m = line.match(CHAPTER_REGEX);
+      if(m && line.trim().length < 120){
+        chapters.push({ line: line.trim(), lineIndex: i, charOffset: offset });
+      }
     }
     offset += line.length + 1;
   }
   return chapters;
 }
 function buildTOC(){
-  const text = document.getElementById('sourceText').value;
+  const text = sf_getFullSourceText();
   const card = document.getElementById('tocCard');
   if(!text || !text.trim()){
     card.style.display = 'none';
@@ -2923,7 +3347,10 @@ function buildTOC(){
   }
   window.__chapterList = chapters;
   card.style.display = 'block';
-  document.getElementById('tocCount').textContent = chapters.length + ' chương được phát hiện';
+  const scanNote = (text.split(/\n/).length > SF_MAX_SCAN_LINES*2)
+    ? ` (chỉ quét ${SF_MAX_SCAN_LINES.toLocaleString('vi-VN')} dòng đầu + ${SF_MAX_SCAN_LINES.toLocaleString('vi-VN')} dòng cuối để chống đơ máy với file lớn)`
+    : '';
+  document.getElementById('tocCount').textContent = chapters.length + ' chương được phát hiện' + scanNote;
   const shown = chapters.slice(0, 60);
   document.getElementById('tocList').innerHTML = shown.map((c,i)=>
     `<div class="histrow"><span>${i+1}. ${c.line.slice(0,70)}</span></div>`
@@ -2939,7 +3366,7 @@ function applyChapterRange(){
   const from = Math.max(1, parseInt(document.getElementById('tocFrom').value)||1);
   const to = Math.min(chapters.length, parseInt(document.getElementById('tocTo').value)||chapters.length);
   if(from>to){ alert('Từ chương phải nhỏ hơn hoặc bằng đến chương.'); return; }
-  const text = document.getElementById('sourceText').value;
+  const text = sf_getFullSourceText();
   const startOffset = chapters[from-1].charOffset;
   const endOffset = (to < chapters.length) ? chapters[to].charOffset : text.length;
   const slice = text.slice(startOffset, endOffset);
@@ -2954,7 +3381,24 @@ function clearChapterRange(){
   const el = document.getElementById('tocRangeInfo');
   if(el) el.textContent = 'Chưa chọn phạm vi — sẽ dịch toàn bộ nội dung.';
 }
+/* Dán trực tiếp văn bản khổng lồ vào ô cũng có thể gây treo trình duyệt
+   (browser tự gán toàn bộ nội dung dán vào DOM). Chặn hành vi dán mặc định
+   và đưa qua sf_setSourceText để áp dụng cùng cơ chế xem trước như readFile. */
+document.getElementById('sourceText').addEventListener('paste', (e)=>{
+  const text = (e.clipboardData || window.clipboardData).getData('text');
+  if(text && text.length > SF_LARGE_TEXT_THRESHOLD){
+    e.preventDefault();
+    sf_setSourceText(text);
+    clearChapterRange();
+    updateStats();
+    setTimeout(buildTOC, 0);
+  }
+});
 document.getElementById('sourceText').addEventListener('input', ()=>{
+  // Cờ chống lặp: bỏ qua tự động dựng lại mục lục khi người dùng chỉ đang
+  // gõ/sửa trong ô xem trước của file lớn (nội dung thật nằm ở bộ nhớ ngầm
+  // và mục lục đã được dựng một lần ngay sau khi nạp file).
+  if(window.__sourceIsTruncatedPreview) return;
   clearTimeout(window.__tocDebounce);
   window.__tocDebounce = setTimeout(buildTOC, 500);
 });
@@ -2964,30 +3408,26 @@ function readFile(f){
   currentFileName = f.name;
   const reader = new FileReader();
   reader.onload = ()=>{
-    document.getElementById('sourceText').value = reader.result;
+    sf_setSourceText(reader.result);
     clearChapterRange();
     updateStats();
-    buildTOC();
+    // Với file lớn, dời việc quét mục lục (tốn CPU) sang tick kế tiếp
+    // để trình duyệt kịp vẽ lại UI (tránh cảm giác "đơ" ngay sau khi nạp).
+    setTimeout(buildTOC, 0);
+  };
+  reader.onerror = ()=>{
+    alert('❌ Không đọc được tệp. Tệp có thể quá lớn cho bộ nhớ trình duyệt hoặc bị lỗi định dạng.');
   };
   reader.readAsText(f, 'UTF-8');
 }
 
-/* ---------------- PHẦN 24: ĐỐI CHIẾU BẢN GỐC / BẢN DỊCH ---------------- */
-function openCompare(){
-  if(!chunkState || chunkState.length===0){ alert('Chưa có chunk nào để đối chiếu.'); return; }
-  document.getElementById('compareBox').style.display = 'block';
-  compareIdx = 0;
-  renderCompare();
-}
-function renderCompare(){
-  const c = chunkState[compareIdx];
-  if(!c) return;
-  document.getElementById('compareTitle').textContent = `CHUNK ${compareIdx+1} / ${chunkState.length}`;
-  document.getElementById('compareOrig').textContent = c.orig;
-  document.getElementById('compareTrans').textContent = c.trans || '(chưa dịch)';
-}
-function compareNext(){ if(compareIdx < chunkState.length-1){ compareIdx++; renderCompare(); } }
-function comparePrev(){ if(compareIdx > 0){ compareIdx--; renderCompare(); } }
+/* ---------------- PHẦN 24: ĐỐI CHIẾU BẢN GỐC / BẢN DỊCH ----------------
+   Bảng "Đối chiếu" đã bị xoá khỏi giao diện theo yêu cầu người dùng; giữ
+   lại các hàm dưới dạng no-op để không phát sinh lỗi nếu còn nơi nào gọi tới. */
+function openCompare(){ /* đã xoá bảng đối chiếu */ }
+function renderCompare(){ /* đã xoá bảng đối chiếu */ }
+function compareNext(){ /* đã xoá bảng đối chiếu */ }
+function comparePrev(){ /* đã xoá bảng đối chiếu */ }
 
 /* ---------------- PHẦN 23: TÌM KIẾM TRONG BẢN GỐC / BẢN DỊCH ---------------- */
 function runSearch(){
@@ -3075,38 +3515,75 @@ function downloadOutputByChapter(){
    8) Nút bật/tắt tạm dừng dịch
    ===================================================================== */
 
-/* ---- 1) SMART SEMANTIC SPLITTING (ghi đè splitChunks) ---- */
+/* ---- 1) SMART SEMANTIC SPLITTING theo chỉ mục vị trí (index-based) ----
+   Duyệt qua văn bản MỘT LẦN bằng chỉ mục ký tự (charCodeAt), không dùng
+   RegExp.exec lặp lại trên từng câu. Đảm bảo cắt chunk xong dưới 0.5s
+   kể cả với file 5–10 MB. (ghi đè splitChunks) */
+const SF_SENTENCE_END_CHARS = new Set(['.','!','?','。','！','？']);
+const SF_SENTENCE_TRAIL_CHARS = new Set(['"',"'",'”','’',')',']']);
 function splitChunks(text, size){
   if(!text) return [];
-  // Bước 1: tách theo đoạn văn (ngắt dòng đôi trở lên)
-  const paragraphs = text.split(/\n{2,}/).map(p=>p).filter(p=>p.trim().length>0 || p.length>0);
   const chunks = [];
-  let cur = '';
 
+  // Bước 1: tìm ranh giới đoạn văn (2+ dòng trống liên tiếp) bằng indexOf,
+  // không dùng regex.split trên toàn văn bản.
+  function splitParagraphs(str){
+    const out = [];
+    let start = 0;
+    const n = str.length;
+    let i = 0;
+    while(i < n){
+      if(str.charCodeAt(i) === 10){ // '\n'
+        let j = i;
+        while(j < n && str.charCodeAt(j) === 10) j++;
+        if(j - i >= 2){ // >=2 dấu xuống dòng liên tiếp = ranh giới đoạn
+          out.push(str.slice(start, i));
+          start = j;
+        }
+        i = j;
+      } else {
+        i++;
+      }
+    }
+    out.push(str.slice(start, n));
+    return out.filter(p=>p.length>0);
+  }
+
+  // Bước 2: tách 1 đoạn quá dài thành câu bằng cách quét từng ký tự, tìm
+  // dấu kết câu rồi khoảng trắng theo sau — không dùng RegExp.exec lặp.
+  function splitIntoSentences(p){
+    const parts = [];
+    const n = p.length;
+    let last = 0;
+    let i = 0;
+    while(i < n){
+      const ch = p[i];
+      if(SF_SENTENCE_END_CHARS.has(ch)){
+        let j = i + 1;
+        if(j < n && SF_SENTENCE_TRAIL_CHARS.has(p[j])) j++;
+        if(j < n && /\s/.test(p[j])){
+          j++;
+          parts.push(p.slice(last, j));
+          last = j;
+          i = j;
+          continue;
+        }
+      }
+      i++;
+    }
+    if(last < n) parts.push(p.slice(last));
+    return parts.filter(s=>s.length>0);
+  }
+
+  const paragraphs = splitParagraphs(text);
+  let cur = '';
   function flush(){
     if(cur.trim().length>0) chunks.push(cur.trim());
     cur = '';
   }
 
-  // Tách 1 đoạn quá dài thành các câu (ưu tiên dấu câu Việt/Anh/Trung/Nhật)
-  const SENTENCE_END = /([.!?。！？]["'”’)\]]?\s+)/g;
-  function splitIntoSentences(p){
-    const parts = [];
-    let last = 0;
-    let m;
-    SENTENCE_END.lastIndex = 0;
-    while((m = SENTENCE_END.exec(p)) !== null){
-      const end = m.index + m[0].length;
-      parts.push(p.slice(last, end));
-      last = end;
-    }
-    if(last < p.length) parts.push(p.slice(last));
-    return parts.filter(s=>s.length>0);
-  }
-
-  for(const rawP of paragraphs){
-    const p = rawP;
-    if(p.length===0){ continue; }
+  for(const p of paragraphs){
+    if(p.length===0) continue;
 
     // Đoạn văn vẫn vừa trong chunk hiện tại
     if((cur ? cur.length + 2 : 0) + p.length <= size){
@@ -3114,16 +3591,14 @@ function splitChunks(text, size){
       continue;
     }
 
-    // Đoạn văn không vừa chunk hiện tại → chốt chunk hiện tại trước
-    if(cur.length>0){ flush(); }
+    if(cur.length>0) flush();
 
     if(p.length <= size){
       cur = p;
       continue;
     }
 
-    // Một đoạn văn DUY NHẤT vượt quá size → cắt theo câu, chỉ cắt cứng khi
-    // 1 "câu" vẫn dài hơn size (trường hợp hiếm, ví dụ văn không có dấu câu)
+    // Một đoạn văn DUY NHẤT vượt quá size → cắt theo câu
     const sentences = splitIntoSentences(p);
     for(const s of sentences){
       if((cur ? cur.length + 1 : 0) + s.length <= size){
@@ -3190,10 +3665,20 @@ async function callModelWithRetry(chunkText, keyIndex, idx){
   }
 }
 
-/* ---- 3) CẬP NHẬT outputText THEO THỜI GIAN THỰC (ghi đè markChunkDone / markChunkError) ---- */
+/* ---- 3) CẬP NHẬT outputText THEO THỜI GIAN THỰC (ghi đè markChunkDone / markChunkError) ----
+   Theo yêu cầu: KHÔNG hiển thị bản dịch (dù chỉ một phần) trong lúc đang
+   dịch — ô Kết quả dịch chỉ hiện nội dung đầy đủ SAU KHI toàn bộ tiến
+   trình dịch (hoặc tiếp tục dịch) đã kết thúc. `translationInProgress`
+   được bật/tắt ở lớp bọc ngoài cùng của runEngine (cuối file). */
+let translationInProgress = false;
 function updateLiveOutput(){
   const ta = document.getElementById('outputText');
   if(!ta || !chunkState || chunkState.length===0) return;
+  if(translationInProgress){
+    const doneCount = chunkState.filter(c=>c.status==='done'||c.status==='error').length;
+    ta.value = `⏳ Đang dịch... (${doneCount}/${chunkState.length} chunk đã xử lý)\n\nBản dịch đầy đủ sẽ hiển thị tại đây ngay sau khi toàn bộ quá trình dịch kết thúc.`;
+    return;
+  }
   const text = chunkState.map((c,i)=>{
     if(c.status==='done') return c.trans || '';
     if(c.status==='error') return `\n[LỖI DỊCH CHUNK ${i+1}]\n${c.orig}`;
@@ -3725,6 +4210,7 @@ function setContextMode(mode){
       : '⚡ Hybrid: giữ nguyên số luồng song song đã chọn. Chunk chưa dịch xong sẽ gối ngữ cảnh bằng BẢN GỐC của chunk trước (thay vì để trống); chunk đã dịch xong thì gối bằng BẢN DỊCH — vẫn nhanh mà AI không bị mất mạch nhân vật.';
   }
   updateGeneralSummary();
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
 }
 function contextModeLabel(){
   return contextMode==='waterfall' ? '🔗 Waterfall (tuần tự)' : '⚡ Hybrid (song song)';
@@ -3892,8 +4378,106 @@ async function runEngine(indices){
 
 updateGeneralSummary();
 
+/* =====================================================================
+   TỰ ĐỘNG LƯU & PHỤC HỒI CẤU HÌNH PHIÊN LÀM VIỆC (LocalStorage)
+   Vấn đề: nếu người dùng nhập Base URL, chọn Model, chỉnh RPM/Parallel/
+   Context Mode... nhưng CHƯA bấm "Lưu thành bộ mới" (Profile), lỡ F5 hoặc
+   đóng tab thì mất trắng. Cơ chế này tự lưu mọi thay đổi vào localStorage
+   và tự điền lại khi tải trang, hoàn toàn độc lập với tính năng Profile
+   (các Profile đã lưu vẫn hoạt động bình thường, không bị ảnh hưởng).
+   ===================================================================== */
+const SF_LAST_CONFIG_KEY = 'sf_last_session_config_v1';
+
+function saveLastSessionConfig(){
+  try{
+    const baseUrlEl = document.getElementById('baseUrl');
+    const modelEl = document.getElementById('modelInput');
+    const sourceLangEl = document.getElementById('sourceLang');
+    const parallelEl = document.getElementById('parallel');
+    const chunkSizeEl = document.getElementById('chunkSize');
+    const rpmEl = document.getElementById('rpm');
+    const corsProxyUrlEl = document.getElementById('corsProxyUrl');
+    const maxTokensCapEl = document.getElementById('maxTokensCap');
+    const cfg = {
+      baseUrl: baseUrlEl ? baseUrlEl.value : '',
+      model: modelEl ? modelEl.value : '',
+      sourceLang: sourceLangEl ? sourceLangEl.value : '',
+      parallel: parallelEl ? parallelEl.value : '',
+      chunkSize: chunkSizeEl ? chunkSizeEl.value : '',
+      rpm: rpmEl ? rpmEl.value : '',
+      contextMode: (typeof contextMode!=='undefined') ? contextMode : 'hybrid',
+      corsOn: (typeof corsOn!=='undefined') ? !!corsOn : false,
+      corsProxyUrl: corsProxyUrlEl ? corsProxyUrlEl.value : '',
+      maxTokensCap: maxTokensCapEl ? maxTokensCapEl.value : '0',
+      savedAt: Date.now()
+    };
+    localStorage.setItem(SF_LAST_CONFIG_KEY, JSON.stringify(cfg));
+  }catch(e){ /* localStorage không khả dụng (chế độ ẩn danh, quota đầy...) — bỏ qua, không chặn app */ }
+}
+
+function restoreLastSessionConfig(){
+  let cfg;
+  try{
+    const raw = localStorage.getItem(SF_LAST_CONFIG_KEY);
+    if(!raw) return;
+    cfg = JSON.parse(raw);
+  }catch(e){ return; }
+  if(!cfg || typeof cfg !== 'object') return;
+
+  if(cfg.baseUrl){
+    document.getElementById('baseUrl').value = cfg.baseUrl;
+    const chatPrev = document.getElementById('chatUrlPreview');
+    const modelsPrev = document.getElementById('modelsUrlPreview');
+    if(chatPrev) chatPrev.textContent = chatUrl() || '—';
+    if(modelsPrev) modelsPrev.textContent = modelsUrl() || '—';
+  }
+  if(cfg.model){
+    state.model = cfg.model;
+    document.getElementById('modelInput').value = cfg.model;
+    const pill = document.getElementById('pillModel');
+    if(pill) pill.textContent = cfg.model;
+    document.querySelectorAll('.modelchip').forEach(c=>c.classList.toggle('sel', c.dataset.m===cfg.model));
+  }
+  if(cfg.sourceLang) document.getElementById('sourceLang').value = cfg.sourceLang;
+  if(cfg.parallel) document.getElementById('parallel').value = cfg.parallel;
+  if(cfg.chunkSize) document.getElementById('chunkSize').value = cfg.chunkSize;
+  if(cfg.rpm) document.getElementById('rpm').value = cfg.rpm;
+  if(cfg.maxTokensCap!=null){
+    const el = document.getElementById('maxTokensCap');
+    if(el) el.value = cfg.maxTokensCap;
+  }
+
+  if(cfg.corsOn){
+    corsOn = true;
+    const sw = document.getElementById('corsSwitch');
+    const row = document.getElementById('corsRow');
+    if(sw) sw.classList.add('on');
+    if(row) row.style.display = 'block';
+  }
+  if(cfg.corsProxyUrl) document.getElementById('corsProxyUrl').value = cfg.corsProxyUrl;
+
+  if(cfg.contextMode && typeof setContextMode==='function'){
+    setContextMode(cfg.contextMode); // hàm này tự cập nhật nút active + hint + gọi updateGeneralSummary()
+  }
+
+  updateStats();
+  updateGeneralSummary();
+  refreshStatus();
+}
+
+/* Tự động lưu mỗi khi người dùng thay đổi các trường cấu hình liên quan (oninput/onchange) */
+['baseUrl','modelInput','sourceLang','parallel','chunkSize','rpm','corsProxyUrl','maxTokensCap'].forEach(id=>{
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.addEventListener('input', saveLastSessionConfig);
+  el.addEventListener('change', saveLastSessionConfig);
+});
+/* corsOn (switch) và contextMode (nút bấm) không phát sinh sự kiện input/change chuẩn
+   nên được lưu trực tiếp bên trong toggleCors() và setContextMode() ở phía trên. */
+
 /* ---------------- KHỞI TẠO KHI TẢI TRANG ---------------- */
 setNetworkStatus(navigator.onLine);
+restoreLastSessionConfig();
 checkResumeOnLoad();
 loadFileLibrary();
 renderQueuePanel();
@@ -3901,6 +4485,378 @@ buildTOC();
 setInterval(()=>{
   if(state.keyMeta.some(m=>m.status==='ratelimited')) renderKeys();
 }, 1000);
+</script>
+
+<script>
+/* =====================================================================
+   BẢN VÁ NÂNG CẤP v10 — 4 tính năng thực chiến mới (áp dụng dạng "ghi đè"
+   monkey-patch lên các hàm gốc, giữ nguyên toàn bộ logic v9 đã hoạt động
+   tốt: Smart Splitting, Hybrid/Waterfall Context, Sliding Window, Realtime
+   Output, Modal đọc theo chương, Quét Hán tự, Auto-save config...).
+   ===================================================================== */
+
+/* ---------------------------------------------------------------------
+   TÍNH NĂNG 1: GIỮ TAB HOẠT ĐỘNG NỀN (BACKGROUND KEEP-ALIVE / ANTI-THROTTLING)
+   Phát 1 sóng âm tần số siêu thấp, âm lượng gần như 0 bằng Web Audio API
+   để trình duyệt không bóp băng thông / tạm dừng timer khi tab bị ẩn.
+   --------------------------------------------------------------------- */
+let keepAliveAudio = null;
+function startKeepAlive(){
+  if(keepAliveAudio) return;
+  try{
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if(!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001; // gần như hoàn toàn không nghe thấy
+    osc.frequency.value = 20; // tần số siêu thấp, dưới ngưỡng nghe của người
+    osc.type = 'sine';
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    keepAliveAudio = { ctx, osc, gain };
+  }catch(e){ /* AudioContext có thể bị trình duyệt chặn — không chặn app */ }
+}
+function stopKeepAlive(){
+  if(!keepAliveAudio) return;
+  try{
+    keepAliveAudio.osc.stop();
+    keepAliveAudio.osc.disconnect();
+    keepAliveAudio.gain.disconnect();
+    keepAliveAudio.ctx.close();
+  }catch(e){ /* bỏ qua */ }
+  keepAliveAudio = null;
+}
+
+/* ---------------------------------------------------------------------
+   TÍNH NĂNG 3 (phần chuẩn bị): Beep 2 tone + Notification + đổi tiêu đề tab
+   khi hoàn tất dịch — được gọi từ trong runEngine ở dưới.
+   --------------------------------------------------------------------- */
+const SF_ORIGINAL_TITLE = document.title;
+function playCompletionBeep(){
+  try{
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if(!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    const playTone = (freq, start, dur)=>{
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, now+start);
+      gain.gain.linearRampToValueAtTime(0.16, now+start+0.02);
+      gain.gain.linearRampToValueAtTime(0.0001, now+start+dur);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now+start);
+      osc.stop(now+start+dur+0.03);
+    };
+    playTone(880, 0, 0.16);      // tone 1
+    playTone(1318.5, 0.2, 0.22); // tone 2
+    setTimeout(()=>{ try{ ctx.close(); }catch(e){} }, 900);
+  }catch(e){ /* bỏ qua nếu trình duyệt chặn âm thanh tự phát */ }
+}
+function requestNotificationPermissionIfNeeded(){
+  try{
+    if('Notification' in window && Notification.permission === 'default'){
+      Notification.requestPermission();
+    }
+  }catch(e){ /* bỏ qua */ }
+}
+function showCompletionNotification(fileName, totalChunks){
+  try{
+    if('Notification' in window && Notification.permission === 'granted'){
+      new Notification('StoryForge · Hoàn tất dịch!', {
+        body: `Đã dịch xong ${fileName || 'văn bản'} (${totalChunks||0} chunk) thành công.`
+      });
+    }
+  }catch(e){ /* bỏ qua */ }
+  try{ document.title = '✅ [Xong] StoryForge · Dịch truyện'; }catch(e){}
+}
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && document.title !== SF_ORIGINAL_TITLE){
+    document.title = SF_ORIGINAL_TITLE;
+  }
+});
+
+/* ---- Ghi đè startTranslate: xin quyền Notification ngay khi bấm 🚀 Bắt đầu dịch ---- */
+const __sf_startTranslate_orig = startTranslate;
+startTranslate = async function(){
+  requestNotificationPermissionIfNeeded();
+  return __sf_startTranslate_orig();
+};
+
+/* ---- Ghi đè runEngine: bọc startKeepAlive/stopKeepAlive quanh toàn bộ
+   tiến trình dịch + phát beep/thông báo/đổi tiêu đề khi TOÀN BỘ hàng đợi
+   (hoặc file đơn lẻ) đã dịch xong thật sự (không phải do người dùng bấm Dừng). ---- */
+const __sf_runEngine_orig = runEngine;
+runEngine = async function(indices){
+  startKeepAlive();
+  translationInProgress = true;
+  updateLiveOutput();
+  try{
+    return await __sf_runEngine_orig(indices);
+  } finally {
+    stopKeepAlive();
+    translationInProgress = false;
+    updateLiveOutput(); // hiện bản dịch đầy đủ (hoặc phần đã xong nếu bị dừng) ngay khi kết thúc
+    try{
+      const queueStillHasWork = (typeof translationQueue !== 'undefined') && translationQueue.length > 0;
+      if(!stopFlag && !queueStillHasWork){
+        const fileName = currentFileName || 'văn bản';
+        playCompletionBeep();
+        showCompletionNotification(fileName, currentChunks ? currentChunks.length : 0);
+      }
+    }catch(e){ /* không để lỗi thông báo làm hỏng luồng dịch chính */ }
+  }
+};
+
+/* ---- Ghi đè stopTranslate / togglePause: tắt Keep-Alive khi người dùng
+   chủ động dừng hoặc tạm dừng tiến trình dịch. ---- */
+const __sf_stopTranslate_orig = stopTranslate;
+stopTranslate = function(){
+  stopKeepAlive();
+  return __sf_stopTranslate_orig();
+};
+const __sf_togglePause_orig = togglePause;
+togglePause = function(){
+  const res = __sf_togglePause_orig();
+  if(typeof pauseFlag !== 'undefined'){
+    if(pauseFlag) stopKeepAlive(); else startKeepAlive();
+  }
+  return res;
+};
+
+/* ---------------------------------------------------------------------
+   TÍNH NĂNG 2: CANON PACK — nhập tay / AI tự động trích xuất + nhúng vào
+   prompt dịch khi công tắc state.canonOn bật.
+   --------------------------------------------------------------------- */
+
+/* Phân tích #canonInput thành danh sách {src, dst}. Hỗ trợ cả dấu "=" và ":" */
+function parseCanonEntries(){
+  const el = document.getElementById('canonInput');
+  const raw = el ? el.value : '';
+  const entries = [];
+  raw.split(/\n/).forEach(line=>{
+    line = line.trim();
+    if(!line || line.startsWith('#')) return;
+    let sepMatch = line.match(/=|:/);
+    if(!sepMatch) return;
+    const sepIdx = line.indexOf(sepMatch[0]);
+    const src = line.slice(0, sepIdx).trim();
+    const dst = line.slice(sepIdx+1).trim();
+    if(src && dst) entries.push({src, dst});
+  });
+  return entries;
+}
+
+/* Quét chunkText, trả về khối [THUẬT NGỮ & TÊN NHÂN VẬT BẮT BUỘC] nếu công
+   tắc Canon đang bật và có thuật ngữ nào khớp trong đoạn văn đang dịch. */
+function getMatchedCanon(chunkText){
+  if(!state.canonOn || !chunkText) return '';
+  const entries = parseCanonEntries();
+  if(entries.length===0) return '';
+  const matched = entries.filter(e=> chunkText.indexOf(e.src) !== -1);
+  if(matched.length===0) return '';
+  const lines = matched.map(e=>`- ${e.src} -> ${e.dst}`).join('\n');
+  return `[THUẬT NGỮ & TÊN NHÂN VẬT BẮT BUỘC]:\n${lines}\n\n`;
+}
+
+function clearCanonTable(){
+  if(!confirm('Xóa toàn bộ bảng thuật ngữ Canon Pack hiện tại?')) return;
+  const el = document.getElementById('canonInput');
+  if(el) el.value = '';
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+
+/* AI tự động trích xuất Canon: lấy ~10.000 ký tự đầu truyện, gửi 1 request
+   API độc lập với prompt chuyên dụng, điền kết quả vào #canonInput. */
+async function autoExtractCanon(){
+  if(!state.proxyOn || !document.getElementById('baseUrl').value.trim()){
+    alert('Cần bật và cấu hình Custom Proxy (Base URL) trước khi dùng AI tự trích xuất Canon.'); return;
+  }
+  if(state.keys.length===0){ alert('Thêm ít nhất 1 API key trước.'); return; }
+  if(!state.model){ alert('Nhập hoặc chọn model trước.'); return; }
+  const sourceText = sf_getFullSourceText();
+  if(!sourceText.trim()){ alert('Dán hoặc tải nội dung truyện trước khi trích xuất Canon.'); return; }
+
+  const sample = sourceText.slice(0, 10000);
+  const hint = document.getElementById('canonExtractHint');
+  const btn = document.getElementById('canonExtractBtn');
+  if(hint) hint.textContent = '⏳ Đang phân tích văn bản để trích xuất thuật ngữ...';
+  if(btn) btn.disabled = true;
+
+  const extractPrompt = `Bạn là chuyên gia Hán-Việt và biên tập tiểu thuyết mạng Trung Quốc.
+Đọc kỹ đoạn trích truyện dưới đây và liệt kê TOÀN BỘ:
+- Tên nhân vật (chính, phụ)
+- Địa danh
+- Môn phái / tổ chức / thế lực
+- Cảnh giới tu luyện / hệ thống cấp bậc sức mạnh
+- Các danh từ riêng, pháp bảo, công pháp quan trọng xuất hiện lặp lại
+
+Với MỖI mục, đưa ra bản dịch Hán-Việt CHUẨN và NHẤT QUÁN (hoặc tên tiếng Việt nên dùng xuyên suốt truyện).
+
+YÊU CẦU ĐỊNH DẠNG ĐẦU RA (BẮT BUỘC):
+- CHỈ trả về danh sách, KHÔNG lời dẫn, KHÔNG giải thích, KHÔNG đánh số thứ tự, KHÔNG markdown.
+- MỖI DÒNG một mục theo đúng cú pháp: TừGốc = TênDịch
+
+ĐOẠN TRÍCH TRUYỆN (khoảng 2-3 chương đầu):
+${sample}`;
+
+  try{
+    const startIdx = (typeof pickAvailableKey==='function') ? pickAvailableKey(0) : 0;
+    const keyIndex = (startIdx!=null && startIdx>=0) ? startIdx : 0;
+    const key = state.keys[keyIndex % state.keys.length];
+    const res = await fetch(wrapUrl(chatUrl()), {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key },
+      body: JSON.stringify({
+        model: state.model,
+        messages: [{ role:'user', content: extractPrompt }],
+        temperature: 0.2,
+        max_tokens: 2048,
+        max_completion_tokens: 2048
+      })
+    });
+    if(!res.ok){
+      const t = await res.text().catch(()=> '');
+      throw new Error('HTTP ' + res.status + ' ' + t.slice(0,200));
+    }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
+    if(!content || !content.trim()) throw new Error('Không nhận được kết quả từ model.');
+
+    const el = document.getElementById('canonInput');
+    if(el){
+      const existing = el.value.trim();
+      el.value = existing ? (existing + '\n' + content.trim()) : content.trim();
+    }
+    if(hint) hint.textContent = `✅ Đã trích xuất và thêm vào bảng Canon lúc ${new Date().toLocaleTimeString('vi-VN')}.`;
+    if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+  }catch(e){
+    if(hint) hint.textContent = '❌ Lỗi khi trích xuất: ' + e.message;
+    alert('Lỗi khi AI tự trích xuất Canon: ' + e.message);
+  }finally{
+    if(btn) btn.disabled = false;
+  }
+}
+
+/* ---- Nhúng Canon vào prompt: ghi đè callModel để chèn khối canon (nếu có
+   thuật ngữ khớp) vào ĐẦU nội dung gửi cho model, trước cả ngữ cảnh Sliding
+   Window. chunkState[idx].orig/.trans (lưu trữ/hiển thị/autosave) không bị
+   ảnh hưởng vì chỉ sửa payload gửi đi, không sửa dữ liệu lưu trữ. ---- */
+const __sf_callModel_orig = callModel;
+callModel = async function(chunkText, keyIndex){
+  const canonPrefix = (typeof getMatchedCanon==='function') ? getMatchedCanon(chunkText) : '';
+  const payload = canonPrefix ? (canonPrefix + chunkText) : chunkText;
+  return __sf_callModel_orig(payload, keyIndex);
+};
+
+/* ---- Lưu #canonInput + canonOn vào localStorage chung với cấu hình phiên ---- */
+const __sf_saveLastSessionConfig_orig = saveLastSessionConfig;
+saveLastSessionConfig = function(){
+  __sf_saveLastSessionConfig_orig();
+  try{
+    const raw = localStorage.getItem(SF_LAST_CONFIG_KEY);
+    const cfg = raw ? (JSON.parse(raw) || {}) : {};
+    const canonEl = document.getElementById('canonInput');
+    cfg.canonInput = canonEl ? canonEl.value : '';
+    cfg.canonOn = !!state.canonOn;
+    localStorage.setItem(SF_LAST_CONFIG_KEY, JSON.stringify(cfg));
+  }catch(e){ /* localStorage không khả dụng — bỏ qua */ }
+};
+/* Khôi phục #canonInput + canonOn ngay khi tải trang (restoreLastSessionConfig
+   gốc đã chạy 1 lần trước khi patch này được nạp, nên khôi phục trực tiếp ở đây). */
+(function sf_restoreCanonFromSession(){
+  try{
+    const raw = localStorage.getItem(SF_LAST_CONFIG_KEY);
+    if(!raw) return;
+    const cfg = JSON.parse(raw);
+    if(!cfg || typeof cfg !== 'object') return;
+    if(cfg.canonInput){
+      const el = document.getElementById('canonInput');
+      if(el) el.value = cfg.canonInput;
+    }
+    if(cfg.canonOn && !state.canonOn && typeof toggleCanon==='function'){
+      toggleCanon();
+    }
+  }catch(e){ /* bỏ qua */ }
+})();
+/* Ghi đè restoreLastSessionConfig để các lần gọi sau này (nếu có) cũng khôi phục Canon */
+const __sf_restoreLastSessionConfig_orig = restoreLastSessionConfig;
+restoreLastSessionConfig = function(){
+  __sf_restoreLastSessionConfig_orig();
+  try{
+    const raw = localStorage.getItem(SF_LAST_CONFIG_KEY);
+    if(!raw) return;
+    const cfg = JSON.parse(raw);
+    if(!cfg || typeof cfg !== 'object') return;
+    if(cfg.canonInput){
+      const el = document.getElementById('canonInput');
+      if(el) el.value = cfg.canonInput;
+    }
+    if(cfg.canonOn && !state.canonOn && typeof toggleCanon==='function'){
+      toggleCanon();
+    }
+  }catch(e){ /* bỏ qua */ }
+};
+/* Lưu ngay khi người dùng gõ/sửa bảng Canon */
+(function sf_wireCanonAutosave(){
+  const el = document.getElementById('canonInput');
+  if(!el) return;
+  el.addEventListener('input', ()=>{ if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); });
+  el.addEventListener('change', ()=>{ if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); });
+})();
+
+/* ---- Đồng bộ Canon Pack vào Connection Profile khi người dùng lưu/tải profile ---- */
+const __sf_currentProfileData_orig = currentProfileData;
+currentProfileData = function(name){
+  const data = __sf_currentProfileData_orig(name);
+  const canonEl = document.getElementById('canonInput');
+  data.canonInput = canonEl ? canonEl.value : '';
+  data.canonOn = !!state.canonOn;
+  return data;
+};
+const __sf_loadProfile_orig = loadProfile;
+loadProfile = function(encName){
+  __sf_loadProfile_orig(encName);
+  try{
+    const name = decodeURIComponent(encName);
+    const p = (typeof loadProfiles==='function') ? loadProfiles().find(x=>x.name===name) : null;
+    if(p){
+      const el = document.getElementById('canonInput');
+      if(el) el.value = p.canonInput || '';
+      if(typeof p.canonOn === 'boolean' && p.canonOn !== state.canonOn && typeof toggleCanon==='function'){
+        toggleCanon();
+      }
+    }
+  }catch(e){ /* bỏ qua */ }
+};
+
+/* ---------------------------------------------------------------------
+   TÍNH NĂNG 4: DỌN DẸP TOÀN BỘ THƯ VIỆN FILE (CLEAR INDEXEDDB LIBRARY)
+   --------------------------------------------------------------------- */
+async function clearEntireFileLibrary(){
+  if(running){ alert('Đang có tiến trình dịch đang chạy — vui lòng Dừng trước khi dọn dẹp thư viện.'); return; }
+  if(!confirm('Hành động này sẽ xóa toàn bộ các file đã lưu trong bộ nhớ máy để giải phóng dung lượng. Bạn có chắc chắn không?')) return;
+  try{
+    const db = await idbOpen();
+    await new Promise((resolve, reject)=>{
+      const tx = db.transaction(IDB_FILES_STORE, 'readwrite');
+      tx.objectStore(IDB_FILES_STORE).clear();
+      tx.oncomplete = ()=> resolve(true);
+      tx.onerror = ()=> reject(tx.error);
+    });
+  }catch(e){ /* IndexedDB lỗi — vẫn tiếp tục reset dữ liệu trong bộ nhớ tạm */ }
+  fileLibrary = [];
+  translationQueue = [];
+  window.__activeFileId = null;
+  if(typeof renderHistory==='function') renderHistory();
+  if(typeof renderQueuePanel==='function') renderQueuePanel();
+  if(typeof logLine==='function') logLine('info', null, null, '🗑️ Đã dọn dẹp toàn bộ thư viện file trong bộ nhớ máy.');
+}
 </script>
 </body>
 </html>
