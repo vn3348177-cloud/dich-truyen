@@ -296,7 +296,7 @@
   /* Chunk viewer song song */
   .viewer-toolbar{display:flex; gap:8px; flex-wrap:wrap; margin-bottom:12px;}
   .viewer-empty{color:var(--text-dim); font-size:12.5px; padding:10px 2px;}
-  .viewer-list{max-height:560px; overflow-y:auto; display:flex; flex-direction:column; gap:10px;}
+  .viewer-list{max-height:70vh; overflow-y:auto; display:flex; flex-direction:column; gap:10px;}
   .chunkitem{background:var(--input-bg); border:1px solid var(--panel-border); border-radius:12px; padding:12px 14px;}
   .chunkitem-head{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:9px;}
   .chunkidx{font-weight:700; font-size:12.5px;}
@@ -780,22 +780,6 @@
       </div>
     </div>
 
-    <!-- MỤC LỤC CHƯƠNG -->
-    <div class="card" id="tocCard" style="display:none;">
-      <h2>📚 Mục lục chương</h2>
-      <p class="sub" id="tocCount">0 chương được phát hiện</p>
-      <div class="histpanel show" style="max-height:200px; overflow-y:auto;" id="tocList"></div>
-      <div class="row" style="margin-top:12px;">
-        <div class="col"><label>Từ chương</label><input type="number" id="tocFrom" min="1" value="1"></div>
-        <div class="col"><label>Đến chương</label><input type="number" id="tocTo" min="1" value="1"></div>
-      </div>
-      <div class="btn-row">
-        <button class="btn primary small" onclick="applyChapterRange()">Dịch phạm vi đã chọn</button>
-        <button class="btn small" onclick="clearChapterRange()">Dịch toàn bộ file</button>
-      </div>
-      <div class="hint" id="tocRangeInfo" style="margin-top:8px;">Chưa chọn phạm vi — sẽ dịch toàn bộ nội dung.</div>
-    </div>
-
     <!-- SOURCE CONTENT -->
     <div class="card">
       <h2>👁️ Nội dung gốc</h2>
@@ -880,7 +864,7 @@
     <!-- CHI TIẾT CHUNKS (gộp tiến độ + song song gốc/dịch) -->
     <div class="card">
       <h2>🧩 Chi tiết Chunks</h2>
-      <p class="sub">Thanh tiến độ theo từng chunk — bấm vào một chunk để xem bản gốc &amp; bản dịch song song.</p>
+      <p class="sub">Toàn bộ chunk nằm trong một khung — lướt xuống để xem hết. Bấm vào một chunk để xem bản gốc &amp; bản dịch song song.</p>
       <div class="viewer-toolbar">
         <button class="btn small active" id="modeBtn-parallel" onclick="setViewerMode('parallel')">☷ Song song</button>
         <button class="btn small" id="modeBtn-orig" onclick="setViewerMode('orig')">📄 Chỉ bản gốc</button>
@@ -888,11 +872,6 @@
       </div>
       <div class="cd-toolbar">
         <span class="cd-pageinfo" id="cdPageInfo">Chưa có chunk nào.</span>
-        <button class="btn small" id="chunkListToggleBtn" onclick="toggleChunkListVisible()" style="display:none;">👁 Hiện lại danh sách</button>
-        <div class="cd-pagenav">
-          <button class="btn small" onclick="chunkPrevPage()">◀</button>
-          <button class="btn small" onclick="chunkNextPage()">▶</button>
-        </div>
       </div>
       <div class="viewer-list mode-parallel" id="chunkViewer">
         <div class="viewer-empty">Chưa có chunk nào. Bắt đầu dịch để xem theo dõi từng chunk tại đây.</div>
@@ -2003,8 +1982,6 @@ function toggleProgDetail(){
 
 /* ---------------- CHUNK PARALLEL VIEWER ---------------- */
 let viewerMode = 'parallel';
-let chunkPage = 0;
-const CHUNK_PAGE_SIZE = 100;
 let chunkExpanded = new Set();
 function setViewerMode(mode){
   viewerMode = mode;
@@ -2053,8 +2030,16 @@ function cdRowMarkup(c, i){
       </div>
     </div>`;
 }
+function fillChunkBody(i){
+  const c = chunkState[i];
+  if(!c) return;
+  const o = document.getElementById('chunk-orig-'+i);
+  if(o) o.textContent = c.orig;
+  const t = document.getElementById('chunk-trans-'+i);
+  if(t) t.textContent = c.status==='waiting' ? 'Chưa dịch' : (c.status==='running'||c.status==='retrying' ? `Đang xử lý... (C${c.key!=null?c.key+1:'?'})` : (c.trans||''));
+}
 function toggleChunkExpand(i){
-  if(chunkExpanded.has(i)) chunkExpanded.delete(i); else chunkExpanded.add(i);
+  if(chunkExpanded.has(i)) chunkExpanded.delete(i); else { chunkExpanded.add(i); fillChunkBody(i); }
   const row = document.getElementById('chunk-'+i);
   if(!row) return;
   row.classList.toggle('expanded', chunkExpanded.has(i));
@@ -2066,12 +2051,12 @@ function updateCdPageInfo(){
   if(!el) return;
   const total = chunkState.length;
   if(total===0){ el.textContent = 'Chưa có chunk nào.'; return; }
-  const start = chunkPage*CHUNK_PAGE_SIZE;
-  const end = Math.min(start+CHUNK_PAGE_SIZE, total);
   const cc = computeChunkCounts();
-  el.textContent = `Hiển thị chunk ${start+1}-${end} / ${total} · ✅ ${cc.done}  🟡 ${cc.running}  🔴 ${cc.error}  ⚪ ${cc.waiting}`;
+  el.textContent = `${total} chunk · ✅ ${cc.done}  🟡 ${cc.running}  🔴 ${cc.error}  ⚪ ${cc.waiting}`;
 }
 function renderChunkPage(){
+  // Không còn phân trang: hiển thị TẤT CẢ chunk trong 1 khung cuộn.
+  // Nội dung bản gốc/bản dịch chỉ được đổ vào DOM khi chunk được mở rộng (đỡ nặng khi có hàng nghìn chunk).
   const el = document.getElementById('chunkViewer');
   el.className = 'viewer-list mode-' + viewerMode;
   const total = chunkState.length;
@@ -2080,61 +2065,16 @@ function renderChunkPage(){
     updateCdPageInfo();
     return;
   }
-  const maxPage = Math.max(0, Math.ceil(total/CHUNK_PAGE_SIZE)-1);
-  if(chunkPage>maxPage) chunkPage = maxPage;
-  if(chunkPage<0) chunkPage = 0;
-  const start = chunkPage*CHUNK_PAGE_SIZE;
-  const end = Math.min(start+CHUNK_PAGE_SIZE, total);
-  let html = '';
-  for(let i=start;i<end;i++) html += cdRowMarkup(chunkState[i], i);
-  el.innerHTML = html;
-  for(let i=start;i<end;i++){
-    const c = chunkState[i];
-    const o = document.getElementById('chunk-orig-'+i);
-    if(o) o.textContent = c.orig;
-    const t = document.getElementById('chunk-trans-'+i);
-    if(t) t.textContent = c.status==='waiting' ? 'Chưa dịch' : (c.status==='running'||c.status==='retrying' ? `Đang xử lý... (C${c.key!=null?c.key+1:'?'})` : (c.trans||''));
-  }
+  const parts = new Array(total);
+  for(let i=0;i<total;i++) parts[i] = cdRowMarkup(chunkState[i], i);
+  el.innerHTML = parts.join('');
+  chunkExpanded.forEach(i=>{ if(i<total) fillChunkBody(i); });
   updateCdPageInfo();
 }
-function chunkPrevPage(){ chunkPage--; chunkListCollapsed=false; renderChunkPage(); }
-function chunkNextPage(){ chunkPage++; chunkListCollapsed=false; renderChunkPage(); }
 function buildChunkViewer(chunks){
   chunkState = chunks.map(c=>({status:'waiting', orig:c, trans:'', key:null, batchIndex:null, retryCount:0}));
-  chunkPage = 0;
   chunkExpanded = new Set();
-  chunkListCollapsed = false;
   renderChunkPage();
-}
-
-/* ---- Tự động ẩn "Chi tiết Chunks" khi 100 chunk của trang hiện tại đã
-   dịch xong (done/error), theo yêu cầu: chỉ cần hiện chunk đang/sẽ dịch,
-   xong rồi thì ẩn đi để đỡ rối mắt & đỡ tốn hiệu năng render. ---- */
-let chunkListCollapsed = false;
-function toggleChunkListVisible(){
-  chunkListCollapsed = !chunkListCollapsed;
-  applyChunkListCollapsedState();
-}
-function applyChunkListCollapsedState(){
-  const el = document.getElementById('chunkViewer');
-  const btn = document.getElementById('chunkListToggleBtn');
-  if(el) el.style.display = chunkListCollapsed ? 'none' : '';
-  if(btn) btn.style.display = chunkListCollapsed ? 'inline-block' : 'none';
-}
-function checkAutoCollapseChunkPage(){
-  if(!chunkState || chunkState.length===0) return;
-  const start = chunkPage*CHUNK_PAGE_SIZE;
-  const end = Math.min(start+CHUNK_PAGE_SIZE, chunkState.length);
-  if(end<=start) return;
-  let allDone = true;
-  for(let i=start;i<end;i++){
-    const st = chunkState[i].status;
-    if(st!=='done' && st!=='error'){ allDone = false; break; }
-  }
-  if(allDone !== chunkListCollapsed){
-    chunkListCollapsed = allDone;
-    applyChunkListCollapsedState();
-  }
 }
 
 async function callModel(chunkText, keyIndex){
@@ -2728,7 +2668,6 @@ function refreshChunkRow(idx){
     else { keyEl.textContent=''; keyEl.style.color=''; }
   }
   updateCdPageInfo();
-  checkAutoCollapseChunkPage();
 }
 function markChunkRunning(idx, keyIndex){
   const c = chunkState[idx];
@@ -3061,7 +3000,6 @@ function buildChunkViewerFromSaved(savedChunks){
     status: c.status==='done' ? 'done' : (c.status==='error' ? 'error' : 'waiting'),
     orig: c.orig, trans: c.trans || '', key: null, batchIndex:null, retryCount:0
   }));
-  chunkPage = 0;
   chunkExpanded = new Set();
   renderChunkPage();
 }
@@ -3337,53 +3275,13 @@ function detectChapters(text){
 }
 function buildTOC(){
   const text = sf_getFullSourceText();
-  const card = document.getElementById('tocCard');
-  if(!text || !text.trim()){
-    card.style.display = 'none';
-    window.__chapterList = [];
-    return;
-  }
+  if(!text || !text.trim()){ window.__chapterList = []; return; }
   const chapters = detectChapters(text);
-  if(chapters.length < 2){
-    card.style.display = 'none';
-    window.__chapterList = [];
-    return;
-  }
-  window.__chapterList = chapters;
-  card.style.display = 'block';
-  const scanNote = (text.split(/\n/).length > SF_MAX_SCAN_LINES*2)
-    ? ` (chỉ quét ${SF_MAX_SCAN_LINES.toLocaleString('vi-VN')} dòng đầu + ${SF_MAX_SCAN_LINES.toLocaleString('vi-VN')} dòng cuối để chống đơ máy với file lớn)`
-    : '';
-  document.getElementById('tocCount').textContent = chapters.length + ' chương được phát hiện' + scanNote;
-  const shown = chapters.slice(0, 60);
-  document.getElementById('tocList').innerHTML = shown.map((c,i)=>
-    `<div class="histrow"><span>${i+1}. ${c.line.slice(0,70)}</span></div>`
-  ).join('') + (chapters.length>60 ? `<div class="hint" style="padding:6px 0;">... và ${chapters.length-60} chương khác</div>` : '');
-  document.getElementById('tocFrom').max = chapters.length;
-  document.getElementById('tocTo').max = chapters.length;
-  document.getElementById('tocFrom').value = 1;
-  document.getElementById('tocTo').value = chapters.length;
-}
-function applyChapterRange(){
-  const chapters = window.__chapterList || [];
-  if(chapters.length===0) return;
-  const from = Math.max(1, parseInt(document.getElementById('tocFrom').value)||1);
-  const to = Math.min(chapters.length, parseInt(document.getElementById('tocTo').value)||chapters.length);
-  if(from>to){ alert('Từ chương phải nhỏ hơn hoặc bằng đến chương.'); return; }
-  const text = sf_getFullSourceText();
-  const startOffset = chapters[from-1].charOffset;
-  const endOffset = (to < chapters.length) ? chapters[to].charOffset : text.length;
-  const slice = text.slice(startOffset, endOffset);
-  window.__chapterRangeActive = true;
-  window.__chapterRangeText = slice;
-  document.getElementById('tocRangeInfo').textContent =
-    `Đã chọn: Chương ${from} → ${to} (${slice.length.toLocaleString('vi-VN')} ký tự). Bấm "🚀 Bắt đầu dịch" ở khu vực bên dưới để dịch đúng phạm vi này.`;
+  window.__chapterList = chapters.length < 2 ? [] : chapters;
 }
 function clearChapterRange(){
   window.__chapterRangeActive = false;
   window.__chapterRangeText = null;
-  const el = document.getElementById('tocRangeInfo');
-  if(el) el.textContent = 'Chưa chọn phạm vi — sẽ dịch toàn bộ nội dung.';
 }
 /* Dán trực tiếp văn bản khổng lồ vào ô cũng có thể gây treo trình duyệt
    (browser tự gán toàn bộ nội dung dán vào DOM). Chặn hành vi dán mặc định
@@ -3480,10 +3378,6 @@ function searchPrev(){
 /* ---------------- PHẦN 26: DOWNLOAD (ghi đè downloadOutput + thêm theo phần) ---------------- */
 function buildOutputFileName(){
   let base = (currentFileName || 'ban-dich').replace(/\.[^.]+$/,'');
-  if(window.__chapterRangeActive && window.__chapterList && window.__chapterList.length){
-    const fromEl = document.getElementById('tocFrom'), toEl = document.getElementById('tocTo');
-    if(fromEl && toEl && fromEl.value && toEl.value) base += `_Ch${fromEl.value}-${toEl.value}`;
-  }
   return base + '_DaDich.txt';
 }
 function downloadOutput(){
