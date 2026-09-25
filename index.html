@@ -1893,25 +1893,63 @@ function updateGeneralSummary(){
 });
 
 function splitChunks(text, size){
-  const paras = text.split(/\n{1,}/);
+  if(!text) return [];
+  size = Math.max(1, parseInt(size) || 1);
+  const n = text.length;
   const chunks = [];
-  let cur = '';
-  for(const p of paras){
-    if((cur + '\n' + p).length > size && cur.length>0){
-      chunks.push(cur.trim());
-      cur = p;
-    } else {
-      cur = cur ? cur + '\n' + p : p;
+  const minBreak = size * 0.5;
+
+  // khoảng trắng / xuống dòng / BOM / khoảng trắng CJK
+  function isWs(c){
+    return c <= 32 || c === 0xA0 || c === 0x3000 || c === 0xFEFF || c === 0x2028 || c === 0x2029;
+  }
+  // . ! ? 。 ！ ？ " ' ” ’ ]   (KHÔNG cần khoảng trắng phía sau)
+  function isPunct(c){
+    return c === 46 || c === 33 || c === 63 ||       // . ! ?
+           c === 0x3002 || c === 0xFF01 || c === 0xFF1F || // 。 ！ ？
+           c === 34 || c === 39 ||                   // " '
+           c === 0x201D || c === 0x2019 || c === 93; // ” ’ ]
+  }
+
+  let i = 0;
+  while(i < n && isWs(text.charCodeAt(i))) i++;
+
+  while(i < n){
+    // Phần còn lại vừa 1 chunk -> chốt luôn
+    if(i + size >= n){
+      const tail = text.slice(i).trim();
+      if(tail.length > 0) chunks.push(tail);
+      break;
     }
-    if(cur.length > size){
-      while(cur.length > size){
-        chunks.push(cur.slice(0,size));
-        cur = cur.slice(size);
+
+    const chunk = text.slice(i, i + size);
+    let breakIdx = -1;
+
+    // Ưu tiên 1: \n\n gần cuối nhất
+    let idx = chunk.lastIndexOf('\n\n');
+    if(idx > minBreak){
+      breakIdx = idx;
+    } else {
+      // Ưu tiên 2: \n
+      idx = chunk.lastIndexOf('\n');
+      if(idx > minBreak){
+        breakIdx = idx;
+      } else {
+        // Ưu tiên 3: dấu câu, quét ngược từ cuối chunk
+        for(let k = chunk.length - 1; k > minBreak; k--){
+          if(isPunct(chunk.charCodeAt(k))){ breakIdx = k + 1; break; }
+        }
       }
     }
+
+    const cut = (breakIdx > 0) ? breakIdx : size;   // không tìm được điểm ngắt tốt -> cắt cứng
+    const piece = (cut === chunk.length ? chunk : chunk.slice(0, cut)).trim();
+    if(piece.length > 0) chunks.push(piece);
+
+    i += cut;
+    while(i < n && isWs(text.charCodeAt(i))) i++;   // bỏ khoảng trắng / xuống dòng thừa
   }
-  if(cur.trim()) chunks.push(cur.trim());
-  return chunks.filter(c=>c.length>0);
+  return chunks;
 }
 
 function updateStats(){
@@ -3071,89 +3109,6 @@ async function processChunkInBatch(idx, preferredKeyPos){
   updateProgress(counts.done, currentChunks.length);
   setQueue(currentChunks.length-counts.done, currentChunks.length);
 }
-async function runEngine(indices){
-  running = true; stopFlag = false;
-  if(!translateStartTime) translateStartTime = Date.now();
-  document.getElementById('startBtn').disabled = true;
-  document.getElementById('stopBtn').style.display = 'inline-block';
-  const pauseBtnEl = document.getElementById('pauseBtn');
-  if(pauseBtnEl){ pauseBtnEl.style.display = 'inline-block'; pauseBtnEl.textContent = pauseFlag ? '▶ Tiếp tục' : '⏸ Tạm dừng'; }
-  document.getElementById('progwrap').classList.add('show');
-  showAllKeysWarning(false);
-  document.getElementById('retryFailedBox').style.display = 'none';
-  updateProgress(computeChunkCounts().done, currentChunks.length);
-  setQueue(indices.length, currentChunks.length);
-  renderQueuePanel();
-
-  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
-  const batchWrapEl = document.getElementById('batchWrap');
-  if(batchWrapEl) batchWrapEl.style.display = 'none';
-  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
-
-  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
-  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
-  // cả cụm (batch) như Promise.all theo batch trước đây.
-  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
-  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
-  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
-  const nKeys = Math.max(1, state.keys.length);
-
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
-
-  let globalTaskIndex = 0;
-
-  async function worker(workerId){
-    while(globalTaskIndex < indices.length){
-      if(stopFlag) return;
-      await waitWhilePaused();
-      if(stopFlag) return;
-      const chunkIdx = indices[globalTaskIndex++];
-      await processChunkInBatch(chunkIdx, workerId % nKeys);
-    }
-  }
-
-  const workers = [];
-  for(let w = 0; w < nWorkers; w++){
-    workers.push(worker(w));
-  }
-  await Promise.all(workers);
-
-  running = false;
-  document.getElementById('startBtn').disabled = false;
-  document.getElementById('stopBtn').style.display = 'none';
-  if(pauseBtnEl) pauseBtnEl.style.display = 'none';
-  showAllKeysWarning(false);
-  setQueue(0, currentChunks.length);
-  renderQueuePanel();
-
-  const finalText = currentResults.map((r,i)=>{
-    if(r!=null) return r;
-    if(chunkState[i] && chunkState[i].status==='error') return `\n[LỖI DỊCH CHUNK ${i+1}]\n${currentChunks[i]}`;
-    return '';
-  }).join('\n\n');
-  document.getElementById('outputText').value = finalText;
-
-  const counts = computeChunkCounts();
-  const durationSec = translateStartTime ? Math.round((Date.now()-translateStartTime)/1000) : 0;
-  const statusLabel = stopFlag ? 'Đã dừng' : (counts.error>0 ? `Hoàn tất (${counts.error} lỗi)` : 'Hoàn tất');
-  historyArr.push({
-    time: new Date().toLocaleTimeString('vi-VN'),
-    chunks: currentChunks.length,
-    chars: currentChunks.reduce((a,c)=>a+c.length,0),
-    status: statusLabel,
-    duration: formatDuration(durationSec),
-    keys: state.keys.length
-  });
-  renderHistory();
-
-  if(stopFlag){
-    logLine('warn', null, null, '⏹ Đã dừng theo yêu cầu. Tiến độ đã được lưu tự động — có thể Tiếp tục sau khi tải lại trang.');
-  }else{
-    logLine('ok', null, null, counts.error>0 ? `Hoàn tất với ${counts.error} chunk lỗi.` : '🎉 Hoàn tất!');
-  }
-  saveTranslationProgress(true);
-  renderRetryFailedBox();
-}
 
 function renderRetryFailedBox(){
   const box = document.getElementById('retryFailedBox');
@@ -3413,113 +3368,6 @@ function downloadOutputByChapter(){
    8) Nút bật/tắt tạm dừng dịch
    ===================================================================== */
 
-/* ---- 1) SMART SEMANTIC SPLITTING theo chỉ mục vị trí (index-based) ----
-   Duyệt qua văn bản MỘT LẦN bằng chỉ mục ký tự (charCodeAt), không dùng
-   RegExp.exec lặp lại trên từng câu. Đảm bảo cắt chunk xong dưới 0.5s
-   kể cả với file 5–10 MB. (ghi đè splitChunks) */
-const SF_SENTENCE_END_CHARS = new Set(['.','!','?','。','！','？']);
-const SF_SENTENCE_TRAIL_CHARS = new Set(['"',"'",'”','’',')',']']);
-function splitChunks(text, size){
-  if(!text) return [];
-  const chunks = [];
-
-  // Bước 1: tìm ranh giới đoạn văn (2+ dòng trống liên tiếp) bằng indexOf,
-  // không dùng regex.split trên toàn văn bản.
-  function splitParagraphs(str){
-    const out = [];
-    let start = 0;
-    const n = str.length;
-    let i = 0;
-    while(i < n){
-      if(str.charCodeAt(i) === 10){ // '\n'
-        let j = i;
-        while(j < n && str.charCodeAt(j) === 10) j++;
-        if(j - i >= 2){ // >=2 dấu xuống dòng liên tiếp = ranh giới đoạn
-          out.push(str.slice(start, i));
-          start = j;
-        }
-        i = j;
-      } else {
-        i++;
-      }
-    }
-    out.push(str.slice(start, n));
-    return out.filter(p=>p.length>0);
-  }
-
-  // Bước 2: tách 1 đoạn quá dài thành câu bằng cách quét từng ký tự, tìm
-  // dấu kết câu rồi khoảng trắng theo sau — không dùng RegExp.exec lặp.
-  function splitIntoSentences(p){
-    const parts = [];
-    const n = p.length;
-    let last = 0;
-    let i = 0;
-    while(i < n){
-      const ch = p[i];
-      if(SF_SENTENCE_END_CHARS.has(ch)){
-        let j = i + 1;
-        if(j < n && SF_SENTENCE_TRAIL_CHARS.has(p[j])) j++;
-        if(j < n && /\s/.test(p[j])){
-          j++;
-          parts.push(p.slice(last, j));
-          last = j;
-          i = j;
-          continue;
-        }
-      }
-      i++;
-    }
-    if(last < n) parts.push(p.slice(last));
-    return parts.filter(s=>s.length>0);
-  }
-
-  const paragraphs = splitParagraphs(text);
-  let cur = '';
-  function flush(){
-    if(cur.trim().length>0) chunks.push(cur.trim());
-    cur = '';
-  }
-
-  for(const p of paragraphs){
-    if(p.length===0) continue;
-
-    // Đoạn văn vẫn vừa trong chunk hiện tại
-    if((cur ? cur.length + 2 : 0) + p.length <= size){
-      cur = cur ? cur + '\n\n' + p : p;
-      continue;
-    }
-
-    if(cur.length>0) flush();
-
-    if(p.length <= size){
-      cur = p;
-      continue;
-    }
-
-    // Một đoạn văn DUY NHẤT vượt quá size → cắt theo câu
-    const sentences = splitIntoSentences(p);
-    for(const s of sentences){
-      if((cur ? cur.length + 1 : 0) + s.length <= size){
-        cur = cur ? cur + ' ' + s : s;
-      } else {
-        if(cur.length>0) flush();
-        if(s.length <= size){
-          cur = s;
-        } else {
-          // câu đơn lẻ vẫn dài hơn size → buộc phải cắt cứng theo ký tự
-          let rest = s;
-          while(rest.length > size){
-            chunks.push(rest.slice(0, size));
-            rest = rest.slice(size);
-          }
-          cur = rest;
-        }
-      }
-    }
-  }
-  flush();
-  return chunks.filter(c=>c.length>0);
-}
 
 /* ---- 2) SLIDING WINDOW CONTEXT (ghi đè callModelWithRetry) ---- */
 function buildContextPrefix(idx){
@@ -3658,7 +3506,11 @@ function idbOpen(){
       if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
       if(!db.objectStoreNames.contains(IDB_FILES_STORE)) db.createObjectStore(IDB_FILES_STORE);
     };
-    req.onsuccess = ()=> resolve(req.result);
+    req.onsuccess = ()=> {
+      const db = req.result;
+      db.onversionchange = ()=> db.close();
+      resolve(db);
+    };
     req.onerror = ()=> reject(req.error);
   });
 }
@@ -3936,90 +3788,6 @@ function renderHistory(){
   body.innerHTML = html;
 }
 
-/* ---- Ghi đè runEngine: thêm hiển thị nút Tạm dừng + tôn trọng pauseFlag giữa các batch ---- */
-async function runEngine(indices){
-  running = true; stopFlag = false;
-  if(!translateStartTime) translateStartTime = Date.now();
-  document.getElementById('startBtn').disabled = true;
-  document.getElementById('stopBtn').style.display = 'inline-block';
-  const pauseBtnEl = document.getElementById('pauseBtn');
-  if(pauseBtnEl){ pauseBtnEl.style.display = 'inline-block'; pauseBtnEl.textContent = pauseFlag ? '▶ Tiếp tục' : '⏸ Tạm dừng'; }
-  document.getElementById('progwrap').classList.add('show');
-  showAllKeysWarning(false);
-  document.getElementById('retryFailedBox').style.display = 'none';
-  updateProgress(computeChunkCounts().done, currentChunks.length);
-  setQueue(indices.length, currentChunks.length);
-  renderQueuePanel();
-
-  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
-  const batchWrapEl = document.getElementById('batchWrap');
-  if(batchWrapEl) batchWrapEl.style.display = 'none';
-  totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
-
-  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
-  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
-  // cả cụm (batch) như Promise.all theo batch trước đây.
-  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
-  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
-  const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
-  const nKeys = Math.max(1, state.keys.length);
-
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
-
-  let globalTaskIndex = 0;
-
-  async function worker(workerId){
-    while(globalTaskIndex < indices.length){
-      if(stopFlag) return;
-      await waitWhilePaused();
-      if(stopFlag) return;
-      const chunkIdx = indices[globalTaskIndex++];
-      await processChunkInBatch(chunkIdx, workerId % nKeys);
-    }
-  }
-
-  const workers = [];
-  for(let w = 0; w < nWorkers; w++){
-    workers.push(worker(w));
-  }
-  await Promise.all(workers);
-
-  running = false;
-  document.getElementById('startBtn').disabled = false;
-  document.getElementById('stopBtn').style.display = 'none';
-  if(pauseBtnEl) pauseBtnEl.style.display = 'none';
-  showAllKeysWarning(false);
-  setQueue(0, currentChunks.length);
-  renderQueuePanel();
-
-  const finalText = currentResults.map((r,i)=>{
-    if(r!=null) return r;
-    if(chunkState[i] && chunkState[i].status==='error') return `\n[LỖI DỊCH CHUNK ${i+1}]\n${currentChunks[i]}`;
-    return '';
-  }).join('\n\n');
-  document.getElementById('outputText').value = finalText;
-
-  const counts = computeChunkCounts();
-  const durationSec = translateStartTime ? Math.round((Date.now()-translateStartTime)/1000) : 0;
-  const statusLabel = stopFlag ? 'Đã dừng' : (counts.error>0 ? `Hoàn tất (${counts.error} lỗi)` : 'Hoàn tất');
-  historyArr.push({
-    time: new Date().toLocaleTimeString('vi-VN'),
-    chunks: currentChunks.length,
-    chars: currentChunks.reduce((a,c)=>a+c.length,0),
-    status: statusLabel,
-    duration: formatDuration(durationSec),
-    keys: state.keys.length
-  });
-  renderHistory();
-
-  if(stopFlag){
-    logLine('warn', null, null, '⏹ Đã dừng theo yêu cầu. Tiến độ đã được lưu tự động — có thể Tiếp tục sau khi tải lại trang.');
-  }else{
-    logLine('ok', null, null, counts.error>0 ? `Hoàn tất với ${counts.error} chunk lỗi.` : '🎉 Hoàn tất!');
-  }
-  saveTranslationProgress(true);
-  renderRetryFailedBox();
-}
 
 /* ---- Ghi đè processChunkInBatch: tôn trọng pauseFlag trước mỗi lần thử ---- */
 async function processChunkInBatch(idx, preferredKeyPos){
@@ -4188,9 +3956,7 @@ async function callModelWithRetry(chunkText, keyIndex, idx){
   }
 }
 
-/* ---- runEngine: ghi đè LẦN CUỐI — thêm chế độ Waterfall (buộc BATCH_SIZE=1,
-   chunk sau chỉ khởi động khi chunk trước đã ở trạng thái cuối cùng thật sự
-   xong), giữ nguyên toàn bộ logic xoay vòng key / RPM / pause / stop / IndexedDB. ---- */
+/* ---- runEngine (bản duy nhất): Worker Queue, không Batch. ---- */
 async function runEngine(indices){
   running = true; stopFlag = false;
   if(!translateStartTime) translateStartTime = Date.now();
@@ -4205,37 +3971,31 @@ async function runEngine(indices){
   setQueue(indices.length, currentChunks.length);
   renderQueuePanel();
 
-  // Ẩn panel Batch cũ (không còn dùng khái niệm batch nữa)
+  // Không còn khái niệm Batch: ẩn panel Batch cũ
   const batchWrapEl = document.getElementById('batchWrap');
   if(batchWrapEl) batchWrapEl.style.display = 'none';
   totalBatches = 0; currentBatch = 0; currentBatchSize = 0;
 
-  // Worker Pool / Task Queue: mỗi "luồng" là 1 worker độc lập, tự bốc
-  // chunk tiếp theo trong hàng đợi ngay khi rảnh — không còn phải chờ
-  // cả cụm (batch) như Promise.all theo batch trước đây.
-  // Waterfall vẫn ép 1 worker duy nhất để đảm bảo chunk sau luôn có
-  // đủ 100% bản dịch chunk trước làm ngữ cảnh.
+  // Worker Queue: mỗi worker là 1 luồng độc lập, rảnh là bốc chunk tiếp theo ngay.
+  // Waterfall ép 1 worker để chunk sau luôn có đủ bản dịch chunk trước làm ngữ cảnh.
   const nWorkers = (contextMode === 'waterfall') ? 1 : Math.max(1, parallelVal());
   const nKeys = Math.max(1, state.keys.length);
-
-  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng song song (task queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
-
   let globalTaskIndex = 0;
+
+  logLine('info', null, null, `Bắt đầu xử lý ${indices.length} chunk (tổng ${currentChunks.length}) với ${nWorkers} luồng (worker queue), ${nKeys} key — chế độ ngữ cảnh: ${contextModeLabel()}...`);
 
   async function worker(workerId){
     while(globalTaskIndex < indices.length){
       if(stopFlag) return;
-      await waitWhilePaused();
-      if(stopFlag) return;
-      const chunkIdx = indices[globalTaskIndex++];
+      await waitWhilePaused();          // đang tạm dừng -> chờ tại đây
+      if(stopFlag) return;              // dừng khi đang tạm dừng
+      const chunkIdx = indices[globalTaskIndex++];   // không có await giữa check và ++ => an toàn
       await processChunkInBatch(chunkIdx, workerId % nKeys);
     }
   }
 
   const workers = [];
-  for(let w = 0; w < nWorkers; w++){
-    workers.push(worker(w));
-  }
+  for(let w = 0; w < nWorkers; w++) workers.push(worker(w));
   await Promise.all(workers);
 
   running = false;
@@ -4756,6 +4516,1127 @@ async function clearEntireFileLibrary(){
   if(typeof renderQueuePanel==='function') renderQueuePanel();
   if(typeof logLine==='function') logLine('info', null, null, '🗑️ Đã dọn dẹp toàn bộ thư viện file trong bộ nhớ máy.');
 }
+</script>
+
+<script>
+/* =====================================================================
+   STORYFORGE HOTFIX v11
+   - Scheduler/request count: no client RPM throttling by default; fair key
+     rotation; target parallelism is maintained whenever the server allows it.
+   - Persistent file history: every loaded/translated file is stored in IndexedDB.
+   - Large-file stability: chunk data are stored per-chunk instead of rewriting
+     the whole 10MB+ file on every completed chunk.
+   - Viewer: only 100 current chunks stay in the DOM; completed 100-chunk windows
+     are removed automatically.
+   - Large output/log protection for mobile Chrome/GitHub Pages.
+   ===================================================================== */
+
+const SF_HOTFIX_VERSION = '11.0';
+const SF_HISTORY_KEY = 'sf_translation_history_v2';
+const SF_FILE_CHUNKS_STORE = 'fileChunks';
+const SF_VIEWER_WINDOW = 100;
+const SF_LOG_KEEP = 1000;
+const SF_LOG_DOM_KEEP = 220;
+const SF_OUTPUT_DOM_THRESHOLD = 2500000;
+let localRpmThrottle = false;
+let sfKeyCursor = 0;
+let sfViewerWindowStart = 0;
+let sfPendingChunkSaves = new Set();
+let sfChunkSaveTimer = null;
+let sfHistoryTimer = null;
+let sfProgressTimer = null;
+let sfFullOutput = '';
+
+/* ---------------- UI: local RPM switch ---------------- */
+function updateLocalRpmThrottleUI(){
+  const sw = document.getElementById('rpmThrottleSwitch');
+  const lab = document.getElementById('rpmThrottleLabel');
+  if(sw) sw.classList.toggle('on', !!localRpmThrottle);
+  if(lab) lab.textContent = localRpmThrottle
+    ? '(Bật — client sẽ chủ động giới hạn theo RPM/key)'
+    : '(Tắt — giữ đủ request song song, để server/proxy tự giới hạn)';
+}
+function toggleLocalRpmThrottle(){
+  localRpmThrottle = !localRpmThrottle;
+  updateLocalRpmThrottleUI();
+  updateGeneralSummary();
+  try{ saveLastSessionConfig(); }catch(e){}
+}
+updateLocalRpmThrottleUI();
+
+/* Persist the throttle choice with the existing session config. */
+try{
+  const raw = localStorage.getItem(SF_LAST_CONFIG_KEY);
+  if(raw){
+    const cfg = JSON.parse(raw);
+    if(cfg && typeof cfg.localRpmThrottle === 'boolean') localRpmThrottle = cfg.localRpmThrottle;
+  }
+}catch(e){}
+updateLocalRpmThrottleUI();
+
+/* ---------------- IDB v3: metadata + per-chunk storage ---------------- */
+idbOpen = function(){
+  return new Promise((resolve, reject)=>{
+    if(!('indexedDB' in window)){ reject(new Error('Trình duyệt không hỗ trợ IndexedDB')); return; }
+    const req = indexedDB.open(IDB_NAME, 3);
+    req.onupgradeneeded = ()=>{
+      const db = req.result;
+      if(!db.objectStoreNames.contains(IDB_STORE)) db.createObjectStore(IDB_STORE);
+      if(!db.objectStoreNames.contains(IDB_FILES_STORE)) db.createObjectStore(IDB_FILES_STORE);
+      if(!db.objectStoreNames.contains(SF_FILE_CHUNKS_STORE)) db.createObjectStore(SF_FILE_CHUNKS_STORE);
+    };
+    req.onsuccess = ()=>{ const db=req.result; db.onversionchange=()=>db.close(); resolve(db); };
+    req.onerror = ()=>reject(req.error);
+  });
+};
+
+async function sf_idbPutChunk(fileId, index, chunk){
+  try{
+    const db = await idbOpen();
+    return await new Promise((resolve,reject)=>{
+      const tx = db.transaction(SF_FILE_CHUNKS_STORE, 'readwrite');
+      tx.objectStore(SF_FILE_CHUNKS_STORE).put({
+        fileId, index,
+        status: chunk.status || 'waiting',
+        orig: chunk.orig || '',
+        trans: chunk.status==='done' ? (chunk.trans||'') : ''
+      }, `${fileId}:${index}`);
+      tx.oncomplete=()=>resolve(true); tx.onerror=()=>reject(tx.error);
+    });
+  }catch(e){ return false; }
+}
+
+async function sf_idbPutChunks(fileId, chunks){
+  try{
+    const db = await idbOpen();
+    return await new Promise((resolve,reject)=>{
+      const tx = db.transaction(SF_FILE_CHUNKS_STORE, 'readwrite');
+      const os = tx.objectStore(SF_FILE_CHUNKS_STORE);
+      (chunks||[]).forEach((c,i)=>{
+        os.put({fileId, index:i, status:c.status||'waiting', orig:c.orig||'', trans:c.status==='done'?(c.trans||''):''}, `${fileId}:${i}`);
+      });
+      tx.oncomplete=()=>resolve(true); tx.onerror=()=>reject(tx.error);
+    });
+  }catch(e){ return false; }
+}
+
+async function sf_idbGetChunks(fileId){
+  try{
+    const db = await idbOpen();
+    return await new Promise((resolve,reject)=>{
+      const tx=db.transaction(SF_FILE_CHUNKS_STORE,'readonly');
+      const os=tx.objectStore(SF_FILE_CHUNKS_STORE);
+      const prefix=fileId+':';
+      const req=os.getAll(IDBKeyRange.bound(prefix, prefix+'\uffff'));
+      req.onsuccess=()=>{
+        const arr=(req.result||[]).sort((a,b)=>(a.index||0)-(b.index||0));
+        resolve(arr);
+      };
+      req.onerror=()=>reject(req.error);
+    });
+  }catch(e){ return []; }
+}
+
+async function sf_idbDeleteFileChunks(fileId){
+  try{
+    const db = await idbOpen();
+    return await new Promise((resolve,reject)=>{
+      const tx=db.transaction(SF_FILE_CHUNKS_STORE,'readwrite');
+      const os=tx.objectStore(SF_FILE_CHUNKS_STORE);
+      const prefix=fileId+':';
+      os.delete(IDBKeyRange.bound(prefix, prefix+'\uffff'));
+      /* Some Chromium versions reject delete(IDBKeyRange) on simple object
+         stores; fallback to cursor when needed. */
+      tx.oncomplete=()=>resolve(true); tx.onerror=()=>resolve(false);
+    });
+  }catch(e){
+    try{
+      const db=await idbOpen();
+      return await new Promise(resolve=>{
+        const tx=db.transaction(SF_FILE_CHUNKS_STORE,'readwrite');
+        const os=tx.objectStore(SF_FILE_CHUNKS_STORE);
+        const prefix=fileId+':';
+        const req=os.openCursor();
+        req.onsuccess=ev=>{
+          const cur=ev.target.result;
+          if(!cur){ resolve(true); return; }
+          if(typeof cur.key==='string' && cur.key.indexOf(prefix)===0) cur.delete();
+          cur.continue();
+        };
+        req.onerror=()=>resolve(false);
+      });
+    }catch(e2){ return false; }
+  }
+}
+
+async function sf_getFileRecordById(id){
+  try{
+    const db=await idbOpen();
+    const rec=await new Promise((resolve,reject)=>{
+      const tx=db.transaction(IDB_FILES_STORE,'readonly');
+      const req=tx.objectStore(IDB_FILES_STORE).get(id);
+      req.onsuccess=()=>resolve(req.result||null); req.onerror=()=>reject(req.error);
+    });
+    if(!rec) return null;
+    if(rec.chunkStorageVersion===2 && !Array.isArray(rec.chunks)){
+      const rows=await sf_idbGetChunks(id);
+      rec.chunks=rows.map(x=>({status:x.status||'waiting',orig:x.orig||'',trans:x.trans||''}));
+    }
+    if(!Array.isArray(rec.chunks)) rec.chunks=[];
+    return rec;
+  }catch(e){ return null; }
+}
+
+async function sf_saveFileMetadata(rec){
+  if(!rec||!rec.id) return false;
+  const meta={...rec};
+  delete meta.chunks;
+  meta.chunkStorageVersion=2;
+  return await idbSetIn(IDB_FILES_STORE, rec.id, meta);
+}
+
+async function sf_saveFileRecord(rec){
+  if(!rec||!rec.id) return false;
+  rec.chunkStorageVersion=2;
+  const needFull = Array.isArray(rec.chunks) && !rec.__sfChunksPersisted;
+  const okMeta=await sf_saveFileMetadata(rec);
+  if(needFull && Array.isArray(rec.chunks)){
+    const okChunks=await sf_idbPutChunks(rec.id, rec.chunks);
+    rec.__sfChunksPersisted=!!okChunks;
+    return okMeta && okChunks;
+  }
+  return okMeta;
+}
+saveFileRecord = sf_saveFileRecord;
+
+/* Load persistent file library, hydrating only per-chunk records. Legacy v2
+   records are migrated once, off the hot translation path. */
+loadFileLibrary = async function(){
+  const rows=await idbGetAllIn(IDB_FILES_STORE);
+  const loaded=[];
+  for(const r of rows){
+    const rec=r.value||{};
+    if(Array.isArray(rec.chunks)){
+      rec.chunkStorageVersion=2;
+      rec.__sfChunksPersisted=false;
+      loaded.push(rec);
+    }else if(rec.chunkStorageVersion===2){
+      rec.chunks=await (async()=>{
+        const xs=await sf_idbGetChunks(rec.id);
+        return xs.map(x=>({status:x.status||'waiting',orig:x.orig||'',trans:x.trans||''}));
+      })();
+      rec.__sfChunksPersisted=true;
+      loaded.push(rec);
+    }
+  }
+  fileLibrary=loaded.sort((a,b)=>(b.updatedAt||b.addedAt||0)-(a.updatedAt||a.addedAt||0));
+  renderHistory();
+  /* One-time migration of legacy records. */
+  for(const rec of fileLibrary){
+    if(Array.isArray(rec.chunks) && rec.__sfChunksPersisted===false){
+      sf_saveFileRecord(rec).catch(()=>{});
+    }
+  }
+  renderQueuePanel();
+};
+
+/* Delete metadata + all per-chunk records. */
+deleteFileRecord = async function(id){
+  if(window.__activeFileId===id && running){ alert('File đang được dịch, không thể xoá lúc này.'); return; }
+  await idbDeleteIn(IDB_FILES_STORE,id);
+  await sf_idbDeleteFileChunks(id);
+  fileLibrary=fileLibrary.filter(f=>f.id!==id);
+  translationQueue=translationQueue.filter(qid=>qid!==id);
+  if(window.__activeFileId===id) window.__activeFileId=null;
+  renderHistory(); renderQueuePanel();
+};
+
+/* ---------------- Persistent history ---------------- */
+function sf_saveHistory(){
+  try{ localStorage.setItem(SF_HISTORY_KEY, JSON.stringify(historyArr.slice(-100))); }catch(e){}
+}
+try{
+  const raw=localStorage.getItem(SF_HISTORY_KEY);
+  if(raw){ const arr=JSON.parse(raw); if(Array.isArray(arr)) historyArr=arr; }
+}catch(e){}
+
+function sfEsc(v){
+  return String(v==null?'':v).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function sf_queueHistoryRender(delay=500){
+  clearTimeout(sfHistoryTimer);
+  sfHistoryTimer=setTimeout(()=>{ renderHistory(); },delay);
+}
+renderHistory=function(){
+  const body=document.getElementById('histBody');
+  const label=document.getElementById('histCountLabel');
+  if(label) label.textContent=(historyArr.length||0)+' lượt trong phiên';
+  if(!body) return;
+  const files=(fileLibrary||[]).slice().sort((a,b)=>(b.updatedAt||b.addedAt||0)-(a.updatedAt||a.addedAt||0));
+  let html='<div style="font-weight:700;margin-bottom:6px;">📚 Lịch sử tệp lưu trữ</div>';
+  if(!files.length){
+    html+='<div class="hint" style="margin-bottom:12px;">Chưa có tệp được lưu. Tải file hoặc thêm vào hàng đợi để hệ thống tự lưu.</div>';
+  }else{
+    const active=files.filter(r=>r.status==='in_progress'||r.status==='paused'||r.status==='queued'||r.status==='waiting_removed'||fileProgressCounts(r).done<fileProgressCounts(r).total);
+    const done=files.filter(r=>fileProgressCounts(r).total>0 && fileProgressCounts(r).done>=fileProgressCounts(r).total);
+    const renderFile=(rec)=>{
+      const pc=fileProgressCounts(rec), pct=pc.total?Math.round(pc.done/pc.total*100):0;
+      const isDone=pc.total>0&&pc.done>=pc.total;
+      let label=isDone?'🟢 Hoàn tất':(rec.status==='in_progress'?'🟡 Đang dịch':(rec.status==='queued'?'🕓 Hàng đợi':'🟠 Dở dang'));
+      const action=isDone
+        ? `<button class="btn small" onclick="downloadFileFromLibrary('${sfEsc(rec.id)}')">⬇️ Tải bản dịch</button>`
+        : `<button class="btn small primary" onclick="continueFileTranslation('${sfEsc(rec.id)}')">▶ Dịch tiếp (${Math.max(0,pc.total-pc.done)} chunk)</button>`;
+      return `<div class="histrow" style="align-items:center;gap:8px;">\n`+
+        `<span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${sfEsc(rec.name||'Không tên')} · ${pc.done}/${pc.total} (${pct}%) — <span class="t">${label}</span></span>`+
+        `<span class="t" style="display:flex;gap:6px;align-items:center;">${action}<span class="hist-del" onclick="deleteFileRecord('${sfEsc(rec.id)}')" title="Xóa file khỏi thư viện">🗑</span></span>`+
+        `</div>`;
+    };
+    if(active.length){ html+='<div style="font-weight:700;margin:10px 0 6px;">🟡 Đang dịch / chưa hoàn tất</div>'+active.map(renderFile).join(''); }
+    if(done.length){ html+='<div style="font-weight:700;margin:14px 0 6px;">🟢 Đã dịch xong</div>'+done.map(renderFile).join(''); }
+  }
+  html+='<div style="font-weight:700;margin:14px 0 6px;">🕓 Lịch sử lượt dịch</div>';
+  if(!historyArr.length) html+='<div class="hint">Chưa có lượt dịch.</div>';
+  else html+=historyArr.slice().reverse().map((h,ri)=>{
+    const idx=historyArr.length-1-ri;
+    const name=h.fileName?`📄 ${sfEsc(h.fileName)} · `:'';
+    const extras=[]; if(h.duration)extras.push(h.duration); if(h.keys)extras.push(h.keys+' key');
+    return `<div class="histrow"><span>${name}${sfEsc(h.time)} · ${h.chunks} chunk · ${(h.chars||0).toLocaleString('vi-VN')} ký tự${extras.length?' · '+extras.join(' · '):''}</span><span class="t">${sfEsc(h.status)}<span class="hist-del" onclick="deleteHistoryItem(${idx})" title="Xóa mục này">🗑</span></span></div>`;
+  }).join('');
+  body.innerHTML=html;
+};
+deleteHistoryItem=function(i){
+  historyArr.splice(i,1); sf_saveHistory(); renderHistory();
+};
+
+/* ---------------- Large-file file import ---------------- */
+readFile = function(f){
+  const reader=new FileReader();
+  reader.onload=async ()=>{
+    const text=reader.result||'';
+    currentFileName=f.name||'';
+    window.__chapterRangeActive=false; window.__chapterRangeText='';
+    sf_setSourceText(text);
+    updateStats();
+    const chunks=splitChunks(text,chunkSizeVal());
+    const hash=simpleHash(text);
+    let rec=fileLibrary.find(x=>x.name===currentFileName && x.sourceHash===hash);
+    if(!rec){
+      rec={id:newFileId(),name:currentFileName,sourceHash:hash,addedAt:Date.now(),updatedAt:Date.now(),chunks:chunks.map(o=>({status:'waiting',orig:o,trans:''})),status:'waiting'};
+      fileLibrary.unshift(rec);
+    }else{
+      /* Re-reading the same source starts from the stored state; if the user
+         changed chunk size later, startTranslate will rebuild it safely. */
+      rec.updatedAt=Date.now();
+    }
+    window.__activeFileId=rec.id;
+    window.__libraryReadyPromise=sf_saveFileRecord(rec);
+    await window.__libraryReadyPromise;
+    renderHistory(); renderQueuePanel();
+  };
+  reader.onerror=()=>alert('Không đọc được file: '+(reader.error?.message||'lỗi không xác định'));
+  reader.readAsText(f,'UTF-8');
+};
+
+/* Queue import: persist each file once before it can be scheduled. */
+addFilesToQueue = function(fileList){
+  const files=Array.from(fileList||[]); if(!files.length)return;
+  let remaining=files.length;
+  files.forEach(f=>{
+    const reader=new FileReader();
+    reader.onload=async ()=>{
+      const text=reader.result||'';
+      const rec={id:newFileId(),name:f.name||'khong-ten.txt',addedAt:Date.now(),updatedAt:Date.now(),sourceHash:simpleHash(text),chunks:splitChunks(text,chunkSizeVal()).map(o=>({status:'waiting',orig:o,trans:''})),status:'queued'};
+      fileLibrary.unshift(rec);
+      await sf_saveFileRecord(rec);
+      rec.__sfChunksPersisted=true;
+      translationQueue.push(rec.id);
+      logLine('info',null,null,`📥 Đã thêm "${rec.name}" vào hàng đợi (${rec.chunks.length} chunk).`);
+      remaining--;
+      renderHistory(); renderQueuePanel();
+      if(remaining<=0&&!running&&!window.__activeFileId&&!pauseFlag) processNextInQueue();
+    };
+    reader.onerror=()=>{remaining--;};
+    reader.readAsText(f,'UTF-8');
+  });
+};
+
+/* ---------------- Incremental active-file persistence ---------------- */
+async function sf_flushActiveFile(forceAll=false){
+  const id=window.__activeFileId;
+  if(!id||!chunkState||!chunkState.length)return false;
+  const rec=fileLibrary.find(f=>f.id===id); if(!rec)return false;
+  rec.updatedAt=Date.now();
+  const counts=computeChunkCounts();
+  rec.status=counts.done>=counts.total&&counts.total>0 ? 'done' : (pauseFlag?'paused':(running?'in_progress':'paused'));
+  rec.chunkStorageVersion=2;
+  if(forceAll){
+    rec.chunks=chunkState.map(c=>({status:c.status==='done'?'done':(c.status==='error'?'error':'waiting'),orig:c.orig,trans:c.status==='done'?(c.trans||''):''}));
+    const ok=await sf_saveFileRecord(rec);
+    rec.__sfChunksPersisted=ok;
+    sfPendingChunkSaves.clear();
+  }else{
+    const ids=Array.from(sfPendingChunkSaves); sfPendingChunkSaves.clear();
+    rec.chunks=rec.chunks&&rec.chunks.length===chunkState.length ? rec.chunks : chunkState.map(c=>({status:c.status==='done'?'done':(c.status==='error'?'error':'waiting'),orig:c.orig,trans:c.status==='done'?(c.trans||''):''}));
+    for(const i of ids){
+      const c=chunkState[i]; if(!c)continue;
+      rec.chunks[i]={status:c.status==='done'?'done':(c.status==='error'?'error':'waiting'),orig:c.orig,trans:c.status==='done'?(c.trans||''):''};
+    }
+    /* Write only the exact changed chunk indices; do not re-index sparse updates. */
+    if(ids.length){
+      try{
+        const db=await idbOpen();
+        await new Promise((resolve,reject)=>{
+          const tx=db.transaction(SF_FILE_CHUNKS_STORE,'readwrite'), os=tx.objectStore(SF_FILE_CHUNKS_STORE);
+          ids.forEach(i=>{ const c=chunkState[i]; os.put({fileId:id,index:i,status:c.status==='done'?'done':(c.status==='error'?'error':'waiting'),orig:c.orig||'',trans:c.status==='done'?(c.trans||''):''},`${id}:${i}`); });
+          tx.oncomplete=()=>resolve(true); tx.onerror=()=>reject(tx.error);
+        });
+      }catch(e){}
+    }
+    await sf_saveFileMetadata(rec);
+  }
+  sf_queueHistoryRender(900);
+  return true;
+}
+function sf_scheduleActiveFileSave(idx){
+  if(idx!=null) sfPendingChunkSaves.add(idx);
+  clearTimeout(sfChunkSaveTimer);
+  sfChunkSaveTimer=setTimeout(()=>{ sf_flushActiveFile(false); },800);
+  clearTimeout(sfProgressTimer);
+  sfProgressTimer=setTimeout(()=>{ saveTranslationProgress(false); },1200);
+}
+saveCurrentFileToLibrary=function(){ sf_scheduleActiveFileSave(null); };
+
+/* ---------------- Persistent lightweight resume state ---------------- */
+saveTranslationProgress=function(force=false){
+  const now=Date.now();
+  const write=async()=>{
+    if(!currentChunks||!currentChunks.length)return;
+    const doneCount=computeChunkCounts().done;
+    const payload={
+      version:3,
+      fileId:window.__activeFileId||null,
+      fileName:currentFileName||'',
+      chunkCount:currentChunks.length,
+      doneCount,
+      chunkSize:chunkSizeVal(), parallel:parallelVal(), rpm:rpmVal(), localRpmThrottle,
+      baseUrl:document.getElementById('baseUrl').value,
+      model:state.model,
+      prompt:document.getElementById('promptBox').value,
+      completed:!running,
+      savedAt:now
+    };
+    await idbSet('current',payload);
+  };
+  if(force){ write().catch(()=>{}); return; }
+  clearTimeout(sfProgressTimer);
+  sfProgressTimer=setTimeout(()=>write().catch(()=>{}),1200);
+};
+loadTranslationProgress=async function(){ return await idbGet('current'); };
+clearTranslationProgress=function(){ idbDelete('current'); };
+checkResumeOnLoad=async function(){
+  try{
+    const saved=await loadTranslationProgress();
+    if(!saved||saved.completed) return;
+    if(!saved.fileId&&(!saved.chunks||!saved.chunks.length)) return;
+    let total=saved.chunkCount||saved.chunks?.length||0;
+    let done=saved.doneCount;
+    if(saved.fileId){
+      const rec=await sf_getFileRecordById(saved.fileId);
+      if(!rec){ await idbDelete('current'); return; }
+      const pc=fileProgressCounts(rec); total=pc.total; done=pc.done;
+    }else if(!Number.isFinite(done)) done=saved.chunks.filter(c=>c.status==='done').length;
+    if(!total||done>=total) return;
+    const rb=document.getElementById('resumeBanner');
+    if(rb) rb.style.display='flex';
+    const info=document.getElementById('resumeInfo');
+    if(info) info.textContent=`${saved.fileName||'Không tên'} — Tiến độ ${done}/${total} chunk (lưu lúc ${new Date(saved.savedAt).toLocaleString('vi-VN')})`;
+    window.__pendingResume=saved;
+  }catch(e){}
+};
+resumeContinue=async function(){
+  const saved=window.__pendingResume; if(!saved)return;
+  localRpmThrottle=false; updateLocalRpmThrottleUI();
+  if(saved.baseUrl){document.getElementById('baseUrl').value=saved.baseUrl;document.getElementById('chatUrlPreview').textContent=chatUrl()||'—';document.getElementById('modelsUrlPreview').textContent=modelsUrl()||'—';}
+  if(saved.model){state.model=saved.model;document.getElementById('modelInput').value=saved.model;document.getElementById('pillModel').textContent=saved.model;}
+  if(saved.prompt){document.getElementById('promptBox').value=saved.prompt;updatePromptLen();}
+  if(saved.chunkSize)document.getElementById('chunkSize').value=saved.chunkSize;
+  if(saved.parallel)document.getElementById('parallel').value=Math.min(120,Math.max(1,saved.parallel));
+  if(saved.rpm)document.getElementById('rpm').value=saved.rpm;
+  const rb=document.getElementById('resumeBanner'); if(rb)rb.style.display='none';
+  if(saved.fileId){
+    const rec=await sf_getFileRecordById(saved.fileId);
+    if(rec){
+      if(!fileLibrary.some(x=>x.id===rec.id))fileLibrary.unshift(rec);
+      renderHistory();
+      await startFileFromLibrary(rec);
+      return;
+    }
+  }
+  if(saved.chunks){
+    currentFileName=saved.fileName||'';
+    currentChunks=saved.chunks.map(c=>c.orig||'');
+    currentResults=saved.chunks.map(c=>c.status==='done'?c.trans||'':null);
+    buildChunkViewerFromSaved(saved.chunks);
+    await runEngine(saved.chunks.map((c,i)=>c.status==='done'?-1:i).filter(i=>i>=0));
+  }
+};
+resumeRestart=async function(){
+  const saved=window.__pendingResume;
+  if(saved?.fileId){
+    const rec=await sf_getFileRecordById(saved.fileId);
+    if(rec){
+      rec.chunks=rec.chunks.map(c=>({status:'waiting',orig:c.orig,trans:''}));
+      rec.status='waiting'; rec.updatedAt=Date.now();
+      await sf_idbPutChunks(rec.id,rec.chunks); await sf_saveFileMetadata(rec);
+      const i=fileLibrary.findIndex(x=>x.id===rec.id); if(i>=0)fileLibrary[i]=rec; else fileLibrary.unshift(rec);
+    }
+  }
+  await idbDelete('current'); window.__pendingResume=null;
+  const rb=document.getElementById('resumeBanner'); if(rb)rb.style.display='none';
+  renderHistory();
+};
+resumeDiscard=function(){ idbDelete('current');window.__pendingResume=null;const rb=document.getElementById('resumeBanner');if(rb)rb.style.display='none'; };
+
+/* ---------------- Fair key rotation + optional client RPM ---------------- */
+pickAvailableKey=function(){
+  ensureKeyMetaExt();
+  const n=state.keys.length; if(!n)return -1;
+  const now=Date.now();
+  for(const m of state.keyMeta){ if(m.status==='ratelimited'&&now>=m.rateLimitUntil)m.status='idle'; }
+  const candidates=[];
+  for(let i=0;i<n;i++){
+    const idx=(sfKeyCursor+i)%n, m=state.keyMeta[idx];
+    if(m.status==='error'||m.status==='disabled')continue;
+    if(m.status==='ratelimited'&&now<m.rateLimitUntil)continue;
+    candidates.push(idx);
+  }
+  if(!candidates.length)return -1;
+  candidates.sort((a,b)=>{
+    const ma=state.keyMeta[a], mb=state.keyMeta[b];
+    const ia=ma.inFlight||0, ib=mb.inFlight||0;
+    if(ia!==ib)return ia-ib;
+    const da=(a-sfKeyCursor+n)%n, db=(b-sfKeyCursor+n)%n;
+    return da-db;
+  });
+  const chosen=candidates[0]; sfKeyCursor=(chosen+1)%n; return chosen;
+};
+waitForSlot=async function(keyIndex){
+  if(!localRpmThrottle) return;
+  const limit=rpmVal(), now=Date.now();
+  if(!keyCallLog[keyIndex])keyCallLog[keyIndex]=[];
+  let arr=keyCallLog[keyIndex].filter(t=>now-t<60000);
+  while(arr.length>=limit){
+    const waitMs=Math.max(200,60000-(Date.now()-arr[0])+50);
+    await new Promise(r=>setTimeout(r,waitMs));
+    const n2=Date.now(); arr=keyCallLog[keyIndex].filter(t=>n2-t<60000);
+    if(stopFlag)return;
+  }
+  arr.push(Date.now()); keyCallLog[keyIndex]=arr;
+};
+
+/* ---------------- Concurrency engine: refill as soon as a slot is free ---------------- */
+runEngine=async function(indices){
+  running=true; stopFlag=false; pauseFlag=false;
+  if(typeof translationInProgress!=='undefined') translationInProgress=true;
+  if(!translateStartTime)translateStartTime=Date.now();
+  document.getElementById('startBtn').disabled=true;
+  document.getElementById('stopBtn').style.display='inline-block';
+  const pauseBtn=document.getElementById('pauseBtn'); if(pauseBtn){pauseBtn.style.display='inline-block';pauseBtn.textContent='⏸ Tạm dừng';}
+  document.getElementById('progwrap').classList.add('show');
+  document.getElementById('retryFailedBox').style.display='none';
+  updateProgress(computeChunkCounts().done,currentChunks.length);
+  setQueue(indices.length,currentChunks.length);
+  renderQueuePanel();
+  const wanted=Math.max(1,Math.min(120,parallelVal()));
+  const tasks=indices.slice();
+  let cursor=0, active=0;
+  let completedTarget=tasks.filter(i=>chunkState[i]?.status==='done').length;
+  /* The engine always keeps up to `wanted` actual fetches in flight, but never
+     invents capacity when all keys are rate-limited or the server returns 429. */
+  await new Promise(resolve=>{
+    const pump=()=>{
+      if(stopFlag){ if(active===0)resolve(); return; }
+      while(!pauseFlag && active<wanted && cursor<tasks.length){
+        const idx=tasks[cursor++];
+        if(!chunkState[idx] || chunkState[idx].status==='done')continue;
+        active++;
+        processChunkInBatch(idx,0).catch(()=>{}).finally(()=>{
+          active--;
+          const cnt=computeChunkCounts();
+          updateProgress(cnt.done,currentChunks.length);
+          setQueue(Math.max(0,tasks.length-cursor)+active,currentChunks.length);
+          if(cursor>=tasks.length && active===0)resolve(); else setTimeout(pump,0);
+        });
+      }
+      if(cursor>=tasks.length && active===0)resolve();
+      else if(pauseFlag) setTimeout(pump,120);
+      else if(active===0 && cursor<tasks.length) setTimeout(pump,250);
+    };
+    pump();
+  });
+  running=false;
+  if(typeof translationInProgress!=='undefined') translationInProgress=false;
+  document.getElementById('startBtn').disabled=false;
+  document.getElementById('stopBtn').style.display='none';
+  if(pauseBtn)pauseBtn.style.display='none';
+  showAllKeysWarning(false);setQueue(0,currentChunks.length);renderQueuePanel();
+  const finalText=currentResults.map((r,i)=>r!=null?r:(chunkState[i]?.status==='error'?`\n[LỖI DỊCH CHUNK ${i+1}]\n${currentChunks[i]}`:'')).join('\n\n');
+  sf_setFinalOutput(finalText);
+  const counts=computeChunkCounts();
+  const durationSec=translateStartTime?Math.round((Date.now()-translateStartTime)/1000):0;
+  const statusLabel=stopFlag?'Đã dừng':(counts.error>0?`Hoàn tất (${counts.error} lỗi)`:'Hoàn tất');
+  historyArr.push({time:new Date().toLocaleTimeString('vi-VN'),fileName:currentFileName||'',chunks:currentChunks.length,chars:currentChunks.reduce((a,c)=>a+c.length,0),status:statusLabel,duration:formatDuration(durationSec),keys:state.keys.length});
+  sf_saveHistory();renderHistory();
+  if(stopFlag)logLine('warn',null,null,'⏹ Đã dừng theo yêu cầu. Tiến độ đã được lưu tự động — có thể Tiếp tục sau khi tải lại trang.');
+  else logLine('ok',null,null,counts.error>0?`Hoàn tất với ${counts.error} chunk lỗi.`:'🎉 Hoàn tất!');
+  await sf_flushActiveFile(true);
+  await saveTranslationProgress(true);
+  renderRetryFailedBox();
+};
+
+/* ---------------- Start translation from loaded/pasted source ---------------- */
+startTranslate=async function(){
+  if(running)return;
+  if(!state.proxyOn){alert('Bật Custom Proxy trước.');return;}
+  if(!document.getElementById('baseUrl').value.trim()){alert('Nhập Base URL của proxy.');return;}
+  if(state.keys.length===0){alert('Thêm ít nhất 1 API key.');return;}
+  if(!state.model){alert('Nhập hoặc chọn model.');return;}
+  let sourceText=sf_getFullSourceText(); if(!sourceText.trim()){alert('Dán hoặc tải nội dung truyện trước.');return;}
+  if(window.__chapterRangeActive&&window.__chapterRangeText){
+    sourceText=window.__chapterRangeText;
+    window.__activeFileId=null;
+  }
+  const chunks=splitChunks(sourceText,chunkSizeVal());
+  currentChunks=chunks;currentResults=new Array(chunks.length).fill(null);
+  currentFileName=currentFileName||('Dịch '+new Date().toLocaleString('vi-VN').replace(/[/:]/g,'-'));
+  if(!window.__chapterRangeActive){
+    const hash=simpleHash(sourceText);
+    let rec=fileLibrary.find(x=>x.id===window.__activeFileId);
+    if(!rec)rec=fileLibrary.find(x=>x.name===currentFileName&&x.sourceHash===hash);
+    if(!rec){
+      rec={id:newFileId(),name:currentFileName,sourceHash:hash,addedAt:Date.now(),updatedAt:Date.now(),chunks:chunks.map(o=>({status:'waiting',orig:o,trans:''})),status:'in_progress'};
+      fileLibrary.unshift(rec);
+    }else{
+      rec.sourceHash=hash;rec.updatedAt=Date.now();rec.status='in_progress';rec.chunks=chunks.map(o=>({status:'waiting',orig:o,trans:''}));
+      rec.__sfChunksPersisted=false;
+      await sf_idbPutChunks(rec.id,rec.chunks);
+      await sf_saveFileMetadata(rec);
+    }
+    window.__activeFileId=rec.id;
+    if(!rec.__sfChunksPersisted) await sf_saveFileRecord(rec);
+  }
+  translateStartTime=Date.now();
+  sfFullOutput='';
+  document.getElementById('progLog').innerHTML='';logEntries=[];
+  document.getElementById('outputText').value='';
+  buildChunkViewer(chunks);renderHistory();
+  await runEngine(chunks.map((_,i)=>i));
+};
+
+startFileFromLibrary=async function(rec){
+  if(running){alert('Đang có tiến trình dịch khác chạy, vui lòng đợi hoặc dừng trước.');return;}
+  if(!rec)return;
+  if(!Array.isArray(rec.chunks)||!rec.chunks.length){rec=await sf_getFileRecordById(rec.id);if(!rec)return;}
+  window.__activeFileId=rec.id;currentFileName=rec.name||'';
+  currentChunks=rec.chunks.map(c=>c.orig||'');currentResults=rec.chunks.map(c=>c.status==='done'?c.trans||'':null);
+  buildChunkViewerFromSaved(rec.chunks);
+  sf_setSourceText(currentChunks.join('\n\n'));
+  clearChapterRange();updateStats();updateLiveOutput();translateStartTime=Date.now();
+  document.getElementById('progLog').innerHTML='';logEntries=[];
+  rec.status='in_progress';rec.updatedAt=Date.now();fileLibrary[fileLibrary.findIndex(f=>f.id===rec.id)]=rec;await sf_saveFileMetadata(rec);renderHistory();
+  const indices=rec.chunks.map((c,i)=>c.status==='done'?-1:i).filter(i=>i>=0);
+  if(indices.length===0){
+    rec.status='done';await sf_saveFileMetadata(rec);sf_setFinalOutput(currentResults.join('\n\n'));renderHistory();window.__activeFileId=null;processNextInQueue();return;
+  }
+  await runEngine(indices);
+  await sf_flushActiveFile(true);
+  window.__activeFileId=null;
+  if(!stopFlag&&!pauseFlag)processNextInQueue();
+};
+
+startTranslateFromSaved=async function(saved){
+  if(saved?.fileId){const rec=await sf_getFileRecordById(saved.fileId);if(rec){if(!fileLibrary.some(x=>x.id===rec.id))fileLibrary.unshift(rec);return startFileFromLibrary(rec);}}
+  if(saved?.chunks){currentFileName=saved.fileName||'';currentChunks=saved.chunks.map(c=>c.orig||'');currentResults=saved.chunks.map(c=>c.status==='done'?c.trans||'':null);buildChunkViewerFromSaved(saved.chunks);translateStartTime=Date.now();await runEngine(saved.chunks.map((c,i)=>c.status==='done'?-1:i).filter(i=>i>=0));}
+};
+
+/* Mark chunk completion/error: only persist the changed chunk, not all 2789. */
+markChunkDone=function(idx,translated){
+  const c=chunkState[idx];if(!c)return;
+  c.status='done';c.trans=translated||'';
+  setChunkBadge(idx,'done','🟢 Đã dịch');
+  const body=document.getElementById('chunk-trans-'+idx);if(body)body.textContent=c.trans;
+  const warn=qualityCheckChunk(c);if(warn){setChunkBadge(idx,'done','🟢 Đã dịch ⚠️');logLine('warn',idx,c.key,`⚠️ Chunk ${idx+1}: ${warn} — bản dịch KHÔNG bị tự động sửa, vui lòng kiểm tra lại.`);}
+  refreshChunkRow(idx);updateLiveOutput();sf_scheduleActiveFileSave(idx);sf_maybeAdvanceViewer();
+};
+markChunkError=function(idx,msg){
+  const c=chunkState[idx];if(!c)return;
+  c.status='error';c.trans='Lỗi: '+msg;
+  setChunkBadge(idx,'error','🔴 Lỗi');const body=document.getElementById('chunk-trans-'+idx);if(body)body.textContent=c.trans;
+  refreshChunkRow(idx);updateLiveOutput();sf_scheduleActiveFileSave(idx);sf_maybeAdvanceViewer();
+};
+
+/* ---------------- Keep the last ~220 log DOM nodes only ---------------- */
+logLine=function(type,idx,keyIndex,msg){
+  const time=new Date().toLocaleTimeString('vi-VN',{hour12:false});
+  const entry={type,idx,keyIndex,msg,time};
+  logEntries.push(entry);if(logEntries.length>SF_LOG_KEEP)logEntries.splice(0,logEntries.length-SF_LOG_KEEP);
+  renderLogRow(entry);
+};
+renderLogRow=function(entry){
+  if(!logPassesFilter(entry))return;
+  const el=document.getElementById('progLog');if(!el)return;
+  const row=document.createElement('div');row.className='logrow '+(entry.type||'info');
+  const dot=entry.type==='ok'?'🟢':entry.type==='err'?'🔴':entry.type==='warn'?'🟡':'🔄';
+  const keyTag=entry.keyIndex!=null?'C'+(entry.keyIndex+1):'--';
+  const a=document.createElement('span');a.className='logtime';a.textContent=entry.time;
+  const b=document.createElement('span');b.className='logdot';b.textContent=dot;
+  const c=document.createElement('span');c.className='logtag';c.textContent=keyTag;
+  if(entry.keyIndex!=null)c.style.color=getKeyColor(entry.keyIndex);
+  const d=document.createElement('span');d.className='logmsg';d.textContent=entry.msg;
+  row.append(a,b,c,d);el.appendChild(row);
+  while(el.children.length>SF_LOG_DOM_KEEP)el.removeChild(el.firstChild);
+  el.scrollTop=el.scrollHeight;
+};
+
+/* ---------------- Viewer: only 100 chunks in the DOM ---------------- */
+function sf_getViewerStart(){
+  const total=chunkState.length;if(!total)return 0;
+  const firstPending=chunkState.findIndex(c=>c.status!=='done');
+  if(firstPending>=0)return Math.floor(firstPending/SF_VIEWER_WINDOW)*SF_VIEWER_WINDOW;
+  return Math.max(0,Math.floor((total-1)/SF_VIEWER_WINDOW)*SF_VIEWER_WINDOW);
+}
+function sf_maybeAdvanceViewer(){
+  const next=sf_getViewerStart();
+  if(next!==sfViewerWindowStart){sfViewerWindowStart=next;chunkExpanded=new Set();renderChunkPage();}
+  else updateCdPageInfo();
+}
+renderChunkPage=function(){
+  const el=document.getElementById('chunkViewer');if(!el)return;
+  el.className='viewer-list mode-'+viewerMode;
+  const total=chunkState.length;if(!total){el.innerHTML='<div class="viewer-empty">Chưa có chunk nào.</div>';updateCdPageInfo();return;}
+  sfViewerWindowStart=Math.max(0,Math.min(sf_getViewerStart(),Math.max(0,total-SF_VIEWER_WINDOW)));
+  const end=Math.min(total,sfViewerWindowStart+SF_VIEWER_WINDOW);
+  const parts=[];for(let i=sfViewerWindowStart;i<end;i++)parts.push(cdRowMarkup(chunkState[i],i));
+  el.innerHTML=parts.join('');
+  chunkExpanded.forEach(i=>{if(i>=sfViewerWindowStart&&i<end)fillChunkBody(i);});
+  updateCdPageInfo();
+};
+updateCdPageInfo=function(){
+  const el=document.getElementById('cdPageInfo');if(!el)return;
+  const total=chunkState.length;if(!total){el.textContent='Chưa có chunk nào.';return;}
+  const cc=computeChunkCounts(),start=sfViewerWindowStart+1,end=Math.min(total,sfViewerWindowStart+SF_VIEWER_WINDOW);
+  el.textContent=`Đang hiển thị #${start}–#${end} / ${total} · ✅ ${cc.done} · 🟡 ${cc.running} · 🔴 ${cc.error} · ⚪ ${cc.waiting}`;
+};
+buildChunkViewer=function(chunks){chunkState=chunks.map(c=>({status:'waiting',orig:c,trans:'',key:null,batchIndex:null,retryCount:0}));chunkExpanded=new Set();sfViewerWindowStart=0;renderChunkPage();};
+buildChunkViewerFromSaved=function(savedChunks){chunkState=savedChunks.map(c=>({status:c.status==='done'?'done':(c.status==='error'?'error':'waiting'),orig:c.orig||'',trans:c.trans||'',key:null,batchIndex:null,retryCount:0}));chunkExpanded=new Set();sfViewerWindowStart=sf_getViewerStart();renderChunkPage();};
+
+/* ---------------- Large output: don't put 10MB into a textarea on mobile ---------------- */
+function sf_setFinalOutput(text){
+  sfFullOutput=text||'';
+  const ta=document.getElementById('outputText');if(!ta)return;
+  if(sfFullOutput.length>SF_OUTPUT_DOM_THRESHOLD){
+    ta.value=`✅ Đã dịch xong ${chunkState.length.toLocaleString('vi-VN')} chunk (${sfFullOutput.length.toLocaleString('vi-VN')} ký tự).\n\nBản dịch đầy đủ đã được lưu vào Thư viện. Dùng “Tải bản dịch” hoặc “Tải kết quả” để xuất file.\n\n(Đã ẩn nội dung 10MB+ khỏi textarea để tránh làm Chrome mobile hết bộ nhớ.)`;
+  }else ta.value=sfFullOutput;
+};
+downloadOutput=function(){
+  const text=sfFullOutput||document.getElementById('outputText').value||'';
+  if(!text.trim()){alert('Chưa có kết quả để tải.');return;}
+  const blob=new Blob([text],{type:'text/plain;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=buildOutputFileName();a.click();setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+};
+copyOutput=function(){
+  const text=sfFullOutput||document.getElementById('outputText').value||'';
+  if(!text.trim())return;
+  navigator.clipboard?.writeText(text).catch(()=>{});
+};
+
+
+/* ---------------- Scheduler UI: high parallelism + concurrency-first note ---------------- */
+(function sf_upgradeSchedulerUI(){
+  const parallel=document.getElementById('parallel');
+  if(parallel){
+    parallel.max='120';
+    const v=parseInt(parallel.value)||4;
+    if(v>120) parallel.value='120';
+  }
+  const rpm=document.getElementById('rpm');
+  if(rpm){
+    const col=rpm.closest('.col');
+    if(col && !document.getElementById('sfSchedulerNote')){
+      const note=document.createElement('div');
+      note.id='sfSchedulerNote';
+      note.className='hint';
+      note.style.marginTop='6px';
+      note.textContent='⚡ Bộ điều phối không tự giảm số request song song theo RPM cục bộ. RPM chỉ dùng để tham khảo; nếu proxy/server trả 429, hệ thống sẽ tự retry và đổi key khi có thể.';
+      col.appendChild(note);
+    }
+  }
+})();
+
+/* ---------------- Better summary ---------------- */
+const __sf_orig_updateGeneralSummary=updateGeneralSummary;
+updateGeneralSummary=function(){
+  const label=langLabel();
+  document.getElementById('generalSummary').textContent=label+' · '+parallelVal()+' request · '+rpmVal()+' RPM/key · '+chunkSizeVal()+' ký tự · '+contextModeLabel();
+  const maxReq=state.keys.length>0?state.keys.length*rpmVal():rpmVal();
+  const keyCount=state.keys.length>0?state.keys.length:1;
+  document.getElementById('rpmEstimate').innerHTML=`⚡ ${keyCount} key × ${rpmVal()} RPM/key = ${maxReq} request/phút${localRpmThrottle?' · 🛡️ đang giới hạn cục bộ':' · ⚡ không giới hạn cục bộ'}. Mục “request song song” chỉ giới hạn số fetch đang chạy đồng thời.`;
+};
+updateGeneralSummary();
+
+/* Preserve the new switch when session config is saved/restored. */
+const __sf_orig_saveLastSessionConfig=saveLastSessionConfig;
+saveLastSessionConfig=function(){
+  __sf_orig_saveLastSessionConfig();
+  try{const raw=localStorage.getItem(SF_LAST_CONFIG_KEY);const cfg=raw?(JSON.parse(raw)||{}):{};cfg.localRpmThrottle=!!localRpmThrottle;localStorage.setItem(SF_LAST_CONFIG_KEY,JSON.stringify(cfg));}catch(e){}
+};
+
+/* When a translation run ends, attach the filename to the session-history item. */
+const __sf_orig_deleteProgressForClear=clearTranslationProgress;
+window.addEventListener('beforeunload',()=>{
+  try{ if(running) saveTranslationProgress(true); }catch(e){}
+});
+
+/* Clear both metadata and per-chunk stores. */
+clearEntireFileLibrary=async function(){
+  if(running){alert('Đang có tiến trình dịch đang chạy — vui lòng Dừng trước khi dọn dẹp thư viện.');return;}
+  if(!confirm('Hành động này sẽ xóa toàn bộ các file đã lưu trong bộ nhớ máy. Bạn có chắc chắn không?'))return;
+  try{
+    const db=await idbOpen();
+    await new Promise((resolve,reject)=>{const tx=db.transaction([IDB_FILES_STORE,SF_FILE_CHUNKS_STORE,IDB_STORE],'readwrite');tx.objectStore(IDB_FILES_STORE).clear();tx.objectStore(SF_FILE_CHUNKS_STORE).clear();tx.objectStore(IDB_STORE).delete('current');tx.oncomplete=()=>resolve(true);tx.onerror=()=>reject(tx.error);});
+  }catch(e){}
+  fileLibrary=[];translationQueue=[];window.__activeFileId=null;currentChunks=[];chunkState=[];sfFullOutput='';renderHistory();renderQueuePanel();renderChunkPage();
+};
+
+/* Retry failed chunks: reset only failures, keep successful ones intact. */
+retryFailedChunks=async function(){
+  if(running)return;
+  const indices=chunkState.map((c,i)=>c.status==='error'?i:-1).filter(i=>i>=0);
+  if(!indices.length){alert('Không có chunk lỗi để dịch lại.');return;}
+  indices.forEach(i=>{chunkState[i].status='waiting';chunkState[i].trans='';setChunkBadge(i,'waiting','⚪ Chờ');});
+  await runEngine(indices);
+};
+
+/* Initial hydration after all hotfix functions are installed. */
+(async()=>{
+  try{ await loadFileLibrary(); }catch(e){}
+  try{ await checkResumeOnLoad(); }catch(e){}
+  renderHistory(); renderQueuePanel(); updateLocalRpmThrottleUI(); updateGeneralSummary();
+})();
+
+
+/* =====================================================================
+   FINAL FIX: TRUE FIXED-SIZE BATCH SCHEDULER
+   Requirement: if Parallel = 60, translate up to 60 DISTINCT chunks,
+   wait until every chunk in that batch reaches a terminal state, then
+   start the next batch. No permanent worker loop and no reusing the same
+   first 60 chunks.
+   ===================================================================== */
+runEngine = async function sfRunEngineFixedBatches(indices){
+  if(running) return;
+
+  running = true;
+  stopFlag = false;
+  pauseFlag = false;
+  if(typeof translationInProgress !== 'undefined') translationInProgress = true;
+  if(!translateStartTime) translateStartTime = Date.now();
+
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const retryBox = document.getElementById('retryFailedBox');
+  const progWrap = document.getElementById('progwrap');
+
+  if(startBtn) startBtn.disabled = true;
+  if(stopBtn) stopBtn.style.display = 'inline-block';
+  if(pauseBtn){
+    pauseBtn.style.display = 'inline-block';
+    pauseBtn.textContent = '⏸ Tạm dừng';
+  }
+  if(progWrap) progWrap.classList.add('show');
+  if(retryBox) retryBox.style.display = 'none';
+  showAllKeysWarning(false);
+
+  const tasks = Array.from(new Set((indices || []).filter(i => Number.isInteger(i) && i >= 0 && i < currentChunks.length)))
+    .filter(i => !chunkState[i] || chunkState[i].status !== 'done');
+
+  const wanted = Math.max(1, Math.min(120, parseInt(document.getElementById('parallel')?.value, 10) || 1));
+  const nKeys = Math.max(1, state.keys.length);
+
+  totalBatches = tasks.length ? Math.ceil(tasks.length / wanted) : 0;
+  currentBatch = 0;
+  currentBatchSize = 0;
+
+  const batchWrap = document.getElementById('batchWrap');
+  if(batchWrap) batchWrap.style.display = totalBatches > 0 ? 'block' : 'none';
+
+  updateProgress(computeChunkCounts().done, currentChunks.length);
+  setQueue(Math.max(0, currentChunks.length - computeChunkCounts().done), currentChunks.length);
+  renderQueuePanel();
+
+  logLine('info', null, null,
+    `🚀 Bắt đầu dịch ${tasks.length}/${currentChunks.length} chunk theo BATCH cố định ${wanted} request/lượt — tổng ${totalBatches} batch.`);
+
+  try{
+    for(let batchStart = 0; batchStart < tasks.length; batchStart += wanted){
+      if(stopFlag) break;
+
+      currentBatch = Math.floor(batchStart / wanted) + 1;
+      const batch = tasks.slice(batchStart, batchStart + wanted)
+        .filter(idx => !chunkState[idx] || chunkState[idx].status !== 'done');
+      currentBatchSize = batch.length;
+
+      if(!batch.length) continue;
+
+      /* Mark the exact batch before any request starts so the UI/log can prove
+         that the scheduler is advancing through distinct chunk ranges. */
+      batch.forEach((idx, offset) => {
+        if(chunkState[idx]){
+          chunkState[idx].batchIndex = currentBatch;
+          chunkState[idx].batchRequestIndex = offset + 1;
+        }
+        try{ refreshChunkRow(idx); }catch(e){}
+      });
+
+      updateBatchUI(0, batch.length);
+      logLine('info', null, null,
+        `📦 BATCH ${currentBatch}/${totalBatches} START — ${batch.length} chunk (#${batch[0]+1} → #${batch[batch.length-1]+1})`);
+
+      /* IMPORTANT: exactly one promise per DISTINCT chunk in this batch.
+         Promise.allSettled waits for the entire batch before the next batch
+         is created. processChunkInBatch performs the per-chunk retry logic. */
+      let batchFinished = 0;
+      const batchPromises = batch.map((idx, offset) => (async()=>{
+        if(stopFlag) return;
+        await waitWhilePaused();
+        if(stopFlag) return;
+        try{
+          await processChunkInBatch(idx, (batchStart + offset) % nKeys);
+        }finally{
+          batchFinished++;
+          const cnt = computeChunkCounts();
+          updateProgress(cnt.done, currentChunks.length);
+          updateBatchUI(batchFinished, batch.length);
+          setQueue(Math.max(0, currentChunks.length - cnt.done), currentChunks.length);
+        }
+      })());
+
+      const settled = await Promise.allSettled(batchPromises);
+      if(stopFlag) break;
+
+      const rejected = settled.filter(r => r.status === 'rejected').length;
+      const cnt = computeChunkCounts();
+      updateBatchUI(batch.length, batch.length);
+      updateProgress(cnt.done, currentChunks.length);
+      setQueue(Math.max(0, currentChunks.length - cnt.done), currentChunks.length);
+
+      logLine(rejected ? 'warn' : 'ok', null, null,
+        `📦 BATCH ${currentBatch}/${totalBatches} COMPLETE — ${batch.length}/${batch.length} request đã kết thúc${rejected ? ` · ${rejected} promise bị reject` : ''}. Chuyển sang batch tiếp theo.`);
+
+      /* Yield once between batches so Chrome can paint/GC before the next
+         group of up to 60 fetch promises is created. */
+      await new Promise(resolve => setTimeout(resolve, 0));
+    }
+
+    /* ================================================================
+       AUTO-RETRY FAILED CHUNKS
+       After the initial translation pass finishes, automatically collect
+       every chunk that is still in error state and translate those chunks
+       again in fresh fixed-size batches. Successful chunks are NEVER
+       retranslated. A bounded number of passes prevents an API/proxy
+       outage from creating an infinite retry loop; remaining failures can
+       still be retried manually from the existing Retry button.
+       ================================================================ */
+    const AUTO_RETRY_PASSES = 3;
+    if(!stopFlag){
+      for(let retryPass=1; retryPass<=AUTO_RETRY_PASSES; retryPass++){
+        const failed = chunkState
+          .map((c,i)=>c && c.status==='error' ? i : -1)
+          .filter(i=>i>=0);
+
+        if(!failed.length) break;
+
+        logLine('warn', null, null,
+          `🔄 Tự động dịch lại ${failed.length} chunk lỗi — lần ${retryPass}/${AUTO_RETRY_PASSES}. Các chunk đã thành công được giữ nguyên.`);
+
+        failed.forEach(idx=>{
+          if(chunkState[idx]){
+            chunkState[idx].status='waiting';
+            chunkState[idx].trans='';
+            chunkState[idx].retryCount=(chunkState[idx].retryCount||0)+1;
+          }
+          currentResults[idx]=null;
+          try{ setChunkBadge(idx,'waiting','⚪ Chờ dịch lại'); }catch(e){}
+          try{ refreshChunkRow(idx); }catch(e){}
+        });
+
+        const retryBatchTotal=Math.ceil(failed.length/wanted);
+        totalBatches=retryBatchTotal;
+        currentBatch=0;
+        currentBatchSize=0;
+        if(batchWrap) batchWrap.style.display=retryBatchTotal>0?'block':'none';
+
+        for(let batchStart=0; batchStart<failed.length; batchStart+=wanted){
+          if(stopFlag) break;
+
+          currentBatch=Math.floor(batchStart/wanted)+1;
+          const batch=failed.slice(batchStart,batchStart+wanted)
+            .filter(idx=>chunkState[idx] && chunkState[idx].status!=='done');
+          currentBatchSize=batch.length;
+          if(!batch.length) continue;
+
+          batch.forEach((idx,offset)=>{
+            if(chunkState[idx]){
+              chunkState[idx].batchIndex=currentBatch;
+              chunkState[idx].batchRequestIndex=offset+1;
+            }
+            try{ refreshChunkRow(idx); }catch(e){}
+          });
+
+          updateBatchUI(0,batch.length);
+          logLine('info',null,null,
+            `♻️ AUTO-RETRY ${retryPass}/${AUTO_RETRY_PASSES} · BATCH ${currentBatch}/${retryBatchTotal} START — ${batch.length} chunk (#${batch[0]+1} → #${batch[batch.length-1]+1})`);
+
+          let batchFinished=0;
+          const retryPromises=batch.map((idx,offset)=>(async()=>{
+            if(stopFlag) return;
+            await waitWhilePaused();
+            if(stopFlag) return;
+            try{
+              await processChunkInBatch(idx,(batchStart+offset)%nKeys);
+            }finally{
+              batchFinished++;
+              const cnt=computeChunkCounts();
+              updateProgress(cnt.done,currentChunks.length);
+              updateBatchUI(batchFinished,batch.length);
+              setQueue(Math.max(0,currentChunks.length-cnt.done),currentChunks.length);
+            }
+          })());
+
+          const retrySettled=await Promise.allSettled(retryPromises);
+          if(stopFlag) break;
+
+          const retryRejected=retrySettled.filter(r=>r.status==='rejected').length;
+          updateBatchUI(batch.length,batch.length);
+          logLine(retryRejected?'warn':'ok',null,null,
+            `♻️ AUTO-RETRY ${retryPass}/${AUTO_RETRY_PASSES} · BATCH ${currentBatch}/${retryBatchTotal} COMPLETE${retryRejected?` · ${retryRejected} promise reject`:''}.`);
+
+          await new Promise(resolve=>setTimeout(resolve,0));
+        }
+
+        if(stopFlag) break;
+
+        const remainingErrors=chunkState.filter(c=>c && c.status==='error').length;
+        if(!remainingErrors){
+          logLine('ok',null,null,
+            `✅ Tự động dịch lại hoàn tất: toàn bộ chunk lỗi đã được xử lý thành công sau lần ${retryPass}.`);
+          break;
+        }
+
+        if(retryPass<AUTO_RETRY_PASSES){
+          logLine('warn',null,null,
+            `⚠️ Sau lần tự động retry ${retryPass} vẫn còn ${remainingErrors} chunk lỗi. Sẽ tự động thử lại lần ${retryPass+1}.`);
+        }else{
+          logLine('warn',null,null,
+            `⚠️ Đã thử tự động retry ${AUTO_RETRY_PASSES} lần nhưng vẫn còn ${remainingErrors} chunk lỗi. Bạn có thể bấm Dịch lại chunk lỗi để thử tiếp.`);
+        }
+      }
+    }
+  } finally {
+    running = false;
+    if(typeof translationInProgress !== 'undefined') translationInProgress = false;
+
+    if(startBtn) startBtn.disabled = false;
+    if(stopBtn) stopBtn.style.display = 'none';
+    if(pauseBtn) pauseBtn.style.display = 'none';
+    showAllKeysWarning(false);
+
+    const counts = computeChunkCounts();
+    setQueue(Math.max(0, currentChunks.length - counts.done), currentChunks.length);
+    renderQueuePanel();
+
+    /* Keep the batch panel visible at the final state instead of hiding it so
+       the user can verify how many batches actually ran. */
+    if(batchWrap){
+      batchWrap.style.display = totalBatches > 0 ? 'block' : 'none';
+      updateBatchUI(
+        currentBatch > 0 && !stopFlag
+          ? currentBatchSize
+          : 0,
+        currentBatchSize || (tasks.length ? Math.min(wanted, tasks.length) : 0)
+      );
+    }
+
+    const finalText = currentResults.map((r,i)=>
+      r != null ? r : (chunkState[i]?.status === 'error'
+        ? `\n[LỖI DỊCH CHUNK ${i+1}]\n${currentChunks[i]}`
+        : '')
+    ).join('\n\n');
+    sf_setFinalOutput(finalText);
+
+    const durationSec = translateStartTime ? Math.round((Date.now()-translateStartTime)/1000) : 0;
+    const statusLabel = stopFlag
+      ? 'Đã dừng'
+      : (counts.done >= currentChunks.length
+        ? (counts.error > 0 ? `Hoàn tất (${counts.error} lỗi)` : 'Hoàn tất')
+        : (counts.error > 0 ? `Chưa hoàn tất (${counts.error} lỗi)` : 'Chưa hoàn tất'));
+
+    historyArr.push({
+      time: new Date().toLocaleTimeString('vi-VN'),
+      fileName: currentFileName || '',
+      chunks: currentChunks.length,
+      chars: currentChunks.reduce((a,c)=>a+(c?.length||0),0),
+      status: statusLabel,
+      duration: formatDuration(durationSec),
+      keys: state.keys.length,
+      batches: totalBatches,
+      parallel: wanted
+    });
+    if(typeof sf_saveHistory === 'function') sf_saveHistory();
+    renderHistory();
+
+    if(stopFlag){
+      logLine('warn', null, null,
+        '⏹ Đã dừng theo yêu cầu. Batch hiện tại không được khởi động lại; tiến độ đã được lưu.');
+    }else if(counts.done >= currentChunks.length){
+      logLine('ok', null, null,
+        `🎉 Hoàn tất toàn bộ ${currentChunks.length} chunk qua ${totalBatches} batch (mỗi batch tối đa ${wanted} request).`);
+    }else{
+      logLine('warn', null, null,
+        `⚠️ Tiến trình kết thúc khi còn ${currentChunks.length - counts.done} chunk chưa hoàn tất.`);
+    }
+
+    try{ await sf_flushActiveFile(true); }catch(e){}
+    try{ await saveTranslationProgress(true); }catch(e){}
+    try{ renderRetryFailedBox(); }catch(e){}
+  }
+};
+
+/* Keep the tab keep-alive + completion notification around the FINAL engine. */
+const __sf_batchEngineFinal = runEngine;
+runEngine = async function(indices){
+  if(typeof startKeepAlive === 'function') startKeepAlive();
+  if(typeof translationInProgress !== 'undefined') translationInProgress = true;
+  try{
+    return await __sf_batchEngineFinal(indices);
+  }finally{
+    if(typeof stopKeepAlive === 'function') stopKeepAlive();
+    if(typeof translationInProgress !== 'undefined') translationInProgress = false;
+    try{
+      const remaining = currentChunks?.length
+        ? currentChunks.length - computeChunkCounts().done
+        : 0;
+      const queueStillHasWork = (typeof translationQueue !== 'undefined') && translationQueue.length > 0;
+      if(!stopFlag && remaining <= 0 && !queueStillHasWork){
+        const fileName = currentFileName || 'văn bản';
+        if(typeof playCompletionBeep === 'function') playCompletionBeep();
+        if(typeof showCompletionNotification === 'function'){
+          showCompletionNotification(fileName, currentChunks ? currentChunks.length : 0);
+        }
+      }
+    }catch(e){}
+  }
+};
+
 </script>
 </body>
 </html>
