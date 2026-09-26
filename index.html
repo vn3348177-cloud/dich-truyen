@@ -333,6 +333,11 @@
   .cdbar-inner.error{background:var(--red);}
   .cdbody{display:none; margin-top:12px; padding-top:10px; border-top:1px dashed var(--panel-border);}
   .cdrow.expanded .cdbody{display:block;}
+  /* Mục 1A: cảnh báo thiếu header chương */
+  .cdwarn{margin-top:9px; background:#2b2410; border:1px solid #4a3a12; border-radius:9px; padding:9px 12px; cursor:default;}
+  .cdwarn-title{font-size:12px; font-weight:700; color:var(--amber); margin-bottom:4px;}
+  .cdwarn-list{margin:0 0 8px; padding-left:18px; font-size:12px; color:var(--text); line-height:1.5;}
+  .cdwarn .btn{margin:0;}
 
   @media (max-width:820px){
     .sidebar{display:none;}
@@ -1454,6 +1459,10 @@ async function sf_prepareFileForTranslation(text, offsets){
   const rec = {
     id: fileId,
     name: (existing && existing.name) || sfLastUploadName || 'Truyện dán trực tiếp',
+    // originalFileName: CHỈ set khi có file .txt thật sự được tải lên (mục 2 — TÊN FILE XUẤT).
+    // Không dùng placeholder 'Truyện dán trực tiếp' ở đây, để export biết phân biệt
+    // giữa "có file gốc" và "chỉ dán text thủ công" (giữ đúng TEST 8).
+    originalFileName: (existing && existing.originalFileName) || sfLastUploadName || null,
     sourceHash: hash,
     sourceText: text,
     createdAt: (existing && existing.createdAt) || now,
@@ -1466,7 +1475,14 @@ async function sf_prepareFileForTranslation(text, offsets){
     model: state.model,
     baseUrl: document.getElementById('baseUrl').value.trim(),
     prompt: document.getElementById('promptBox').value,
-    config: cfg
+    config: cfg,
+    // ĐỢT 3/4 — CHỈ THÊM field mới, KHÔNG xoá/đổi field nào ở trên. Optional, chỉ để tra cứu/debug
+    // (restoreFile()/continueUnfinishedTranslation() KHÔNG đọc các field này — Resume vẫn hoạt
+    // động bình thường với record cũ không có các field này, tức tương thích ngược 100%).
+    chunkingVersion: 3,
+    tokenBudget: (window.__sfLastAdaptiveCap != null ? window.__sfLastAdaptiveCap : null),
+    estimatedInputTokens: (window.__sfLastBudget && window.__sfLastBudget.effectiveInputBudget != null)
+      ? window.__sfLastBudget.effectiveInputBudget : null
   };
 
   sfCurrentFileId = fileId;
@@ -1538,6 +1554,9 @@ async function restoreFile(fileId){
     trans: c.status === 'done' ? (c.translatedText || '') : '',
     key: null,
     retryCount: c.retryCount || 0,
+    // mục 1A: tính lại cảnh báo thiếu header khi mở lại truyện (reload/Continue) —
+    // không lưu field mới vào IndexedDB, chỉ suy ra lại từ sourceText/translatedText sẵn có.
+    headerWarning: c.status === 'done' ? sf_findMissingHeaders(c.sourceText, c.translatedText || '') : null,
     stableId: c.stableId, sourceStart: c.sourceStart, sourceEnd: c.sourceEnd
   }));
   chunkStats = { waiting:0, running:0, done:0, error:0 };
@@ -1577,6 +1596,10 @@ async function sf_onEngineFinished(){
 /* ---------- 11. Tiếp tục dịch phần CHƯA xong (mục 5: CONTINUE PHẢI AN TOÀN) ---------- */
 // runEngine() vốn đã tự lọc `queue = indices.filter(i => chunkState[i].status !== 'done')`
 // nên gọi lại với TOÀN BỘ index là an toàn — chunk DONE không bao giờ bị dịch lại.
+// ĐỢT 3/4: hàm này gọi restoreFile() (đọc chunk map đã lưu trong IndexedDB) rồi runEngine()
+// thẳng — KHÔNG hề gọi splitChunksWithOffsets()/sf_buildSmartChunkOffsets() ở bất kỳ đâu trong
+// đường đi này. Vì vậy Adaptive Budget (ĐỢT 3) và Smart Chunking KHÔNG có cách nào can thiệp vào
+// một phiên RESUME: chunk map đã lưu (kèm mọi chunk DONE) luôn là SOURCE OF TRUTH tuyệt đối.
 async function continueUnfinishedTranslation(fileId){
   if(running){ alert('Đang có một tiến trình dịch chạy. Vui lòng dừng trước khi tiếp tục truyện khác.'); return; }
   if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
@@ -1679,6 +1702,13 @@ async function hydrateLibrary(){
 }
 
 /* ---------- 14. Export TXT theo thứ tự sourceStart (mục 10) ---------- */
+// Mục 2 — TÊN FILE XUẤT: [Tên file gốc không có phần mở rộng] - đã dịch.txt
+// Nếu không có file gốc (chỉ dán text thủ công) -> mặc định 'ban-dich.txt'.
+function sf_buildExportFileName(originalFileName){
+  if(!originalFileName) return 'ban-dich.txt';
+  const base = String(originalFileName).replace(/\.[^./\\]+$/, '');
+  return (base || originalFileName) + ' - đã dịch.txt';
+}
 async function exportLibraryFileTxt(fileId){
   try{
     const fileRec = await getFileRecord(fileId);
@@ -1692,7 +1722,7 @@ async function exportLibraryFileTxt(fileId){
     const blob = new Blob([text], { type:'text/plain;charset=utf-8' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = (fileRec && fileRec.name ? fileRec.name.replace(/\.[^.]+$/, '') : 'ban-dich') + '.txt';
+    a.download = sf_buildExportFileName(fileRec && fileRec.originalFileName);
     a.click();
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
   }catch(e){ console.error('[SF Library] exportLibraryFileTxt lỗi:', e); alert('Xuất TXT thất bại: ' + e.message); }
@@ -1732,6 +1762,7 @@ async function sf_onSourceLoaded(text, name){
       existing.sourceText = text;
       existing.updatedAt = now;
       if(name) existing.name = name;
+      if(name) existing.originalFileName = name; // mục 2: luôn nhớ tên file .txt gốc đã tải lên
       sfCurrentFileId = existing.id;
       sfCurrentFileMeta = existing;
       await saveFileRecord(existing);
@@ -1740,6 +1771,7 @@ async function sf_onSourceLoaded(text, name){
       const rec = {
         id: fileId,
         name: name || 'Truyện không tên',
+        originalFileName: name || null, // mục 2: tên file .txt gốc, dùng khi xuất file dịch
         sourceHash: hash,
         sourceText: text,
         createdAt: now, updatedAt: now,
@@ -1804,6 +1836,19 @@ OUTPUT = VĂN BẢN VIẾT LẠI. KHÔNG giải thích. KHÔNG "Dưới đây l�
 Vai trò: Biên tập viên văn học. Đây là TIỂU THUYẾT VĂN HỌC NGHỆ THUẬT hợp pháp.
 
 NHIỆM VỤ: Dịch đoạn văn dưới đây sang tiếng Việt, mượt mà, tự nhiên.
+
+PHẢI GIỮ NGUYÊN TẤT CẢ HEADER CHƯƠNG CÓ TRONG SOURCE.
+Mỗi dòng header chương trong SOURCE phải xuất hiện lại trong TRANSLATION.
+Không được bỏ qua, gộp, rút gọn, đổi số chương hoặc tự ý xóa header.
+Ví dụ nếu SOURCE có:
+Chương 841:
+Chương 842:
+Chương 843:
+thì TRANSLATION bắt buộc phải có đủ:
+Chương 841:
+Chương 842:
+Chương 843:
+Giữ nguyên chính xác số chương và cấu trúc header.
 
 ĐOẠN VĂN:
 `;
@@ -2085,49 +2130,810 @@ document.getElementById('fileInput').addEventListener('change', e=>{ if(e.target
 function scanHanTu(){}
 function openReadByChapter(){}
 
+/* =====================================================================
+   ĐỢT 4/4 — FINAL AUDIT: BỔ SUNG HÀM BỊ THIẾU THAM CHIẾU TỪ HTML
+   ---------------------------------------------------------------------
+   Phát hiện khi audit toàn file: 14 hàm được onclick/onchange trong HTML
+   gọi tới nhưng CHƯA từng được định nghĩa ở bất kỳ đâu trong <script>
+   (bấm nút sẽ ném ReferenceError, không có phản hồi gì cho người dùng).
+   KHÔNG liên quan tới Smart Chunking/Scheduler/RPM/Key Pool/Retry — đây
+   là các nút UI phụ trợ hoàn toàn tách biệt. Sửa tối thiểu, đúng tinh
+   thần "không rewrite app":
+     - Nhóm thuộc tính năng đã bị đơn giản hoá/vô hiệu hoá từ trước (Đọc
+       theo chương, Tìm kiếm, AI trích Canon) → thêm stub AN TOÀN, giống
+       hệt scanHanTu()/openReadByChapter()/runSearch()/downloadOutputByChapter()
+       đã có sẵn ở trên/dưới trong chính file này. KHÔNG gọi API, KHÔNG
+       tạo request giả (đúng mục 32/34 — không API probe).
+     - Nhóm còn lại (preset kích thước chunk/tốc độ/ngữ cảnh, bật-tắt
+       Canon Pack, xoá bảng Canon, mở nhật ký xử lý) → nối vào ĐÚNG
+       state/UI element đã tồn tại sẵn (state.canonOn, .chunksize-preset/
+       .ctxmode-preset/.speedpreset + class 'active', canonSwitch/
+       canonBadge/canonSummary, #progDetailPanel) theo ĐÚNG khuôn mẫu các
+       hàm toggle tương tự đã có (toggleCors/toggleProxy/toggleHistoryPanel),
+       và đúng cách sf_collectConfig()/sf_applyConfigToUI() đã đọc/ghi các
+       giá trị này. KHÔNG đụng tới cơ chế scheduler/RPM/key pool — chỉ đặt
+       giá trị vào các ô input (#parallel/#rpm/#chunkSize) vốn dĩ người
+       dùng vẫn tự tay sửa được. Lưu ý: preset "Chế độ giữ ngữ cảnh" chỉ
+       lưu lựa chọn UI (đúng như sf_collectConfig() đã làm từ trước) —
+       project hiện KHÔNG có 2 luồng dịch waterfall/hybrid khác nhau thật
+       sự trong runEngine/executeDynamicTask, nên hàm này không tự bịa
+       thêm một scheduler tuần tự mới (mục 12 — không tạo scheduler mới). */
+
+// ---- 1) "Đọc theo chương": openReadByChapter() ở trên là stub rỗng nên
+// modal #readModalOverlay không bao giờ được mở (display:none cố định
+// trong CSS, không có JS nào khác gán style hiển thị). Các nút bên trong
+// modal vẫn được HTML tham chiếu nên cần stub AN TOÀN tương ứng.
+function closeReadModal(){ const el=document.getElementById('readModalOverlay'); if(el) el.style.display='none'; }
+function readGotoSelect(){}
+function readNextChapter(){}
+function readPrevChapter(){}
+function exportOfflineReader(){}
+
+// ---- 2) Tìm kiếm trong kết quả: runSearch() (định nghĩa bên dưới) đã là
+// stub rỗng sẵn (tính năng đơn giản hoá) — searchPrev/searchNext thuộc
+// cùng tính năng đó nên giữ nguyên tinh thần đơn giản hoá tương tự.
+function searchPrev(){}
+function searchNext(){}
+
+// ---- 3) Canon Pack — dùng ĐÚNG state.canonOn + #canonSwitch đã có sẵn
+// trong sf_collectConfig()/sf_applyConfigToUI() (đọc/ghi classList 'on'
+// của #canonSwitch), theo đúng khuôn mẫu toggleCors()/toggleProxy().
+function toggleCanon(){
+  state.canonOn = !state.canonOn;
+  const sw = document.getElementById('canonSwitch');
+  if(sw) sw.classList.toggle('on', state.canonOn);
+  const badge = document.getElementById('canonBadge');
+  if(badge){ badge.textContent = state.canonOn ? 'Bật' : 'Tắt'; badge.classList.toggle('off', !state.canonOn); }
+  const summary = document.getElementById('canonSummary');
+  if(summary) summary.textContent = state.canonOn ? 'Bật' : 'Tắt';
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+// Xoá nội dung ô nhập bảng thuật ngữ Canon (chỉ xoá dữ liệu nhập tay, không gọi API).
+function clearCanonTable(){
+  const ta = document.getElementById('canonInput');
+  if(ta) ta.value = '';
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+// AI Tự trích xuất Canon: project hiện KHÔNG có backend/API call nào cho việc này
+// (mục 32/34 — KHÔNG tự thêm API probe/fake request). Giữ dạng stub thông báo,
+// giống hệt testConnection()/downloadCorsScript() đã có sẵn cho các tính năng
+// bị đơn giản hoá vì lý do dung lượng.
+function autoExtractCanon(){ alert('Tính năng AI tự trích xuất Canon đã được tối giản cho bản này. Vui lòng tự nhập vào ô bên dưới (mỗi dòng dạng: TừGốc = TênDịch).'); }
+
+// ---- 4) Preset "Kích thước chunk" — chỉ đổi giá trị ô #chunkSize đã có sẵn
+// (input này vẫn được đọc bình thường bởi chunkSizeVal()/splitChunksWithOffsets()
+// y như khi người dùng tự gõ số) + cập nhật class 'active' giữa các nút preset.
+// KHÔNG đụng tới bản thân pipeline Smart Chunking.
+function setChunkSizePreset(size){
+  const input = document.getElementById('chunkSize');
+  if(input) input.value = size;
+  document.querySelectorAll('.chunksize-preset').forEach(b=>{
+    b.classList.toggle('active', b.textContent.trim() === String(size));
+  });
+  updateStats();
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+
+// ---- 5) Preset "Chế độ giữ ngữ cảnh" — chỉ đổi class 'active' giữa các nút
+// .ctxmode-preset (đúng cách sf_collectConfig() đọc lại: document.querySelector(
+// '.ctxmode-preset.active').dataset.cm) — không tạo luồng dịch waterfall mới.
+function setContextMode(mode){
+  document.querySelectorAll('.ctxmode-preset').forEach(b=> b.classList.toggle('active', b.dataset.cm === mode));
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+
+// ---- 6) Preset "Tốc độ" — chỉ đặt giá trị vào 2 ô input đã có sẵn (#parallel/
+// #rpm) mà người dùng vốn dĩ vẫn tự tay chỉnh được; KHÔNG đổi cơ chế Dynamic
+// Sliding Window Scheduler/Adaptive RPM (mục 12/13 — không tạo scheduler/RPM mới).
+// 'custom': không ép giá trị nào, chỉ đánh dấu active để người dùng tự chỉnh.
+function applySpeedPreset(preset){
+  document.querySelectorAll('.speedpreset').forEach(b=> b.classList.toggle('active', b.dataset.p === preset));
+  const presets = { fast:{parallel:8, rpm:25}, stable:{parallel:4, rpm:15}, safe:{parallel:2, rpm:8} };
+  const p = presets[preset];
+  if(p){
+    const parallelEl = document.getElementById('parallel'); if(parallelEl) parallelEl.value = p.parallel;
+    const rpmEl = document.getElementById('rpm'); if(rpmEl) rpmEl.value = p.rpm;
+  }
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+
+// ---- 7) Mở/đóng panel nhật ký xử lý — đúng khuôn mẫu toggleHistoryPanel()/
+// toggleQueuePanel() đã có sẵn (cùng class CSS 'histpanel'/'show').
+function toggleProgDetail(){ const el = document.getElementById('progDetailPanel'); if(el) el.classList.toggle('show'); }
+/* ===== HẾT ĐỢT 4/4: BỔ SUNG HÀM BỊ THIẾU ===== */
+
 function chunkSizeVal(){ return parseInt(document.getElementById('chunkSize').value)||3500; }
 function parallelVal(){ return Math.max(1, parseInt(document.getElementById('parallel').value)||4); }
 function rpmVal(){ return Math.max(1, parseInt(document.getElementById('rpm').value)||15); }
-// Giữ nguyên 100% thuật toán Smart Chunking gốc, chỉ bổ sung sourceStart/sourceEnd
-// (vị trí thật trong text gốc) để làm STABLE CHUNK ID cho persistence (mục 6).
-// splitChunks(text,size) bên dưới vẫn trả về đúng mảng string y hệt bản gốc.
-function splitChunksWithOffsets(text, size){
+
+/* =====================================================================
+   SMART CHUNKING — TOKEN-AWARE + SMART PACKING (ĐỢT 1/4)
+   ---------------------------------------------------------------------
+   Đây là PIPELINE CHUNKING DUY NHẤT của StoryForge — không có chunker cũ
+   song song. splitChunksWithOffsets()/splitChunks() ở cuối khối này vẫn
+   giữ NGUYÊN chữ ký hàm và hợp đồng dữ liệu {text,start,end} như trước
+   (tương thích 100% với sf_makeStableId, sf_prepareFileForTranslation,
+   restoreFile, buildChunkViewer, startTranslate — KHÔNG hàm nào trong số
+   đó cần sửa).
+
+   NGUYÊN TẮC BẤT BIẾN (bắt buộc, được kiểm chứng bằng sf_validateChunkPartition
+   trước khi cho phép bắt đầu dịch — xem startTranslate()):
+     chunk[0].start === 0
+     chunk[i].end === chunk[i+1].start
+     last.end === originalText.length
+     chunk.text === originalText.slice(chunk.start, chunk.end)
+     chunks.map(c=>c.text).join('') === originalText   (100%, không dùng trim())
+
+   Vì vậy: KHÔNG BAO GIỜ gọi .trim()/.trimStart()/.trimEnd() lên phần văn bản
+   sẽ trở thành chunk.text — bản gốc (đợt trước Batch 1) dùng trim() nên làm
+   RỚT MẤT khoảng trắng/xuống dòng ở ranh giới chunk (và rớt hẳn các đoạn chỉ
+   toàn khoảng trắng), phá vỡ đúng bất biến trên. Toàn bộ khối dưới đây thay
+   thế cách làm đó bằng một mô hình "điểm cắt" (breakpoint) thuần túy: mọi
+   chunk luôn là originalText.slice(a,b) với a,b lấy từ cùng một tập điểm cắt
+   đơn điệu tăng 0..n, nên việc ghép lại KHÔNG BAO GIỜ có thể làm mất ký tự. */
+
+const SMART_CHUNK_CONFIG = {
+  enabled: true,        // bật Smart Chunking (token-aware + packing). false => coi cả văn bản
+                         // như MỘT đoạn duy nhất rồi vẫn đi qua các tầng an toàn bên dưới —
+                         // không có "chunker cũ" nào được giữ lại song song.
+  adaptive: true,        // dành cho Đợt 2+: cho phép scheduler co/giãn kích thước chunk CHƯA
+                         // dispatch dựa trên tỉ lệ thành công (growthStepTokens/shrinkFactor/
+                         // successStreakForGrowth bên dưới). ĐỢT 1 CHƯA nối vào runEngine.
+  tokenAware: true,      // dùng estimateTokensLocal() để đóng gói theo NGÂN SÁCH TOKEN thay vì
+                         // đếm ký tự thô.
+
+  targetInputTokens: 7000,   // TRẦN TĨNH mục tiêu số token đầu vào mỗi chunk (trước khi cộng context
+                             // prefix) — kể từ ĐỢT 2, đây chỉ còn là trần trên; giá trị THỰC DÙNG khi
+                             // đóng gói còn bị effectiveInputBudget (xem sf_computeEffectiveInputBudget)
+                             // co lại thêm nếu prompt/context-prefix/reserved-output chiếm nhiều chỗ.
+  minInputTokens: 3000,      // dưới ngưỡng này, chunk cuối sẽ được gộp vào chunk liền trước nếu an toàn
+  maxInputTokens: 9500,      // TRẦN CỨNG TĨNH — không chunk nào được vượt quá (trừ khi bản thân 1 câu/1
+                             // khối ký tự liên tục đã vượt ngưỡng này mà không có điểm cắt nào an toàn).
+                             // Kể từ ĐỢT 2, trần THỰC SỰ dùng để đóng gói = min(giá trị này,
+                             // effectiveInputBudget) — xem splitChunksWithOffsets().
+
+  // ---- 4 tham số dưới đây: ĐỢT 1 mới ĐỊNH NGHĨA cấu trúc ("CHƯA dùng"). KỂ TỪ ĐỢT 2, cả 4 đã
+  // được sf_computeEffectiveInputBudget() ĐỌC THẬT và dùng để tính effectiveInputBudget, rồi
+  // effectiveInputBudget được splitChunksWithOffsets() áp lại vào targetInputTokens/maxInputTokens/
+  // minInputTokens TRƯỚC khi gọi sf_buildSmartChunkOffsets() — xem khối "ĐỢT 2/4: EFFECTIVE INPUT
+  // BUDGET" ngay dưới hàm estimateTokensLocal().
+  reservedOutputTokens: 4096,      // SÀN mặc định cho chỗ dành token ĐẦU RA khi ô UI "🧯 Trần token
+                                    // đầu ra (max_tokens)" đang để 0 (tự động). Nếu người dùng tự đặt
+                                    // > 0 trên UI, sf_computeEffectiveInputBudget() dùng giá trị UI đó
+                                    // thay vì số này (vì đó mới là max_tokens THẬT SỰ sẽ được gửi đi).
+  promptReserveTokens: 1024,       // SÀN tối thiểu cho promptTokens — giá trị THẬT được đo trực tiếp
+                                    // từ nội dung #promptBox tại thời điểm tính budget (không phải hằng
+                                    // số cố định); số này chỉ là mức sàn phòng khi promptBox trống/ẩn.
+  contextPrefixReserveTokens: 192, // chỗ dành cho buildContextPrefix() (context 250 ký tự đoạn trước) —
+                                    // buildContextPrefix() chỉ biết nội dung tại thời điểm dispatch từng
+                                    // chunk (phụ thuộc bản dịch/gốc của chunk liền trước), nên KHÔNG thể
+                                    // đo trước lúc chia chunk — số này là ước lượng an toàn cố định.
+
+  safetyMarginRatio: 0.85,   // hệ số an toàn tổng thể nhân vào rawInputBudget để ra effectiveInputBudget
+                              // (sf_computeEffectiveInputBudget) — ĐỢT 2 đã dùng thật, không còn là số
+                              // dự phòng cho tương lai nữa.
+
+  otherOverheadTokens: 128,  // ĐỢT 2 — đệm cố định cho phần overhead KHÔNG thuộc 3 mục trên: khung JSON
+                              // của request (role/content wrapper), chênh lệch làm tròn của bộ ước lượng
+                              // token heuristic, và các ký tự nối ("\n") được callModel/executeDynamicTask
+                              // chèn giữa prompt/context-prefix/source. Không gọi API để đo — đây là hằng
+                              // số bảo thủ cố định, cùng tinh thần với contextPrefixReserveTokens.
+
+  // fallbackContextLimitTokens KHÔNG PHẢI context limit thật của model — bản thân project hiện
+  // tại KHÔNG lưu context limit thật của model đang dùng ở đâu cả (không có API dò giới hạn,
+  // và theo yêu cầu KHÔNG được tự gọi API để đo). Đây chỉ là con số fallback AN TOÀN để các
+  // phép tính ngân sách dùng làm mốc tham chiếu khi không biết gì hơn. ĐỢT 2 dùng số này làm
+  // contextLimitTokens thật trong sf_computeEffectiveInputBudget().
+  fallbackContextLimitTokens: 16384,
+
+  allowChapterMerge: true,     // true: được phép gộp nhiều chương ngắn vào 1 chunk nếu vẫn dưới target
+                                // false: luôn cắt tại ranh giới chương, không gộp 2 chương vào 1 chunk
+  allowParagraphPacking: true, // true: ưu tiên cắt tại ranh giới đoạn văn (dòng trống)
+  allowSentencePacking: true,  // true: nếu 1 đoạn văn/chương vẫn vượt maxInputTokens, tách tiếp theo câu
+
+  overlap: 0,   // KHÔNG chồng lấn nội dung giữa 2 chunk (giữ đúng mô hình partition liên tục)
+
+  // 3 tham số dưới đây dành cho ADAPTIVE REQUEST BUDGET ở Đợt 2+ (co/giãn kích thước chunk theo
+  // tỉ lệ thành công của scheduler). Được định nghĩa cấu trúc từ Đợt 1 nhưng CHƯA được runEngine/
+  // executeDynamicTask gọi tới — đúng theo phạm vi "chưa sửa scheduler" của Đợt 1.
+  growthStepTokens: 500,
+  shrinkFactor: 0.82,
+  successStreakForGrowth: 8
+};
+
+// Tái sử dụng NGUYÊN regex nhận diện header chương đã có sẵn trong project (mục 1A, định nghĩa
+// đầy đủ ở SF_CHAPTER_HEADER_RE phía dưới trong file) để Smart Chunking ưu tiên cắt chunk NGAY
+// TRƯỚC 1 chương mới thay vì cắt giữa chương — không định nghĩa lại quy tắc nhận diện chương.
+function sf_chunkHeaderRegex(){ return SF_CHAPTER_HEADER_RE; }
+
+/* ---------- TOKEN ESTIMATOR (heuristic — KHÔNG PHẢI tokenizer thật của model) ----------
+   Không gọi API, không test request. Mục tiêu: ước lượng AN TOÀN (thà cao hơn một chút còn
+   hơn thấp hơn thực tế, để không vô tình đóng gói vượt context) cho tiếng Việt, tiếng Anh,
+   tiếng Trung, tiếng Nhật, tiếng Hàn, emoji, Unicode, dấu câu. */
+function sf_isCJKChar(cp){
+  return (cp>=0x2E80&&cp<=0x303F) || (cp>=0x3040&&cp<=0x30FF) || (cp>=0x3400&&cp<=0x4DBF) ||
+         (cp>=0x4E00&&cp<=0x9FFF) || (cp>=0xF900&&cp<=0xFAFF) || (cp>=0xAC00&&cp<=0xD7A3) ||
+         (cp>=0x1100&&cp<=0x11FF) || (cp>=0x20000&&cp<=0x2FFFF);
+}
+function sf_isEmojiCp(cp){
+  return (cp>=0x1F300&&cp<=0x1FAFF) || (cp>=0x2600&&cp<=0x27BF) || (cp>=0x2190&&cp<=0x21FF) ||
+         cp===0x200D || cp===0xFE0F;
+}
+function estimateTokensLocal(text){
+  text = text==null ? '' : String(text);
+  if(!text) return 0;
+  let cjk=0, emoji=0, latin=0;
+  for(const ch of text){
+    const cp = ch.codePointAt(0);
+    if(sf_isEmojiCp(cp)) emoji++;
+    else if(sf_isCJKChar(cp)) cjk++;
+    else latin++;
+  }
+  const cjkTokens = cjk * 1.0;      // CJK/Hangul: ~1 token/ký tự (ước lượng an toàn)
+  const emojiTokens = emoji * 2.0;  // emoji/ZWJ sequence: thường tốn nhiều token hơn 1 ký tự
+  const latinTokens = latin / 3.2;  // Latin/Việt/số/dấu câu: ~3.2 ký tự/token (bảo thủ)
+  return Math.max(0, Math.ceil(cjkTokens + emojiTokens + latinTokens));
+}
+
+/* ---------- CẮT AN TOÀN UNICODE — không bao giờ cắt giữa surrogate pair (😀🔥),
+   không để dấu kết hợp/variation selector/ZWJ (❤️, gia đình ghép 👨‍👩‍👧‍👦) bị tách khỏi
+   ký tự nền đứng trước. Không normalize, không đổi CRLF thành LF, không xoá BOM,
+   không collapse whitespace — hàm này CHỈ dịch lùi 1 chỉ số cắt tới vị trí an toàn nhất. */
+function sf_isHighSurrogate(cc){ return cc>=0xD800 && cc<=0xDBFF; }
+function sf_isLowSurrogate(cc){ return cc>=0xDC00 && cc<=0xDFFF; }
+function sf_isCombiningMark(cc){
+  return (cc>=0x0300&&cc<=0x036F)||(cc>=0x1AB0&&cc<=0x1AFF)||(cc>=0x1DC0&&cc<=0x1DFF)||
+         (cc>=0x20D0&&cc<=0x20FF)||(cc>=0xFE20&&cc<=0xFE2F);
+}
+function sf_isJoinerOrSelector(cc){ return cc===0x200D || cc===0xFE0E || cc===0xFE0F; }
+function sf_findSafeCutIndex(text, idx){
+  if(idx<=0) return 0;
+  if(idx>=text.length) return text.length;
+  let i = idx;
+  while(i>0){
+    const before = text.charCodeAt(i-1);
+    const at = text.charCodeAt(i);
+    if(sf_isHighSurrogate(before) && sf_isLowSurrogate(at)){ i--; continue; }
+    if(sf_isCombiningMark(at) || sf_isJoinerOrSelector(at) || sf_isJoinerOrSelector(before)){ i--; continue; }
+    break;
+  }
+  return i;
+}
+
+/* ---------- BỘ TÌM ĐIỂM CẮT (breakpoint) — chỉ trả về CHỈ SỐ, không cắt/không sửa text.
+   Đây là nền tảng đảm bảo Bước 8 (Source Integrity): mọi chunk cuối cùng đều là
+   originalText.slice(a,b) với a,b nằm trong CÙNG một tập điểm cắt đơn điệu, nên
+   không thể có khoảng hở (mất ký tự) hay chồng lấn (trùng ký tự). ---------- */
+// {points:[0..n] đã sort, hard:Set<offset là ranh giới chương>}
+function sf_findParagraphBreakpoints(text){
+  const n = text.length;
+  const points = [0, n];
+  const hard = new Set();
+  const blankRe = /\n[ \t]*\n[ \t\r\n]*/g; // 1+ dòng trống — KHÔNG đổi \r\n thành \n, chỉ dò vị trí
+  let m;
+  while((m = blankRe.exec(text))){
+    const p = m.index + m[0].length;
+    if(p > 0 && p < n) points.push(p);
+  }
+  const headerRe = sf_chunkHeaderRegex();
+  const lineRe = /^.*$/gm;
+  let lm;
+  while((lm = lineRe.exec(text))){
+    if(lm[0] && headerRe.test(lm[0])){
+      const p = lm.index;
+      if(p > 0 && p < n){ points.push(p); hard.add(p); }
+    }
+    if(lm.index === lineRe.lastIndex) lineRe.lastIndex++; // chặn vòng lặp vô hạn khi khớp rỗng
+  }
+  const uniq = Array.from(new Set(points)).sort((a,b)=>a-b);
+  return { points: uniq, hard };
+}
+// Trả về mảng offset TUYỆT ĐỐI trong (from,to) — không bao gồm from/to.
+function sf_findSentenceBreakpoints(text, from, to){
+  const seg = text.slice(from, to);
+  const points = [];
+  // Dấu kết câu Latin (.!?…) VÀ CJK toàn góc (。！？) — tiếng Trung/Nhật thường KHÔNG có
+  // khoảng trắng sau dấu câu nên phần \s* phải cho phép khớp độ dài 0. Dấu phẩy toàn góc/
+  // Latin được thêm làm điểm cắt DỰ PHÒNG yếu hơn cho các khối không có dấu kết câu.
+  const re = /[.!?\u2026\u3002\uFF01\uFF1F]+(["'\u201d\u2019\u300d\u300f)\]]*)(\s*)|\n+|[\uFF0C\u3001](\s*)/g;
+  let m;
+  while((m = re.exec(seg))){
+    const p = from + m.index + m[0].length;
+    if(p > from && p < to) points.push(p);
+    if(m[0].length === 0) re.lastIndex++;
+  }
+  return points;
+}
+function sf_findHardBreakpoints(text, from, to, approxCharsPerChunk){
+  const points = [];
+  let p = from + Math.max(1, Math.floor(approxCharsPerChunk));
+  while(p < to){
+    const safe = sf_findSafeCutIndex(text, p);
+    if(safe > from && safe < to) points.push(safe);
+    p += Math.max(1, Math.floor(approxCharsPerChunk));
+  }
+  return points;
+}
+
+/* ---------- BỘ ĐÓNG GÓI THAM LAM (greedy packer) ----------
+   Đóng gói [from,to) thành các chunk dựa trên breakpoint đã cho. Trả về mảng
+   {start,end,tokens,oversize?} PHỦ KÍN [from,to) — không hở, không trùng.
+   'oversize:true' = đoạn đó đã vượt maxTokens nhưng KHÔNG có breakpoint mịn hơn ở TẦNG NÀY
+   để tách nhỏ hơn — caller sẽ tự tách tiếp bằng breakpoint mịn hơn (câu, rồi cắt cứng). */
+function sf_packRange(text, from, to, innerBreakpoints, targetTokens, maxTokens){
+  if(from >= to) return [];
+  const ptsSet = new Set([from, to]);
+  for(const p of innerBreakpoints) if(p > from && p < to) ptsSet.add(p);
+  const pts = Array.from(ptsSet).sort((a,b)=>a-b);
+
+  // Token của TỪNG đoạn nhỏ giữa 2 breakpoint liên tiếp chỉ ước lượng MỘT LẦN rồi cộng dồn
+  // (running sum) khi gộp — thay vì gọi lại estimateTokensLocal trên toàn bộ phần đang gộp ở
+  // MỖI bước (sẽ thành O(k^2), rất chậm với văn bản lớn có hàng chục nghìn breakpoint).
+  const nSeg = pts.length - 1;
+  const segTok = new Array(nSeg);
+  for(let k=0; k<nSeg; k++) segTok[k] = estimateTokensLocal(text.slice(pts[k], pts[k+1]));
+
   const out = [];
-  if(!text) return out;
-  size = Math.max(1, size);
-  let i = 0; const n = text.length;
-  while(i < n){
-    let chunk = text.slice(i, i+size);
-    let cutLen, isLast = false;
-    if(i+size >= n){ cutLen = chunk.length; isLast = true; }
-    else {
-      let cut = chunk.lastIndexOf('\n\n'); if(cut < size*0.5) cut = chunk.lastIndexOf('\n');
-      if(cut < size*0.5) cut = size;
-      cutLen = cut;
+  let startIdx = 0, curIdx = 0, runningSum = 0, i = 0;
+  while(i < nSeg){
+    const candSum = runningSum + segTok[i];
+    if(candSum <= maxTokens){
+      runningSum = candSum;
+      curIdx = i + 1;
+      i++;
+      if(candSum >= targetTokens){
+        out.push({ start: pts[startIdx], end: pts[curIdx], tokens: candSum });
+        startIdx = curIdx; runningSum = 0;
+      }
+      continue;
     }
-    const rawSlice = text.slice(i, i + cutLen);
-    const trimmed = rawSlice.trim();
-    if(trimmed.length > 0){
-      const leadWs = rawSlice.length - rawSlice.replace(/^\s+/, '').length;
-      const start = i + leadWs;
-      const end = start + trimmed.length;
-      out.push({ text: trimmed, start, end });
+    if(curIdx > startIdx){
+      out.push({ start: pts[startIdx], end: pts[curIdx], tokens: runningSum });
+      startIdx = curIdx; runningSum = 0;
+      continue; // thử lại đoạn nhỏ hiện tại (i không tăng) với chunk mới bắt đầu từ startIdx
+    } else {
+      // đoạn nhỏ NGAY ĐẦU đã vượt max, không có gì mịn hơn ở tầng này => trả oversize
+      out.push({ start: pts[startIdx], end: pts[i+1], tokens: segTok[i], oversize: true });
+      startIdx = i + 1; curIdx = startIdx; runningSum = 0;
+      i++;
     }
-    i += cutLen;
-    if(isLast || cutLen<=0) break;
+  }
+  if(startIdx < pts.length - 1){
+    out.push({ start: pts[startIdx], end: pts[pts.length-1], tokens: runningSum });
   }
   return out;
 }
+
+/* ---------- TẦNG TRÊN CÙNG: SMART CHUNKING (đoạn văn/chương → câu → cắt cứng an toàn) ---------- */
+function sf_buildSmartChunkOffsets(text, cfg){
+  cfg = cfg || SMART_CHUNK_CONFIG;
+  const n = text.length;
+  if(n === 0) return [];
+
+  const target = cfg.tokenAware ? cfg.targetInputTokens : Math.round((cfg.__legacyCharSize||3500)/3.2);
+  const max = cfg.tokenAware ? cfg.maxInputTokens : Math.round(target*1.15);
+  const min = cfg.tokenAware ? cfg.minInputTokens : Math.round(target*0.4);
+
+  // Tầng 1: đoạn văn / chương
+  let level1;
+  if(cfg.allowParagraphPacking){
+    const pb = sf_findParagraphBreakpoints(text);
+    const inner = pb.points.filter(p=> p>0 && p<n);
+    if(!cfg.allowChapterMerge){
+      // Không gộp nhiều chương vào 1 chunk: coi ranh giới chương là điểm cắt BẮT BUỘC —
+      // đóng gói riêng từng đoạn giữa 2 ranh giới "hard" liên tiếp.
+      const hardPts = Array.from(new Set([0, ...pb.hard, n])).sort((a,b)=>a-b);
+      level1 = [];
+      for(let k=0; k<hardPts.length-1; k++){
+        const segFrom = hardPts[k], segTo = hardPts[k+1];
+        const segInner = inner.filter(p=> p>segFrom && p<segTo);
+        level1.push(...sf_packRange(text, segFrom, segTo, segInner, target, max));
+      }
+    } else {
+      level1 = sf_packRange(text, 0, n, inner, target, max);
+    }
+  } else {
+    const t = estimateTokensLocal(text);
+    level1 = [{ start:0, end:n, tokens:t, oversize: t>max }];
+  }
+
+  // Tầng 2: câu (chỉ áp dụng cho các đoạn còn oversize từ tầng 1)
+  let level2 = [];
+  for(const seg of level1){
+    if(!seg.oversize){ level2.push(seg); continue; }
+    if(cfg.allowSentencePacking){
+      const sInner = sf_findSentenceBreakpoints(text, seg.start, seg.end);
+      level2.push(...sf_packRange(text, seg.start, seg.end, sInner, target, max));
+    } else {
+      level2.push(seg);
+    }
+  }
+
+  // Tầng 3: cắt cứng an toàn Unicode (chỉ áp dụng cho phần vẫn oversize sau tầng 2).
+  // Tỉ lệ ký tự/token được suy ra TỪ CHÍNH đoạn đang cắt (không dùng hằng số cố định) vì văn
+  // bản CJK (~1 token/ký tự) và Latin/Việt (~3+ ký tự/token) khác nhau rất nhiều — dùng hằng
+  // số cố định kiểu Latin sẽ khiến bước nhảy quá lớn với CJK và tạo chunk vượt xa maxInputTokens.
+  let level3 = [];
+  {
+    const queue = level2.slice();
+    let guardTotal = 0;
+    const guardMax = 200000; // van an toàn tuyệt đối — không nên chạm tới trong thực tế
+    while(queue.length){
+      const seg = queue.shift();
+      guardTotal++;
+      if(!seg.oversize || guardTotal > guardMax){ level3.push(seg); continue; }
+      const segText = text.slice(seg.start, seg.end);
+      const segTokens = estimateTokensLocal(segText) || 1;
+      const charsPerToken = Math.max(0.2, (seg.end-seg.start)/segTokens);
+      const approxChars = Math.max(1, Math.floor(max*charsPerToken*0.85));
+      if(approxChars >= (seg.end-seg.start)){
+        level3.push({ start:seg.start, end:seg.end, tokens:segTokens });
+        continue;
+      }
+      const hInner = sf_findHardBreakpoints(text, seg.start, seg.end, approxChars);
+      if(hInner.length === 0){
+        level3.push({ start:seg.start, end:seg.end, tokens:segTokens });
+        continue;
+      }
+      const packed = sf_packRange(text, seg.start, seg.end, hInner, target, max);
+      // Đẩy lại đầu hàng đợi để phần còn oversize (nếu có) được cắt tiếp ở vòng sau — giữ
+      // đúng thứ tự trái->phải bằng cách unshift ngược.
+      for(let i=packed.length-1; i>=0; i--) queue.unshift(packed[i]);
+    }
+  }
+
+  // Post-pass: gộp chunk CUỐI quá nhỏ vào chunk liền trước nếu vẫn không vượt max
+  const merged = [];
+  for(const seg of level3){
+    if(merged.length > 0){
+      const prev = merged[merged.length-1];
+      const prevTokens = estimateTokensLocal(text.slice(prev.start, prev.end));
+      if(prevTokens < min){
+        const combinedTokens = estimateTokensLocal(text.slice(prev.start, seg.end));
+        if(combinedTokens <= max){ prev.end = seg.end; continue; }
+      }
+    }
+    merged.push({ start: seg.start, end: seg.end });
+  }
+
+  return merged.map(o=>{
+    const t = text.slice(o.start, o.end);
+    return { text: t, start: o.start, end: o.end, estTokens: estimateTokensLocal(t) };
+  });
+}
+
+/* ---------- CHUNK STATISTICS ---------- */
+function sf_computeChunkStats(offsets){
+  const count = offsets ? offsets.length : 0;
+  if(count === 0) return { count:0, totalTokens:0, avgTokens:0, minTokens:0, maxTokens:0 };
+  let total=0, min=Infinity, max=0;
+  for(const o of offsets){
+    const t = (o.estTokens!=null) ? o.estTokens : estimateTokensLocal(o.text);
+    total += t; if(t<min) min=t; if(t>max) max=t;
+  }
+  return { count, totalTokens: total, avgTokens: Math.round(total/count), minTokens: min, maxTokens: max };
+}
+
+/* ---------- VALIDATION (Bước 8 — Source Integrity) ----------
+   Kiểm tra NGHIÊM NGẶT: partition liên tục, không hở/không trùng, và
+   chunks.map(c=>c.text).join('') === originalText tuyệt đối 100%.
+   splitChunksWithOffsets() bên dưới gọi hàm này TRƯỚC khi trả kết quả; startTranslate()
+   kiểm tra lại lần nữa và DỪNG (không bắt đầu dịch) nếu invalid — đúng yêu cầu Bước 8. */
+function sf_validateChunkPartition(originalText, offsets){
+  const n = originalText.length;
+  if(n === 0){
+    return offsets.length === 0 ? { valid:true } : { valid:false, reason:'Nguồn rỗng nhưng lại có chunk.' };
+  }
+  if(offsets.length === 0) return { valid:false, reason:'Không có chunk nào được tạo.' };
+  if(offsets[0].start !== 0) return { valid:false, reason:'Chunk đầu tiên không bắt đầu tại vị trí 0.' };
+  for(let i=0; i<offsets.length; i++){
+    const o = offsets[i];
+    if(o.end <= o.start) return { valid:false, reason:`Chunk #${i+1} có sourceEnd <= sourceStart.` };
+    if(o.text !== originalText.slice(o.start, o.end)){
+      return { valid:false, reason:`Chunk #${i+1}: text không khớp originalText.slice(sourceStart, sourceEnd).` };
+    }
+    if(i>0 && offsets[i-1].end !== o.start){
+      return { valid:false, reason:`Chunk #${i} và #${i+1} không liền mạch (offset ${offsets[i-1].end} != ${o.start}).` };
+    }
+  }
+  if(offsets[offsets.length-1].end !== n){
+    return { valid:false, reason:'Chunk cuối không kết thúc tại cuối văn bản gốc.' };
+  }
+  if(offsets.map(o=>o.text).join('') !== originalText){
+    return { valid:false, reason:'reconstructedText !== originalText (join của các chunk không khớp bản gốc).' };
+  }
+  return { valid:true };
+}
+
+// Ghi lại kết quả validate gần nhất để UI/console có thể tra cứu khi cần (mục Đợt 2+: hiển thị
+// cảnh báo chi tiết hơn trên giao diện thay vì chỉ console.error như hiện tại).
+window.__sfLastChunkValidation = { valid: true };
+
+/* =====================================================================
+   ĐỢT 2/4 — EFFECTIVE INPUT BUDGET
+   ---------------------------------------------------------------------
+   Request thật gửi đi (xem callModel()) có nội dung:
+     document.getElementById('promptBox').value + '\n' + payloadText
+   và payloadText = buildContextPrefix(idx) + '\n' + currentChunks[idx] (executeDynamicTask).
+   Tức là MỘT request = promptBox (prompt dịch) + context prefix (≤250 ký tự đoạn trước, chỉ có
+   TỪ chunk thứ 2 trở đi) + chunk nguồn. Nếu chỉ ước lượng token của riêng chunk.text (như trần
+   tĩnh maxInputTokens/targetInputTokens của SMART_CHUNK_CONFIG vẫn làm) thì bỏ sót đúng phần
+   "prompt + context prefix" mà yêu cầu Đợt 2 mục 3 (TÍNH CẢ PROMPT) bắt buộc phải tính.
+
+   Hàm dưới đây tính:
+     rawInputBudget = contextLimitTokens - promptTokens - contextPrefixReserveTokens
+                       - reservedOutputTokens - otherOverheadTokens
+     effectiveInputBudget = floor(max(0, rawInputBudget) * safetyMarginRatio)
+
+   KHÔNG gọi API, KHÔNG dò/probe context limit thật (đúng mục 4 + 2 của yêu cầu Đợt 2) — chỉ
+   đọc DOM (#promptBox, #maxTokensCap) và dùng estimateTokensLocal()/fallbackContextLimitTokens
+   đã có sẵn từ Đợt 1. contextLimitTokens dùng fallbackContextLimitTokens vì project không có
+   nơi nào lưu context limit thật của model đang cấu hình. */
+function sf_computeEffectiveInputBudget(cfg){
+  cfg = cfg || SMART_CHUNK_CONFIG;
+
+  // promptTokens: đo THẬT nội dung #promptBox tại thời điểm gọi (không dùng hằng số cố định
+  // promptReserveTokens làm giá trị chính nữa — số đó giờ chỉ là SÀN tối thiểu, phòng khi
+  // promptBox trống hoặc DOM chưa sẵn sàng ở ngữ cảnh gọi khác ngoài UI, vd unit test).
+  const promptEl = (typeof document!=='undefined') ? document.getElementById('promptBox') : null;
+  const promptText = promptEl ? (promptEl.value || '') : '';
+  const promptTokens = Math.max(cfg.promptReserveTokens || 0, estimateTokensLocal(promptText));
+
+  // reservedOutputTokens: nếu người dùng đã tự đặt "🧯 Trần token đầu ra (max_tokens)" > 0 trên
+  // UI, đó mới là số THẬT sẽ giới hạn phần output của request (0 = "tự động", dùng mặc định
+  // reservedOutputTokens trong SMART_CHUNK_CONFIG). Đợt 2 CHƯA đụng tới callModel()/request body
+  // thật (mục 15 — không sửa hệ thống khác ngoài phạm vi chunking) — chỉ ĐỌC giá trị UI này để
+  // tính ngân sách input cho chính xác hơn, không ghi/gửi gì cả.
+  const capEl = (typeof document!=='undefined') ? document.getElementById('maxTokensCap') : null;
+  const userOutputCap = capEl ? (parseInt(capEl.value, 10) || 0) : 0;
+  const reservedOutputTokens = userOutputCap > 0 ? userOutputCap : (cfg.reservedOutputTokens || 0);
+
+  const contextLimitTokens = cfg.fallbackContextLimitTokens || 16384;
+  const contextPrefixReserveTokens = cfg.contextPrefixReserveTokens || 0;
+  const otherOverheadTokens = cfg.otherOverheadTokens || 0;
+  const safetyMarginRatio = (cfg.safetyMarginRatio > 0 && cfg.safetyMarginRatio <= 1) ? cfg.safetyMarginRatio : 0.85;
+
+  const rawInputBudget = contextLimitTokens - promptTokens - contextPrefixReserveTokens
+                          - reservedOutputTokens - otherOverheadTokens;
+  const effectiveInputBudget = Math.floor(Math.max(0, rawInputBudget) * safetyMarginRatio);
+
+  return {
+    contextLimitTokens, promptTokens, contextPrefixReserveTokens, reservedOutputTokens,
+    otherOverheadTokens, safetyMarginRatio, rawInputBudget, effectiveInputBudget
+  };
+}
+// Ghi lại lần tính ngân sách gần nhất để UI/console tra cứu (cùng tinh thần với
+// window.__sfLastChunkValidation) — chưa có UI hiển thị ở Đợt 2, chỉ expose ra window để debug
+// và để Đợt 3+/báo cáo có thể đọc lại mà không phải tính lại.
+window.__sfLastBudget = null;
+/* ===== HẾT ĐỢT 2/4: EFFECTIVE INPUT BUDGET ===== */
+
+/* =====================================================================
+   ĐỢT 3/4 — ADAPTIVE REQUEST BUDGET + PHÂN LOẠI LỖI PAYLOAD
+   ---------------------------------------------------------------------
+   MỤC TIÊU: cho phép trần token/chunk "học" dần theo thực tế (tăng nhẹ nếu
+   liên tục thành công, giảm nếu THỰC SỰ gặp lỗi payload/context quá lớn),
+   mà KHÔNG đụng tới Dynamic Sliding Window Scheduler / Global Parallel /
+   Adaptive RPM / API Key Pool / Retry / IndexedDB / Viewer 100 hiện có.
+
+   PHẠM VI TÍCH HỢP (an toàn, tối thiểu):
+     - executeDynamicTask(): sau mỗi lần THÀNH CÔNG gọi sf_onAdaptiveChunkSuccess();
+       khi phân loại được lỗi là PAYLOAD ERROR thật sự (xem sf_isPayloadErrorText)
+       thì gọi sf_onAdaptivePayloadError() rồi đánh dấu chunk lỗi ngay (không có
+       ý nghĩa gì khi thử lại y nguyên kích thước — chunk đó chắc chắn sẽ lại vượt
+       ngưỡng). 429/401/403/500/502/503/504/network/timeout KHÔNG bao giờ được coi
+       là payload error (giữ nguyên logic retry/backoff cũ cho các mã đó).
+     - splitChunksWithOffsets(): trần hiệu dụng dùng để đóng gói chunk MỚI được
+       kẹp thêm bởi sf_getAdaptiveBudgetTokens() — hàm này CHỈ có thể làm trần
+       CHẶT HƠN (nhỏ hơn hoặc bằng), không bao giờ nới rộng vượt quá maxInputTokens
+       tĩnh hay effectiveInputBudget đã tính ở ĐỢT 2.
+
+   VÌ SAO KHÔNG RE-CHUNK GIỮA PHIÊN: kiến trúc hiện tại (splitChunksWithOffsets
+   → sf_buildSmartChunkOffsets) chia lại TOÀN BỘ văn bản thành một partition mới
+   mỗi lần được gọi; không có cơ chế "chỉ chia lại phần chưa dispatch, giữ nguyên
+   sourceStart/sourceEnd của phần DONE, không tạo gap/overlap/duplicate, persist
+   atomically". Vì KHÔNG thể đảm bảo re-chunk an toàn giữa phiên (mục 7: FAIL-SAFE
+   > RE-CHUNK), Smart Chunking Đợt 3 CHỈ áp dụng Adaptive Budget mới khi một
+   CHUNK MAP MỚI được tạo — tức là splitChunksWithOffsets() chỉ thực sự được gọi
+   từ startTranslate() (🚀 Bắt đầu dịch / START NEW) và resumeRestart() (🔄 Bắt đầu
+   lại / RESTART, vốn dĩ theo đúng thiết kế sẵn có ĐÃ re-chunk có chủ đích bằng
+   cách gọi lại startTranslate()) và từ updateStats() (chỉ xem trước, không dịch).
+   RESUME thật sự ("▶ Tiếp tục" → continueUnfinishedTranslation → restoreFile)
+   KHÔNG BAO GIỜ gọi splitChunksWithOffsets()/sf_buildSmartChunkOffsets() — nó đọc
+   thẳng chunk map đã lưu trong IndexedDB (getChunkRecords) làm SOURCE OF TRUTH,
+   nên Adaptive Budget tự động KHÔNG có bất kỳ ảnh hưởng nào lên một phiên Resume.
+*/
+
+// Nhận diện lỗi "payload/context quá lớn" THẬT SỰ — chỉ dựa trên nội dung lỗi
+// (message + response body), KHÔNG BAO GIỜ dựa trên các mã trạng thái đã có ý
+// nghĩa riêng (429/401/403/500/502/503/504/network/timeout) — các mã đó được
+// loại trừ TRƯỚC khi hàm này được gọi tới (xem executeDynamicTask).
+const SF_PAYLOAD_ERROR_PATTERNS = [
+  /context length exceeded/i,
+  /maximum context length/i,
+  /input too large/i,
+  /payload too large/i,
+  /request too large/i,
+  /maximum tokens exceeded/i,
+  /prompt too long/i,
+  /context window exceeded/i
+];
+function sf_isPayloadErrorText(text){
+  if(!text) return false;
+  const s = String(text);
+  return SF_PAYLOAD_ERROR_PATTERNS.some(re=> re.test(s));
+}
+// Các mã trạng thái/loại lỗi KHÔNG BAO GIỜ được dùng làm bằng chứng payload quá lớn,
+// bất kể response body chứa gì (mục 3 + mục 13 TEST BẮT BUỘC).
+function sf_isNonPayloadStatus(status){
+  return status===429 || status===401 || status===403 ||
+         status===500 || status===502 || status===503 || status===504 || status===0;
+}
+
+// ---------- Trạng thái Adaptive Budget (persist nhẹ vào localStorage, KHÔNG phải
+// IndexedDB — đây là một con số "đã học" dùng chung cho việc CHIA CHUNK MỚI, không
+// phải state của riêng 1 chunk/1 file nên không cần đi qua chunk map persistence). ----------
+const SF_ADAPTIVE_STATE_KEY = 'sf_adaptive_budget_state_v1';
+function sf_defaultAdaptiveState(){
+  return { currentBudget: SMART_CHUNK_CONFIG.targetInputTokens, successStreak: 0, updatedAt: Date.now() };
+}
+function sf_loadAdaptiveState(){
+  try{
+    const raw = localStorage.getItem(SF_ADAPTIVE_STATE_KEY);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      if(parsed && typeof parsed.currentBudget === 'number' && parsed.currentBudget > 0){
+        return { currentBudget: parsed.currentBudget, successStreak: parsed.successStreak||0, updatedAt: parsed.updatedAt||Date.now() };
+      }
+    }
+  }catch(e){ console.warn('[Adaptive Budget] Không đọc được state cũ, dùng mặc định:', e); }
+  return sf_defaultAdaptiveState();
+}
+function sf_saveAdaptiveState(){
+  try{ localStorage.setItem(SF_ADAPTIVE_STATE_KEY, JSON.stringify(sfAdaptiveBudgetState)); }
+  catch(e){ console.warn('[Adaptive Budget] Không lưu được state:', e); }
+}
+let sfAdaptiveBudgetState = sf_loadAdaptiveState();
+
+// Trần hiệu dụng "đã học" hiện tại, LUÔN kẹp trong [minInputTokens, maxInputTokens] TĨNH của
+// SMART_CHUNK_CONFIG — dùng làm một trần BỔ SUNG (chỉ có thể siết chặt hơn) trong
+// splitChunksWithOffsets(). Trả về null nếu adaptive bị tắt (cfg.adaptive === false).
+function sf_getAdaptiveBudgetTokens(){
+  if(!SMART_CHUNK_CONFIG.adaptive) return null;
+  const lo = SMART_CHUNK_CONFIG.minInputTokens, hi = SMART_CHUNK_CONFIG.maxInputTokens;
+  let v = sfAdaptiveBudgetState.currentBudget || SMART_CHUNK_CONFIG.targetInputTokens;
+  if(v < lo) v = lo; if(v > hi) v = hi;
+  return v;
+}
+// Gọi sau MỖI request dịch THÀNH CÔNG (executeDynamicTask). Chỉ tăng khi đã đủ
+// successStreakForGrowth lần liên tiếp thành công, tăng đúng 1 nấc growthStepTokens,
+// không bao giờ vượt maxInputTokens tĩnh. Đây là bước tăng TUYẾN TÍNH (7000→7500→8000→
+// 8500→9000...), TUYỆT ĐỐI không nhân đôi/luỹ thừa.
+function sf_onAdaptiveChunkSuccess(){
+  if(!SMART_CHUNK_CONFIG.adaptive) return;
+  sfAdaptiveBudgetState.successStreak = (sfAdaptiveBudgetState.successStreak||0) + 1;
+  if(sfAdaptiveBudgetState.successStreak >= SMART_CHUNK_CONFIG.successStreakForGrowth){
+    const before = sfAdaptiveBudgetState.currentBudget || SMART_CHUNK_CONFIG.targetInputTokens;
+    const grown = Math.min(SMART_CHUNK_CONFIG.maxInputTokens, before + SMART_CHUNK_CONFIG.growthStepTokens);
+    sfAdaptiveBudgetState.successStreak = 0; // reset chuỗi sau mỗi lần tăng — phải tích luỹ lại từ đầu
+    if(grown !== before){
+      sfAdaptiveBudgetState.currentBudget = grown;
+      logLine && logLine('info', null, null, `📈 Adaptive Budget tăng ${before} → ${grown} token (đủ ${SMART_CHUNK_CONFIG.successStreakForGrowth} request liên tiếp thành công). Áp dụng cho chunk map MỚI tiếp theo.`);
+    }
+  }
+  sfAdaptiveBudgetState.updatedAt = Date.now();
+  sf_saveAdaptiveState();
+}
+// Gọi khi (và CHỈ khi) một request thất bại được phân loại CHẮC CHẮN là payload/context
+// quá lớn (sf_isPayloadErrorText, đã loại trừ 429/401/403/5xx/network/timeout). Giảm
+// đúng 1 lần theo shrinkFactor, kẹp sàn minInputTokens, KHÔNG reset về targetInputTokens,
+// KHÔNG giảm dồn dập nhiều lần cho cùng một sự kiện lỗi.
+function sf_onAdaptivePayloadError(){
+  if(!SMART_CHUNK_CONFIG.adaptive) return;
+  const before = sfAdaptiveBudgetState.currentBudget || SMART_CHUNK_CONFIG.targetInputTokens;
+  const shrunk = Math.max(SMART_CHUNK_CONFIG.minInputTokens, Math.floor(before * SMART_CHUNK_CONFIG.shrinkFactor));
+  sfAdaptiveBudgetState.currentBudget = shrunk;
+  sfAdaptiveBudgetState.successStreak = 0;
+  sfAdaptiveBudgetState.updatedAt = Date.now();
+  sf_saveAdaptiveState();
+  logLine && logLine('warn', null, null, `📉 Adaptive Budget giảm ${before} → ${shrunk} token do lỗi payload/context quá lớn. KHÔNG re-chunk phiên hiện tại — chỉ áp dụng cho lần "Bắt đầu dịch" MỚI tiếp theo.`);
+}
+// ĐỢT 5 — FIX 1: Gọi ở ĐẦU nhánh catch của executeDynamicTask cho MỌI loại thất bại
+// (429, 401, 403, 5xx, network, timeout, payload/context...). CHỈ reset successStreak
+// về 0 để streak thực sự phản ánh "LIÊN TIẾP thành công" — KHÔNG được đổi currentBudget
+// ở đây. Việc giảm budget (chỉ áp dụng cho payload/context error) vẫn do
+// sf_onAdaptivePayloadError() đảm nhiệm riêng, gọi thêm SAU hàm này ở nhánh đó.
+function sf_onAdaptiveNonPayloadFailure(){
+  if(!SMART_CHUNK_CONFIG.adaptive) return;
+  if(sfAdaptiveBudgetState.successStreak !== 0){
+    sfAdaptiveBudgetState.successStreak = 0;
+    sfAdaptiveBudgetState.updatedAt = Date.now();
+    sf_saveAdaptiveState();
+  }
+}
+window.__sfAdaptiveBudgetState = sfAdaptiveBudgetState; // debug/đọc lại cho báo cáo, không dùng để ghi
+/* ===== HẾT ĐỢT 3/4: ADAPTIVE REQUEST BUDGET + PHÂN LOẠI LỖI PAYLOAD (tiếp ở executeDynamicTask
+   và splitChunksWithOffsets bên dưới) ===== */
+
+/* ---------- ĐIỂM VÀO DUY NHẤT (giữ nguyên chữ ký hàm cũ để KHÔNG phải sửa bất kỳ
+   call site nào: updateStats(), startTranslate() vẫn gọi y như trước) ----------
+   'size' (ký tự, từ ô "📦 Kích thước chunk" trên UI) được GIỮ LẠI để tương thích ngược:
+   quy đổi thành targetInputTokens (kẹp trong [minInputTokens,maxInputTokens] — ĐÃ được
+   sf_computeEffectiveInputBudget() co lại theo ngân sách hiệu dụng thật, không còn là hằng số
+   tĩnh 3000/9500 như Đợt 1) — không phải cách tính chính của Smart Chunking, chỉ là cầu nối để
+   control cũ trên UI vẫn có tác dụng thực tế.
+   Trả về null nếu validate thất bại — ĐÂY LÀ TÍN HIỆU "DỪNG, KHÔNG BẮT ĐẦU DỊCH". */
+function splitChunksWithOffsets(text, size){
+  if(!text) return [];
+  const cfg = Object.assign({}, SMART_CHUNK_CONFIG);
+
+  // ---- ĐỢT 2: áp EFFECTIVE INPUT BUDGET vào trần token trước khi đóng gói ----
+  const budget = sf_computeEffectiveInputBudget(cfg);
+  window.__sfLastBudget = budget;
+
+  // Trần THỰC SỰ dùng để đóng gói = min(trần cứng tĩnh maxInputTokens, effectiveInputBudget) —
+  // đúng mục 11 (MAXIMUM SAFE PAYLOAD): "không vượt effectiveInputBudget + maxInputTokens + hard
+  // safety constraints". SF_MIN_SAFE_BUDGET_FLOOR chỉ là van chống chunk 0/âm token trong tình
+  // huống cực đoan (prompt dịch quá dài so với fallbackContextLimitTokens) — LUÔN ưu tiên bám
+  // effectiveInputBudget thật, chỉ dùng sàn này khi effectiveInputBudget xuống dưới ngưỡng dùng
+  // được, kèm cảnh báo console để người dùng biết mà rút gọn prompt hoặc tăng trần output.
+  const SF_MIN_SAFE_BUDGET_FLOOR = 256;
+  let effectiveMax = Math.min(cfg.maxInputTokens, budget.effectiveInputBudget);
+
+  // ---- ĐỢT 3: áp thêm trần ADAPTIVE REQUEST BUDGET (chỉ có thể SIẾT CHẶT hơn, không nới) ----
+  // Hàm này chỉ chạy khi splitChunksWithOffsets() được gọi — tức là START NEW (startTranslate)
+  // hoặc RESTART (resumeRestart → startTranslate) hoặc xem trước (updateStats). RESUME thật sự
+  // không bao giờ đi qua đường này (xem khối "HẾT ĐỢT 3/4" phía trên), nên adaptive budget không
+  // thể ảnh hưởng tới một phiên đang tiếp tục dịch dở.
+  const adaptiveCap = sf_getAdaptiveBudgetTokens();
+  if(adaptiveCap != null) effectiveMax = Math.min(effectiveMax, adaptiveCap);
+  window.__sfLastAdaptiveCap = adaptiveCap;
+  // ---- hết phần Đợt 3 ----
+
+  if(effectiveMax < SF_MIN_SAFE_BUDGET_FLOOR){
+    console.warn('[Smart Chunking] Ngân sách token hiệu dụng quá thấp ('+budget.effectiveInputBudget+
+      ' token, contextLimit giả định='+budget.contextLimitTokens+', promptTokens='+budget.promptTokens+
+      ', reservedOutputTokens='+budget.reservedOutputTokens+'). Dùng sàn an toàn tối thiểu '+
+      SF_MIN_SAFE_BUDGET_FLOOR+' token cho mỗi chunk — hãy rút gọn Prompt dịch hoặc giảm Trần token '+
+      'đầu ra nếu bản dịch bị proxy/model từ chối vì vượt context.', budget);
+    effectiveMax = SF_MIN_SAFE_BUDGET_FLOOR;
+  }
+  cfg.maxInputTokens = effectiveMax;
+  cfg.minInputTokens = Math.min(cfg.minInputTokens, effectiveMax);
+  cfg.targetInputTokens = Math.min(cfg.targetInputTokens, effectiveMax);
+  if(cfg.targetInputTokens < cfg.minInputTokens) cfg.targetInputTokens = cfg.minInputTokens;
+  // ---- hết phần Đợt 2 ----
+
+  if(cfg.tokenAware){
+    const approx = Math.round((size || 3500) / 3.2);
+    cfg.targetInputTokens = Math.max(cfg.minInputTokens, Math.min(cfg.maxInputTokens, approx));
+  }
+  const offsets = sf_buildSmartChunkOffsets(text, cfg);
+  const validation = sf_validateChunkPartition(text, offsets);
+  window.__sfLastChunkValidation = validation;
+  if(!validation.valid){
+    console.error('[Smart Chunking] LỖI TOÀN VẸN CHUNK — KHÔNG bắt đầu dịch:', validation.reason);
+    return null;
+  }
+  return offsets;
+}
 function splitChunks(text, size){
-  return splitChunksWithOffsets(text, size).map(c=>c.text);
+  const offsets = splitChunksWithOffsets(text, size);
+  return offsets ? offsets.map(c=>c.text) : [];
 }
 function updateStats(){
   const text = sf_getFullSourceText();
-  const chunks = text ? splitChunks(text, chunkSizeVal()).length : 0;
-  __sf_statsCache = { chunks, n: text.length };
+  const offsets = text ? splitChunksWithOffsets(text, chunkSizeVal()) : [];
+  const invalid = text && offsets === null;
+  const stats = sf_computeChunkStats(offsets || []);
+  __sf_statsCache = { chunks: stats.count, n: text.length };
   document.getElementById('chOrig').textContent = text.length.toLocaleString('vi-VN') + ' ký tự';
-  document.getElementById('chChunks').textContent = chunks + ' chunk';
-  document.getElementById('startInfo').innerHTML = text.length>0 ? `Sẵn sàng: <b>${chunks}</b> chunk sẽ được dịch.` : '';
+  document.getElementById('chChunks').textContent = invalid
+    ? '⚠️ Lỗi chunk!'
+    : stats.count + ' chunk' + (stats.count>0 ? ` (~${stats.avgTokens.toLocaleString('vi-VN')} token/chunk ước tính)` : '');
+  document.getElementById('startInfo').innerHTML = invalid
+    ? `<b style="color:#e05252">⚠️ Lỗi toàn vẹn chunk — xem Console để biết chi tiết. Không thể bắt đầu dịch.</b>`
+    : (text.length>0 ? `Sẵn sàng: <b>${stats.count}</b> chunk sẽ được dịch (tổng ước tính ~<b>${stats.totalTokens.toLocaleString('vi-VN')}</b> token đầu vào).` : '');
   updateDashboard();
 }
 document.getElementById('sourceText').addEventListener('input', ()=>{ clearTimeout(window._sT); window._sT=setTimeout(updateStats, 250); });
@@ -2148,6 +2954,63 @@ function updateDashboard(){
 }
 function setQueue(remaining, total){ document.getElementById('queueCount').textContent = remaining; }
 
+/* ---------- Mục 1A: PHÁT HIỆN HEADER CHƯƠNG BỊ THIẾU (chỉ để CẢNH BÁO) ----------
+   So khớp các dạng header: "Chương 1", "Chương 001", "Chương: 1", "Chương: 001",
+   "Chương thứ 1", "Chương thứ 001", "Chương thứ nhất", "Chapter 1", "Chapter 001"
+   (không phân biệt hoa/thường). Chỉ nhận diện ở ĐẦU DÒNG để tránh nhận nhầm chữ
+   "Chương"/"Chapter" xuất hiện giữa nội dung khác. Không tự chèn, không tự sửa —
+   hàm này CHỈ đọc, không ghi gì vào source/translation. */
+// ĐỢT 5 — FIX 2: mở rộng nhận diện thêm "Chương 1" / "Chương 001" (không dấu ':'),
+// "Chương thứ 1" / "Chương thứ 001" (dấu ':' sau số nay là TÙY CHỌN thay vì bắt buộc),
+// và "Chương thứ nhất" (số đếm bằng chữ). Giữ nguyên các dạng đã hỗ trợ từ trước
+// ("Chương: 1", "Chương: 001", "Chapter 1", "Chapter 001"). Regex CHỈ dùng để dò
+// boundary — không sửa/không cắt nội dung gốc, "originalText" không bị đụng tới.
+const SF_CHAPTER_HEADER_RE = /^[ \t]*(?:Chương\s*:\s*0*(\d+)\b|Chương\s+thứ\s+0*(\d+)\b|Chương\s+thứ\s+(nhất)\b|Chương\s+0*(\d+)\b|Chapter\s+0*(\d+)\b)/i;
+// Số đếm bằng chữ tiếng Việt cho "Chương thứ ..." — hiện chỉ cần "nhất" (=1) theo
+// yêu cầu Đợt 5; để dạng bảng tra để dễ mở rộng thêm sau này mà không sửa regex.
+const SF_CHAPTER_WORD_NUM = { 'nhất': 1 };
+function sf_extractChapterHeaders(text){
+  const out = [];
+  if(!text) return out;
+  const lines = String(text).split(/\r?\n/);
+  for(const line of lines){
+    const m = SF_CHAPTER_HEADER_RE.exec(line);
+    if(!m) continue;
+    let numRaw = m[1] || m[2] || m[4] || m[5];
+    let numStr;
+    if(numRaw != null){
+      numStr = String(parseInt(numRaw, 10));
+    } else if(m[3]){
+      const wordNum = SF_CHAPTER_WORD_NUM[m[3].toLowerCase()];
+      if(wordNum == null) continue;
+      numStr = String(wordNum);
+    } else continue;
+    // Label hiển thị = ĐÚNG phần header đã khớp trong SOURCE (mục 1A yêu cầu lấy header
+    // thực tế từ SOURCE), không phải cắt chuỗi theo dấu ':' đầu tiên (sai với dạng "Chương: 5").
+    let label = m[0].trim();
+    if(label.length > 60) label = label.slice(0, 60) + '…';
+    out.push({ num: numStr, label });
+  }
+  return out;
+}
+// So khớp header CHƯƠNG giữa SOURCE (nguồn thật của chunk) và TRANSLATION.
+// Trả về danh sách các header (label lấy từ SOURCE) có trong SOURCE nhưng
+// không tìm thấy số chương tương ứng trong TRANSLATION. Nếu SOURCE không có
+// header chương nào -> trả về [] (không cảnh báo), đúng yêu cầu mục 1A.
+function sf_findMissingHeaders(sourceText, translatedText){
+  const srcHeaders = sf_extractChapterHeaders(sourceText);
+  if(!srcHeaders.length) return [];
+  const transNums = new Set(sf_extractChapterHeaders(translatedText).map(h=> h.num));
+  const missing = [];
+  const seen = new Set();
+  for(const h of srcHeaders){
+    if(seen.has(h.num)) continue;
+    seen.add(h.num);
+    if(!transNums.has(h.num)) missing.push(h.label);
+  }
+  return missing;
+}
+
 /* DYNAMIC 100-CHUNK WINDOW VIEWER */
 let chunkCurrentPage = 0;
 const CHUNK_PAGE_SIZE = 100;
@@ -2158,6 +3021,17 @@ function setViewerMode(mode){
   viewerMode = mode; const el = document.getElementById('chunkViewer');
   el.className = 'viewer-list mode-'+mode;
   ['parallel','orig','trans'].forEach(m=> document.getElementById('modeBtn-'+m).classList.toggle('active', m===mode));
+}
+// Mục 1A: khối cảnh báo "Thiếu header" + nút Dịch lại chunk (chỉ hiển thị khi có cảnh báo).
+// Không tự retry, không tự sửa nội dung — chỉ hiển thị và chờ người dùng bấm nút.
+function sf_headerWarnMarkup(c, i){
+  if(!c || !c.headerWarning || !c.headerWarning.length) return '';
+  const items = c.headerWarning.map(h=> `<li>${sf_escapeHtml(h)}</li>`).join('');
+  return `<div class="cdwarn">
+    <div class="cdwarn-title">⚠️ Thiếu header:</div>
+    <ul class="cdwarn-list">${items}</ul>
+    <button class="btn small" onclick="event.stopPropagation(); sfRetryChunkForHeader(${i})">🔄 Dịch lại chunk</button>
+  </div>`;
 }
 function cdRowMarkup(c, i){
   const badgeCls = c.status==='error' ? 'error' : (c.status==='running'||c.status==='retrying' ? 'running' : (c.status==='done' ? 'done' : 'waiting'));
@@ -2174,6 +3048,7 @@ function cdRowMarkup(c, i){
         <span class="cdkey" id="chunk-key-${i}" style="${c.key!=null?('color:'+getKeyColor(c.key)):''}">${c.key!=null?'🔑 C'+(c.key+1):''}</span>
         <span class="cdcaret">${expanded?'▲':'▼'}</span>
       </div>
+      <div id="chunk-warn-${i}">${sf_headerWarnMarkup(c, i)}</div>
       <div class="cdbar-outer"><div class="cdbar-inner ${badgeCls}" id="chunk-bar-${i}" style="width:${barPct}%"></div></div>
       <div class="cdbody" id="chunk-body-${i}">
         <div class="chunkcols">
@@ -2241,7 +3116,7 @@ function buildChunkViewer(chunks){
   chunkState = chunks.map((c,i)=>{
     const off = sfChunkOffsets[i];
     return {
-      status:'waiting', orig:c, trans:'', key:null, retryCount:0,
+      status:'waiting', orig:c, trans:'', key:null, retryCount:0, headerWarning: null,
       stableId: off ? off.stableId : null,
       sourceStart: off ? off.start : i,
       sourceEnd: off ? off.end : i
@@ -2292,14 +3167,19 @@ function refreshChunkRow(idx){
   if(transEl && chunkExpanded.has(idx)){
       transEl.textContent = c.status==='done'?c.trans:(c.status==='error'?c.trans:(cls==='running'?'Đang xử lý...':'Chưa dịch'));
   }
+  const warnEl = document.getElementById('chunk-warn-'+idx);
+  if(warnEl) warnEl.innerHTML = sf_headerWarnMarkup(c, idx); // mục 1A: chỉ hiển thị, không tự sửa gì khác
   updateCdPageInfo(); // only updates counters, doesn't re-render 100 rows
 }
 
 function setChunkBadge(idx, cls, text, keyIndex){} // handled by refreshChunkRow now
 function markChunkRunning(idx, keyIndex){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'running'); c.key=keyIndex; refreshChunkRow(idx); if(state.keyMeta[keyIndex]) state.keyMeta[keyIndex].inFlight++; } }
-function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
-function markChunkError(idx, msg){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'error'); c.trans='Lỗi: '+msg; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
-function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'waiting'); c.key=null; refreshChunkRow(idx); sf_autosaveChunk(idx); } }
+// Mục 1A: sau khi chunk DỊCH XONG (kể cả dịch lần đầu lẫn dịch lại thủ công), kiểm tra
+// header CHƯƠNG giữa source thật của chính chunk (c.orig) và bản dịch mới. Chỉ để
+// CẢNH BÁO — không tự sửa translation, không tự chèn header, không tự retry.
+function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; c.headerWarning = sf_findMissingHeaders(c.orig, res); refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
+function markChunkError(idx, msg){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'error'); c.trans='Lỗi: '+msg; c.headerWarning = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
+function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'waiting'); c.key=null; c.headerWarning = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } }
 
 /* RATE LIMIT & LOGGING */
 let logEntries = [];
@@ -2342,6 +3222,10 @@ async function callModel(textPayload, keyIndex){
     const t = await res.text().catch(()=>'');
     const err = new Error('HTTP ' + res.status); err.status = res.status;
     err.retryAfter = parseFloat(res.headers.get('retry-after')) || null;
+    // ĐỢT 3/4: giữ lại response body thô để executeDynamicTask phân loại PAYLOAD ERROR
+    // (context length exceeded/payload too large/...) — CHỈ dùng để đọc, không parse/giả định
+    // cấu trúc JSON cụ thể của bất kỳ provider nào (mỗi proxy/model trả lỗi khác nhau).
+    err.bodyText = t;
     throw err; // throw back to executeDynamicTask to handle cooldown
   }
   const data = await res.json();
@@ -2401,6 +3285,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         currentResults[idx] = res;
         markChunkDone(idx, res);
         delete chunkRetryAfter[idx];
+        sf_onAdaptiveChunkSuccess(); // ĐỢT 3/4: tính vào chuỗi thành công cho Adaptive Budget
         logLine('ok', idx, keyIdx, `Chunk ${idx+1}/${currentChunks.length} ✓ Thành công`);
         return;
 
@@ -2412,6 +3297,11 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         const status = err.status;
         if(!c) return;
         c.retryCount = (c.retryCount || 0) + 1;
+        // ĐỢT 5 — FIX 1: MỌI request thất bại (bất kể loại nào bên dưới) đều làm đứt
+        // chuỗi "LIÊN TIẾP thành công" — reset successStreak = 0 ngay tại đây, KHÔNG
+        // đụng đến currentBudget. Nhánh payload/context bên dưới sẽ tự gọi thêm
+        // sf_onAdaptivePayloadError() để xử lý phần giảm budget riêng của nó.
+        sf_onAdaptiveNonPayloadFailure();
 
         if(status === 429) {
             // 429 is a KEY-level signal, not a chunk-level one: only the key that got rate
@@ -2456,6 +3346,20 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
             queueRef.push(idx);
             markChunkWaiting(idx);
             return; // key selection for the retry happens next time the scheduler dispatches it
+
+        } else if (!sf_isNonPayloadStatus(status) && sf_isPayloadErrorText((err.bodyText||'') + ' ' + (err.message||''))) {
+            // ĐỢT 3/4 — PAYLOAD ERROR THẬT SỰ (context/payload/prompt quá lớn). 429/401/403/
+            // 500/502/503/504/network(status 0)/timeout KHÔNG BAO GIỜ rơi vào nhánh này (đã bị
+            // loại trừ bởi sf_isNonPayloadStatus + các nhánh if/else if phía trên). Retry lại
+            // với ĐÚNG kích thước chunk hiện tại chắc chắn sẽ lại lỗi y hệt (không re-chunk giữa
+            // phiên — mục 7/FAIL-SAFE), nên đánh dấu lỗi ngay thay vì tốn lượt thử; đồng thời
+            // thu hẹp Adaptive Budget để lần "Bắt đầu dịch" MỚI tiếp theo tự chia chunk nhỏ hơn.
+            sf_onAdaptivePayloadError();
+            currentResults[idx] = null;
+            markChunkError(idx, "Thất bại: payload/context vượt giới hạn model. Adaptive Budget đã tự giảm cho lần dịch MỚI tiếp theo (phiên hiện tại không tự re-chunk).");
+            logLine('err', idx, keyIdx, `Chunk ${idx+1} lỗi: payload/context vượt giới hạn (status ${status||'?'}). Không retry cùng kích thước — Adaptive Budget đã giảm cho phiên MỚI.`);
+            delete chunkRetryAfter[idx];
+            return;
 
         } else {
             // 500/502/503/504, network error, timeout, or empty result — transient, retryable
@@ -2586,6 +3490,12 @@ async function startTranslate(){
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
   
   const offsets = splitChunksWithOffsets(text, chunkSizeVal());
+  // Bước 8 (Source Integrity): nếu partition/reconstruction không khớp 100% với văn bản gốc,
+  // DỪNG NGAY — tuyệt đối không được bắt đầu dịch với chunk map có khả năng làm mất/lặp nội dung.
+  if(offsets === null){
+    alert('⚠️ Lỗi toàn vẹn chunk: dữ liệu chia chunk không khớp 100% với văn bản gốc. Đã DỪNG để tránh mất/lặp nội dung. Xem Console (F12) để biết chi tiết, hoặc báo lại đoạn văn bản này.');
+    return;
+  }
   const chunks = offsets.map(o=>o.text);
   currentChunks = chunks;
   currentResults = new Array(chunks.length).fill(null);
@@ -2654,6 +3564,28 @@ async function retryFailedChunks(){
   await sf_onEngineFinished();
 }
 
+// Mục 4 — RETRY CHUNK THỦ CÔNG (chỉ dùng khi chunk bị cảnh báo thiếu header).
+// Dùng lại NGUYÊN VẸN hệ thống retry/request/scheduler hiện có (runEngine/executeDynamicTask):
+// không tạo request loop riêng, không đổi sourceText/sourceStart/sourceEnd/stableId của chunk.
+// Chỉ chunk được chỉ định mới được dịch lại; các chunk khác không bị ảnh hưởng.
+async function sfRetryChunkForHeader(idx){
+  if(running){ alert('Đang có tiến trình dịch chạy. Vui lòng đợi hoặc dừng trước khi dịch lại chunk này.'); return; }
+  const c = chunkState[idx]; if(!c) return;
+  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(state.keys.length===0){ alert('Thêm API key.'); return; }
+  if(!state.model){ alert('Nhập model.'); return; }
+  c.retryCount = 0;
+  delete chunkRetryAfter[idx];
+  // markChunkWaiting đưa chunk khỏi trạng thái 'done' TẠM THỜI để scheduler chấp nhận dịch lại
+  // (executeDynamicTask luôn từ chối request lại một chunk đang ở status 'done'). Nếu request
+  // mới thất bại, markChunkError sẽ hiển thị lỗi như bình thường — đây là hành vi retry sẵn có,
+  // không phải logic mới. Nếu thành công, markChunkDone sẽ tự kiểm tra lại header (mục 1A).
+  markChunkWaiting(idx);
+  await runEngine([idx]);
+  await sf_onEngineFinished();
+}
+
 function updateProgressUI(){
   const total = chunkState.length;
   const done = chunkStats.done, error = chunkStats.error, running = chunkStats.running, waiting = chunkStats.waiting;
@@ -2684,7 +3616,8 @@ function downloadOutput(){
   if(!text.trim()){ alert('Chưa có kết quả để tải.'); return; }
   const blob = new Blob([text], {type:'text/plain;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
-  a.download = 'ban-dich.txt'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+  a.download = sf_buildExportFileName(sfCurrentFileMeta && sfCurrentFileMeta.originalFileName);
+  a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 }
 function copyOutput(){ navigator.clipboard?.writeText(document.getElementById('outputText').value).catch(()=>{}); }
 function runSearch(){}
