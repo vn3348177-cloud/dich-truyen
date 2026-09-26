@@ -455,8 +455,40 @@
       </div>
     </div>
 
+    <!-- TÀI KHOẢN & CLOUD -->
+    <div class="card" id="accountCard">
+      <h2>👤 Tài khoản &amp; Cloud</h2>
+      <p class="sub" id="cloudConfigWarning" style="display:none; color:var(--amber);">⚠ Cloud chưa được cấu hình (chưa điền FIREBASE_CONFIG) — StoryForge đang chạy ở <b>Local Mode</b>, dữ liệu chỉ lưu trên trình duyệt này.</p>
+      <div id="acctSignedOut" style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+        <button class="btn primary" id="googleSignInBtn" onclick="sfCloud.signIn()">🔐 Đăng nhập Google</button>
+        <span class="hint" style="margin:0;">Đăng nhập để đồng bộ thư viện, tiến trình dịch và API key (mã hoá) lên Cloud — dùng lại được trên thiết bị khác.</span>
+      </div>
+      <div id="acctSignedIn" style="display:none; align-items:center; gap:14px; flex-wrap:wrap;">
+        <img id="acctAvatar" src="" alt="" style="width:36px;height:36px;border-radius:50%;display:none;">
+        <div>
+          <div style="font-weight:700;" id="acctName">—</div>
+          <div class="hint" style="margin:0;" id="acctEmail">—</div>
+        </div>
+        <span class="pill" id="cloudSyncPill">⚪ Chưa đăng nhập</span>
+        <button class="btn small" onclick="sfCloud.syncNow()">☁ Đồng bộ ngay</button>
+        <button class="btn small danger" onclick="sfCloud.signOut()">Đăng xuất</button>
+      </div>
+      <div class="btn-row">
+        <button class="btn small" onclick="toggleCloudLibraryPanel()">☁ Thư viện Cloud</button>
+        <button class="btn small" onclick="toggleCloudHistoryPanel()">🕘 Lịch sử dịch</button>
+        <button class="btn small" onclick="sfShowSecurityRules()">🔒 Xem Security Rules cần cấu hình</button>
+      </div>
+      <div class="histpanel" id="cloudLibraryPanel">
+        <div class="hint" style="margin-bottom:8px;">Các truyện đang có trên Cloud (tài khoản Google hiện tại). Truyện đã tải về máy sẽ hiện luôn trong 📚 Thư viện bên dưới.</div>
+        <div id="cloudLibraryBody" class="hint">Đăng nhập Google để xem thư viện Cloud.</div>
+      </div>
+      <div class="histpanel" id="cloudHistoryPanel">
+        <div id="cloudHistoryBody" class="hint">Đăng nhập Google để xem lịch sử dịch trên Cloud.</div>
+      </div>
+    </div>
+
     <!-- NETWORK MONITOR -->
-    <div class="status-banner" id="netStatus">🌐 Mạng: <b style="color:var(--green)">🟢 Đã kết nối</b> &nbsp;·&nbsp; 🔌 Proxy: <b id="netProxy" style="color:var(--text-dim)">chưa cấu hình</b> &nbsp;·&nbsp; 🔑 API: <b id="netKeys" style="color:var(--text-dim)">0/0</b></div>
+    <div class="status-banner" id="netStatus">🌐 Mạng: <b id="netOnline" style="color:var(--green)">🟢 Đã kết nối</b> &nbsp;·&nbsp; 🔌 Proxy: <b id="netProxy" style="color:var(--text-dim)">chưa cấu hình</b> &nbsp;·&nbsp; 🔑 API: <b id="netKeys" style="color:var(--text-dim)">0/0</b> &nbsp;·&nbsp; ☁ Cloud: <b id="netCloud" style="color:var(--text-dim)">⚪ Local Mode</b></div>
 
     <!-- DASHBOARD TỔNG QUAN -->
     <div class="dashgrid">
@@ -487,6 +519,10 @@
         <div class="qc-btn" id="qcQueueBtn" onclick="toggleQueuePanel()">
           🗂️ Hàng đợi <span id="queueCount">0</span> mục
           <span class="sub" id="queueSub">Không có tác vụ đang chạy</span>
+        </div>
+        <div class="qc-btn" id="qcResetBtn" onclick="sfResetRuntimeSession()" style="background:#241a1a; border-color:#4a2a2a;">
+          🔁 Reset phiên dịch
+          <span class="sub">Chỉ xoá bộ nhớ đang chạy — KHÔNG xoá Thư viện/Cloud</span>
         </div>
       </div>
       <div class="histpanel" id="histPanel">
@@ -584,6 +620,16 @@
             </div>
             <div id="profileEmpty" class="hint" style="margin-top:10px;">Chưa có bộ nào. Nhập URL và key rồi lưu thành bộ mới.</div>
             <div class="profilechips" id="profileChips"></div>
+            <div style="margin-top:12px; border-top:1px solid var(--panel-border); padding-top:12px;">
+              <div class="switchrow" style="margin-bottom:6px;">
+                <div class="switch" id="cloudBackupSwitch" onclick="sfCloud.toggleKeyBackup()"></div>
+                <span style="font-size:13px;">☁ Backup các bộ kết nối (kèm API key) lên Cloud — <b>mã hoá phía trình duyệt</b></span>
+              </div>
+              <div class="hint">Cần đăng nhập Google. Key được mã hoá bằng Web Crypto (AES-GCM) với mật khẩu riêng do bạn đặt trước khi upload — StoryForge/Cloud không bao giờ thấy hoặc lưu key ở dạng plaintext, và cũng không lưu mật khẩu đó ở đâu cả.</div>
+              <div class="btn-row">
+                <button class="btn small" onclick="sfCloud.restoreKeyBackup()">⬇ Khôi phục bộ kết nối từ Cloud</button>
+              </div>
+            </div>
           </div>
 
           <div class="row">
@@ -930,6 +976,48 @@
   </div>
 </div>
 
+<!-- SECURITY RULES MODAL (chỉ để xem/copy — không tự deploy được từ file tĩnh) -->
+<div class="read-overlay" id="rulesModalOverlay">
+  <div class="read-modal">
+    <div class="read-head">
+      <h2>🔒 Firestore / Storage Security Rules</h2>
+      <button class="read-close" onclick="document.getElementById('rulesModalOverlay').style.display='none'" title="Đóng">✕</button>
+    </div>
+    <div class="read-body">
+      <div class="read-body-title">Firestore Rules</div>
+      <textarea readonly rows="14" style="width:100%; font-family:monospace; font-size:12px;">rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+      match /{document=**} {
+        allow read, write: if request.auth != null && request.auth.uid == userId;
+      }
+    }
+  }
+}</textarea>
+      <div class="read-body-title" style="margin-top:18px;">Storage Rules</div>
+      <textarea readonly rows="10" style="width:100%; font-family:monospace; font-size:12px;">rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{userId}/{allPaths=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}</textarea>
+      <div class="hint" style="margin-top:12px;">Dán 2 đoạn trên vào Firebase Console (Firestore Database → Rules, và Storage → Rules) rồi Publish. File HTML tĩnh này KHÔNG thể tự deploy rules — đây chỉ là bản để bạn copy. Điều chỉnh lại đúng theo cấu trúc collection thực tế nếu bạn thay đổi.</div>
+    </div>
+  </div>
+</div>
+
+<!-- Firebase (compat SDK) — chỉ dùng cho tính năng Cloud Sync tuỳ chọn. Nếu FIREBASE_CONFIG
+     bên dưới chưa điền, các script này vẫn tải nhưng sfCloud.init() sẽ tự phát hiện và
+     chuyển toàn app sang Local Mode (không crash). -->
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-storage-compat.js"></script>
+
 <script>
 /* ---------------- STATE ---------------- */
 let state = {
@@ -989,7 +1077,7 @@ function sf_setSourceText(fullText, opts){
 
 /* ---------- 1. IndexedDB: mở DB + tạo object store ---------- */
 const SF_DB_NAME = 'StoryForgeLibrary';
-const SF_DB_VERSION = 1;
+const SF_DB_VERSION = 2; // v2: + 'cloudQueue' store (Cloud Sync). Không đụng store cũ.
 let __sfDbPromise = null;
 
 function openSFDatabase(){
@@ -1016,6 +1104,10 @@ function openSFDatabase(){
       if(!db.objectStoreNames.contains('sessions')){
         const ss = db.createObjectStore('sessions', { keyPath:'id' });
         ss.createIndex('fileId', 'fileId', { unique:false });
+      }
+      if(!db.objectStoreNames.contains('cloudQueue')){
+        // Hàng đợi đồng bộ Cloud, tồn tại qua reload — không mất khi mất mạng (mục XV/XXI).
+        db.createObjectStore('cloudQueue', { keyPath:'id' });
       }
     };
     req.onsuccess = ()=> resolve(req.result);
@@ -1169,6 +1261,8 @@ async function deleteSession(sessionId){
   }catch(e){ console.error('[SF Library] deleteSession lỗi:', e); return false; }
 }
 // CLEAR ENTIRE LIBRARY (mục 3 & 14) — xóa cả 3 store, chỉ gọi sau khi user confirm.
+// LƯU Ý: hàm này chỉ xoá LOCAL (IndexedDB). Nó không đăng xuất Google và không tự
+// xoá dữ liệu Cloud — người dùng có thể khôi phục lại từ Cloud sau khi dọn máy này.
 async function clearEntireLibraryStorage(){
   try{
     const db = await openSFDatabase();
@@ -1179,6 +1273,32 @@ async function clearEntireLibraryStorage(){
     await sf_txDone(tx);
     return true;
   }catch(e){ console.error('[SF Library] clearEntireLibraryStorage lỗi:', e); return false; }
+}
+
+/* ---------- cloudQueue store CRUD (dùng bởi module sfCloud bên dưới) ---------- */
+async function sfQ_put(item){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('cloudQueue', 'readwrite');
+    tx.objectStore('cloudQueue').put(item);
+    await sf_txDone(tx);
+  }catch(e){ console.error('[SF Cloud] sfQ_put lỗi:', e); }
+}
+async function sfQ_delete(id){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('cloudQueue', 'readwrite');
+    tx.objectStore('cloudQueue').delete(id);
+    await sf_txDone(tx);
+  }catch(e){ console.error('[SF Cloud] sfQ_delete lỗi:', e); }
+}
+async function sfQ_all(){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('cloudQueue', 'readonly');
+    const res = await sf_reqToPromise(tx.objectStore('cloudQueue').getAll());
+    return (res||[]).sort((a,b)=> (a.createdAt||0)-(b.createdAt||0));
+  }catch(e){ console.error('[SF Cloud] sfQ_all lỗi:', e); return []; }
 }
 
 /* ---------- 4. Runtime pointers cho file đang mở/đang dịch ---------- */
@@ -1268,15 +1388,24 @@ function sf_bumpFileCountersFromChunkState(){
 // Được gọi thêm từ markChunkDone/markChunkError/markChunkWaiting. Chỉ ghi ĐÚNG
 // 1 chunk record + lên lịch ghi debounce metadata file — không ghi lại toàn bộ
 // database, không JSON.stringify toàn bộ nguồn/bản dịch (mục 19).
-function sf_autosaveChunk(idx){
+async function sf_autosaveChunk(idx){
   if(!sfCurrentFileId) return; // chưa có file active (vd: đang test) — bỏ qua an toàn
   const c = chunkState[idx]; if(!c) return;
   const off = sfChunkOffsets[idx];
   const stableId = c.stableId || (off && off.stableId) || sf_makeStableId(idx, idx);
   const sourceStart = c.sourceStart != null ? c.sourceStart : (off ? off.start : idx);
   const sourceEnd = c.sourceEnd != null ? c.sourceEnd : (off ? off.end : idx);
+  const recId = sfCurrentFileId + '::' + stableId;
+
+  // mục XIX (nhiều tab): không bao giờ hạ cấp 1 chunk đã DONE (do tab/phiên khác ghi)
+  // xuống waiting/error chỉ vì tab này đang cầm state cũ hơn.
+  try{
+    const existing = await getChunkRecordSafe(recId);
+    if(existing && existing.status === 'done' && c.status !== 'done') return;
+  }catch(e){}
+
   const rec = {
-    id: sfCurrentFileId + '::' + stableId,
+    id: recId,
     fileId: sfCurrentFileId,
     stableId,
     sourceStart, sourceEnd,
@@ -1292,6 +1421,17 @@ function sf_autosaveChunk(idx){
   saveChunkRecord(rec).catch(e=> console.error('[SF Library] autosave chunk lỗi:', e));
   sf_bumpFileCountersFromChunkState();
   sf_scheduleFileSave();
+  // mục V/VI: mỗi chunk DONE (hoặc error/waiting) được đẩy vào hàng đợi đồng bộ Cloud
+  // ngay lập tức — KHÔNG chờ dịch xong toàn bộ truyện. Nếu chưa đăng nhập/offline,
+  // sfCloud.enqueueChunk tự lưu vào cloudQueue (IndexedDB) và sẽ tự đồng bộ khi có mạng.
+  if(typeof sfCloud !== 'undefined') sfCloud.enqueueChunk(rec);
+}
+async function getChunkRecordSafe(id){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('chunks', 'readonly');
+    return await sf_reqToPromise(tx.objectStore('chunks').get(id)) || null;
+  }catch(e){ return null; }
 }
 
 /* ---------- 8. Chuẩn bị file record + khung chunk khi bắt đầu dịch mới ---------- */
@@ -1351,6 +1491,14 @@ async function sf_prepareFileForTranslation(text, offsets){
   await saveFileRecord(rec);
   await saveSession({ id: 'sess_' + fileId, fileId, startedAt: now, updatedAt: now, status: 'translating', currentConfig: cfg });
   await hydrateLibrary();
+  // mục IV/V: upload metadata + nguồn (Storage) + khung chunk (batched) lên Cloud.
+  // Chạy nền, không chặn UI; nếu chưa đăng nhập thì tự bỏ qua (không lỗi).
+  if(typeof sfCloud !== 'undefined'){
+    sfCloud.enqueueFileMeta(rec);
+    sfCloud.enqueueSourceText(fileId, text);
+    sfCloud.uploadChunkManifest(fileId, chunkRecs).catch(e=> console.error('[SF Cloud] uploadChunkManifest lỗi:', e));
+    sfCloud.enqueueHistoryEvent(fileId, rec.name, 'started');
+  }
   return rec;
 }
 
@@ -1420,6 +1568,10 @@ async function sf_onEngineFinished(){
   sfCurrentFileMeta.updatedAt = Date.now();
   await saveFileRecord(sfCurrentFileMeta);
   await hydrateLibrary();
+  if(typeof sfCloud !== 'undefined'){
+    sfCloud.enqueueFileMeta(sfCurrentFileMeta);
+    if(sfCurrentFileMeta.status === 'done') sfCloud.enqueueHistoryEvent(sfCurrentFileMeta.id, sfCurrentFileMeta.name, 'done');
+  }
 }
 
 /* ---------- 11. Tiếp tục dịch phần CHƯA xong (mục 5: CONTINUE PHẢI AN TOÀN) ---------- */
@@ -1555,6 +1707,10 @@ async function deleteLibraryFile(fileId){
   if(sfCurrentFileId === fileId){ sfCurrentFileId = null; sfCurrentFileMeta = null; }
   if(sfResumeCandidateId === fileId) sfResumeCandidateId = null;
   await hydrateLibrary();
+  if(typeof sfCloud !== 'undefined'){
+    const alsoCloud = sfCloud.isSignedIn() ? confirm('Đồng thời xoá truyện này khỏi Cloud của tài khoản Google đang đăng nhập?') : false;
+    if(alsoCloud) sfCloud.enqueueDeleteFile(fileId);
+  }
 }
 async function clearEntireFileLibrary(){
   if(!confirm('Xóa TOÀN BỘ thư viện (tất cả truyện, chunk và phiên đã lưu)? Hành động này không thể hoàn tác và KHÔNG xóa các bộ kết nối proxy đã lưu.')) return;
@@ -2450,6 +2606,45 @@ function stopTranslate(){
   stopFlag = true; pauseFlag = false;
   logLine('warn', null, null, 'Đang gửi cờ Dừng...');
 }
+
+/* ---------------- RESET PHIÊN DỊCH (mục VII — KHÔNG được xoá dữ liệu đã lưu) ---------------
+   RESET chỉ đụng tới lớp RUNTIME: currentChunks/currentResults/chunkState trong RAM,
+   queue của scheduler, activeRequests, chunkRetryAfter, log, UI tiến trình.
+   RESET TUYỆT ĐỐI KHÔNG: xoá IndexedDB, xoá Cloud, xoá Profile/API key, đăng xuất Google.
+   Sau RESET, mở lại 📚 Thư viện thì truyện + số chunk DONE vẫn còn nguyên như trước. */
+function sfResetRuntimeSession(){
+  if(running){
+    if(!confirm('Đang có tiến trình dịch chạy. Dừng tiến trình và reset phiên hiện tại? (Dữ liệu đã lưu trong Thư viện/Cloud sẽ KHÔNG bị mất)')) return;
+    stopFlag = true; pauseFlag = false;
+  }
+  // Lớp RUNTIME — an toàn để xoá:
+  currentChunks = [];
+  currentResults = [];
+  chunkState = [];
+  sfChunkOffsets = [];
+  chunkStats = { waiting:0, running:0, done:0, error:0 };
+  chunkExpanded = new Set();
+  chunkCurrentPage = 0;
+  chunkRetryAfter = Object.create(null);
+  logEntries = [];
+  stopFlag = false; pauseFlag = false; running = false;
+  translateStartTime = 0;
+  // Chỉ "buông" con trỏ RAM tới truyện đang mở — record thật trong IndexedDB/Cloud không đổi.
+  sfCurrentFileId = null;
+  sfCurrentFileMeta = null;
+
+  const progLog = document.getElementById('progLog'); if(progLog) progLog.innerHTML = '';
+  const outputText = document.getElementById('outputText'); if(outputText) outputText.value = '';
+  const progwrap = document.getElementById('progwrap'); if(progwrap) progwrap.classList.remove('show');
+  const startBtn = document.getElementById('startBtn'); if(startBtn) startBtn.disabled = false;
+  const pauseBtn = document.getElementById('pauseBtn'); if(pauseBtn) pauseBtn.style.display = 'none';
+  const stopBtn = document.getElementById('stopBtn'); if(stopBtn) stopBtn.style.display = 'none';
+  updateStats();
+  updateProgressUI();
+  logLine('info', null, null, '🔁 Đã reset phiên dịch (chỉ bộ nhớ tạm). Thư viện và Cloud giữ nguyên.');
+  // Thư viện/resume banner đọc thẳng từ IndexedDB nên không hề bị ảnh hưởng bởi reset này.
+  hydrateLibrary().catch(()=>{});
+}
 async function retryFailedChunks(){
   if(running) return;
   const indices = chunkState.map((c,i)=>c.status==='error'?i:-1).filter(i=>i>=0);
@@ -2495,9 +2690,380 @@ function copyOutput(){ navigator.clipboard?.writeText(document.getElementById('o
 function runSearch(){}
 function downloadOutputByChapter(){}
 
+/* =====================================================================
+   MODULE: sfCloud — Đăng nhập Google + Firestore + Storage (Cloud Sync)
+   ---------------------------------------------------------------------
+   Toàn bộ khối này CHỈ BỔ SUNG persistence lên Cloud. Không đụng tới
+   Scheduler / Smart Chunking / Key Pool / RPM / Retry / Chatbot / UI dịch
+   hiện có — các hàm dưới đây chỉ được GỌI THÊM từ các điểm cần thiết.
+   Nếu FIREBASE_CONFIG chưa điền, app tự động chạy Local Mode (không crash).
+   ===================================================================== */
+
+// Điền thông tin dự án Firebase của bạn vào đây (Firebase Console → Project settings).
+// Để trống apiKey/projectId để tắt hẳn Cloud Mode và chỉ chạy Local Mode.
+const FIREBASE_CONFIG = {
+  apiKey: "",
+  authDomain: "",
+  projectId: "",
+  storageBucket: "",
+  messagingSenderId: "",
+  appId: ""
+};
+
+const sfCloud = (function(){
+  let app=null, auth=null, db=null, storage=null;
+  let available = false;   // Firebase SDK đã tải + config hợp lệ
+  let user = null;         // Firebase user hiện tại (null = chưa đăng nhập)
+  let syncState = 'idle';  // idle | syncing | error
+  let pendingCount = 0;
+  let cloudFilesCache = [];
+  let cloudHistoryCache = [];
+
+  function isConfigured(){
+    return !!(FIREBASE_CONFIG && FIREBASE_CONFIG.apiKey && FIREBASE_CONFIG.projectId);
+  }
+
+  function updateNetworkOnlineUI(){
+    const el = document.getElementById('netOnline');
+    if(!el) return;
+    if(navigator.onLine){ el.textContent = '🟢 Đã kết nối'; el.style.color = 'var(--green)'; }
+    else { el.textContent = '🔴 Mất mạng'; el.style.color = 'var(--red)'; }
+  }
+
+  function init(){
+    updateNetworkOnlineUI();
+    window.addEventListener('online', ()=>{ updateNetworkOnlineUI(); updateStatusUI(); flushQueue(); });
+    window.addEventListener('offline', ()=>{ updateNetworkOnlineUI(); updateStatusUI(); });
+
+    const warnEl = document.getElementById('cloudConfigWarning');
+    if(typeof firebase === 'undefined' || !isConfigured()){
+      available = false;
+      if(warnEl) warnEl.style.display = 'block';
+      updateStatusUI();
+      // Local Mode: vẫn nạp số lượng cloudQueue tồn đọng (nếu trước đó từng cấu hình
+      // rồi tắt) để không hiển thị sai, nhưng không cố gắng đồng bộ.
+      return;
+    }
+    try{
+      app = firebase.initializeApp(FIREBASE_CONFIG);
+      auth = firebase.auth();
+      db = firebase.firestore();
+      storage = firebase.storage();
+      available = true;
+      if(warnEl) warnEl.style.display = 'none';
+      auth.onAuthStateChanged(onAuthChanged);
+      setInterval(flushQueue, 20000); // lưới an toàn: tự thử đồng bộ lại định kỳ
+    }catch(e){
+      console.error('[SF Cloud] Không khởi tạo được Firebase — chuyển sang Local Mode:', e);
+      available = false;
+      if(warnEl) warnEl.style.display = 'block';
+    }
+    updateStatusUI();
+  }
+
+  async function onAuthChanged(fbUser){
+    user = fbUser || null;
+    const outEl = document.getElementById('acctSignedOut'), inEl = document.getElementById('acctSignedIn');
+    if(!user){
+      // Logout (mục II): dừng scheduler nếu đang chạy, KHÔNG xoá dữ liệu Cloud,
+      // chỉ xoá trạng thái tài khoản đang hiển thị + cache Cloud UI trong RAM.
+      if(running) stopFlag = true;
+      if(outEl) outEl.style.display = 'flex';
+      if(inEl) inEl.style.display = 'none';
+      cloudFilesCache = []; cloudHistoryCache = [];
+      renderCloudLibrary(); renderCloudHistory();
+      updateStatusUI();
+      return;
+    }
+    if(outEl) outEl.style.display = 'none';
+    if(inEl) inEl.style.display = 'flex';
+    const nameEl = document.getElementById('acctName'), emailEl = document.getElementById('acctEmail'), av = document.getElementById('acctAvatar');
+    if(nameEl) nameEl.textContent = user.displayName || '(Không tên)';
+    if(emailEl) emailEl.textContent = user.email || '';
+    if(av){ if(user.photoURL){ av.src = user.photoURL; av.style.display='inline-block'; } else av.style.display='none'; }
+
+    try{
+      await db.collection('users').doc(user.uid).set({
+        displayName: user.displayName || null, email: user.email || null,
+        photoURL: user.photoURL || null, updatedAt: Date.now()
+      }, { merge:true });
+    }catch(e){ console.error('[SF Cloud] Lưu profile Google lỗi:', e); }
+
+    await refreshCloudLibrary();
+    await refreshCloudHistory();
+    updateStatusUI();
+    flushQueue();
+  }
+
+  function signIn(){
+    if(!available){ alert('Cloud chưa được cấu hình (điền FIREBASE_CONFIG trong file HTML). Hiện tại StoryForge đang chạy Local Mode.'); return; }
+    const provider = new firebase.auth.GoogleAuthProvider();
+    auth.signInWithPopup(provider).catch(e=>{
+      console.error('[SF Cloud] Đăng nhập lỗi:', e);
+      alert('Đăng nhập Google thất bại: ' + (e && e.message || e));
+    });
+  }
+  function signOut(){
+    if(!available || !user) return;
+    auth.signOut().catch(e=> console.error('[SF Cloud] Đăng xuất lỗi:', e));
+  }
+  function isSignedIn(){ return !!user; }
+
+  async function updateStatusUI(){
+    const pill = document.getElementById('cloudSyncPill');
+    const netCloud = document.getElementById('netCloud');
+    if(available && user) pendingCount = (await sfQ_all()).length;
+    let text, color;
+    if(!available){ text='⚪ Local Mode'; color='var(--text-dim)'; }
+    else if(!user){ text='⚪ Chưa đăng nhập'; color='var(--text-dim)'; }
+    else if(!navigator.onLine){ text='🟠 Chưa đồng bộ Cloud · ' + pendingCount + ' thay đổi chờ'; color='var(--amber)'; }
+    else if(syncState==='syncing'){ text='🟠 Đang đồng bộ...'; color='var(--amber)'; }
+    else if(syncState==='error'){ text='🔴 Đồng bộ lỗi (sẽ tự thử lại)'; color='var(--red)'; }
+    else if(pendingCount>0){ text='🟠 ' + pendingCount + ' thay đổi chờ đồng bộ'; color='var(--amber)'; }
+    else { text = '🟢 Đã đồng bộ'; color = 'var(--green)'; }
+    if(pill) pill.textContent = text;
+    if(netCloud){ netCloud.textContent = text; netCloud.style.color = color; }
+  }
+
+  /* ---------- Sync queue (persist qua reload — mục VI/XV/XXI) ---------- */
+  async function enqueue(type, payload){
+    const item = { id: type+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8), type, payload, createdAt: Date.now() };
+    await sfQ_put(item);
+    updateStatusUI();
+    flushQueue();
+  }
+  function enqueueFileMeta(rec){
+    if(!available) return;
+    const meta = Object.assign({}, rec); delete meta.sourceText; // Storage giữ source, Firestore chỉ giữ metadata (mục IV)
+    enqueue('file', meta);
+  }
+  function enqueueChunk(rec){ if(!available) return; enqueue('chunk', rec); }
+  function enqueueSourceText(fileId, text){ if(!available) return; enqueue('source', { fileId, text }); }
+  function enqueueDeleteFile(fileId){ if(!available) return; enqueue('delete_file', { fileId }); }
+  function enqueueHistoryEvent(fileId, name, kind){ if(!available) return; enqueue('history', { fileId, name, kind, at: Date.now() }); }
+
+  async function flushQueue(){
+    if(!available || !user || !navigator.onLine || syncState==='syncing') { updateStatusUI(); return; }
+    syncState = 'syncing'; updateStatusUI();
+    const items = await sfQ_all();
+    for(const item of items){
+      try{
+        await processQueueItem(item);
+        await sfQ_delete(item.id);
+      }catch(e){
+        console.error('[SF Cloud] Đồng bộ item lỗi, sẽ thử lại sau (không mất dữ liệu local):', item.type, e);
+        syncState = 'error'; updateStatusUI();
+        return; // dừng, phần còn lại vẫn nằm trong cloudQueue — thử lại ở flush kế tiếp
+      }
+    }
+    syncState = 'idle';
+    updateStatusUI();
+    refreshCloudLibrary(); refreshCloudHistory();
+  }
+
+  async function processQueueItem(item){
+    const uid = user.uid;
+    const base = db.collection('users').doc(uid);
+    if(item.type === 'file'){
+      await base.collection('files').doc(item.payload.id).set(item.payload, { merge:true });
+    } else if(item.type === 'chunk'){
+      await base.collection('chunks').doc(item.payload.id).set(item.payload, { merge:true });
+    } else if(item.type === 'source'){
+      const ref = storage.ref('users/'+uid+'/files/'+item.payload.fileId+'/source.txt');
+      await ref.putString(item.payload.text, 'raw', { contentType:'text/plain;charset=utf-8' });
+    } else if(item.type === 'delete_file'){
+      const fid = item.payload.fileId;
+      await base.collection('files').doc(fid).delete();
+      const snap = await base.collection('chunks').where('fileId','==',fid).get();
+      const batch = db.batch();
+      snap.forEach(d=> batch.delete(d.ref));
+      if(snap.size) await batch.commit();
+      try{ await storage.ref('users/'+uid+'/files/'+fid+'/source.txt').delete(); }catch(e){}
+    } else if(item.type === 'history'){
+      await base.collection('history').add(item.payload);
+    } else if(item.type === 'settings'){
+      await base.collection('settings').doc('profiles').set(item.payload, { merge:false });
+    }
+  }
+
+  // Upload khung chunk ban đầu (có thể hàng nghìn record) theo BATCH ~450 doc/lần,
+  // KHÔNG đi qua cloudQueue chung (mục V: tuyệt đối không serialize toàn bộ chunk
+  // sau MỖI request dịch — việc này chỉ chạy đúng 1 lần khi tạo bộ khung mới).
+  async function uploadChunkManifest(fileId, chunkRecs){
+    if(!available || !user) return;
+    const col = db.collection('users').doc(user.uid).collection('chunks');
+    for(let i=0; i<chunkRecs.length; i+=450){
+      const slice = chunkRecs.slice(i, i+450);
+      const batch = db.batch();
+      slice.forEach(c=> batch.set(col.doc(c.id), c, { merge:true }));
+      await batch.commit();
+    }
+  }
+
+  function syncNow(){ flushQueue(); refreshCloudLibrary(); refreshCloudHistory(); }
+
+  /* ---------- Cloud Library / History (đọc để tải truyện về máy khác — mục V/VIII) ---------- */
+  async function refreshCloudLibrary(){
+    if(!available || !user) { cloudFilesCache = []; renderCloudLibrary(); return; }
+    try{
+      const snap = await db.collection('users').doc(user.uid).collection('files').orderBy('updatedAt','desc').get();
+      cloudFilesCache = snap.docs.map(d=> d.data());
+    }catch(e){ console.error('[SF Cloud] refreshCloudLibrary lỗi:', e); cloudFilesCache = []; }
+    renderCloudLibrary();
+  }
+  function renderCloudLibrary(){
+    const body = document.getElementById('cloudLibraryBody');
+    if(!body) return;
+    if(!available){ body.textContent = 'Cloud chưa được cấu hình.'; return; }
+    if(!user){ body.textContent = 'Đăng nhập Google để xem thư viện Cloud.'; return; }
+    if(!cloudFilesCache.length){ body.textContent = 'Chưa có truyện nào trên Cloud của tài khoản này.'; return; }
+    body.innerHTML = cloudFilesCache.map(f=>{
+      const localExists = libraryFiles.some(lf=> lf.id === f.id);
+      const upd = f.updatedAt ? new Date(f.updatedAt).toLocaleString('vi-VN') : '—';
+      return `<div class="histrow" style="flex-direction:column; align-items:stretch; gap:6px;">
+        <div style="display:flex; justify-content:space-between; gap:8px;">
+          <b>${sf_escapeHtml(f.name||'(Không tên)')}</b>
+          <span>${localExists ? '💾 đã có trên máy' : '☁ chỉ trên Cloud'}</span>
+        </div>
+        <div class="t" style="font-size:11.5px;">📦 ${f.totalChunks||0} chunk · ✅ ${f.translatedChunks||0} · 🕒 ${upd}</div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn small primary" onclick="sfCloud.downloadFile('${sf_escapeHtml(f.id)}')">⬇ Tải về máy${localExists?' (cập nhật)':''}</button>
+        </div>
+      </div>`;
+    }).join('');
+  }
+  async function downloadFile(fileId){
+    if(!available || !user) return;
+    try{
+      const uid = user.uid;
+      const fdoc = await db.collection('users').doc(uid).collection('files').doc(fileId).get();
+      if(!fdoc.exists){ alert('Không tìm thấy truyện này trên Cloud.'); return; }
+      const meta = fdoc.data();
+      let sourceText = '';
+      try{
+        const ref = storage.ref('users/'+uid+'/files/'+fileId+'/source.txt');
+        const url = await ref.getDownloadURL();
+        sourceText = await (await fetch(url)).text();
+      }catch(e){ console.warn('[SF Cloud] Không tải được source.txt:', e); }
+      const csnap = await db.collection('users').doc(uid).collection('chunks').where('fileId','==',fileId).get();
+      const chunkRecs = csnap.docs.map(d=> d.data());
+      const fileRec = Object.assign({}, meta, { sourceText, updatedAt: Date.now() });
+      await saveFileRecord(fileRec);
+      if(chunkRecs.length) await saveChunkRecords(chunkRecs);
+      await hydrateLibrary();
+      alert('Đã tải "' + (meta.name||fileId) + '" về máy. Mở trong 📚 Thư viện để tiếp tục dịch — các chunk đã DONE sẽ không bị dịch lại.');
+    }catch(e){ console.error('[SF Cloud] downloadFile lỗi:', e); alert('Tải về thất bại: ' + e.message); }
+  }
+
+  async function refreshCloudHistory(){
+    if(!available || !user){ cloudHistoryCache = []; renderCloudHistory(); return; }
+    try{
+      const snap = await db.collection('users').doc(user.uid).collection('history').orderBy('at','desc').limit(50).get();
+      cloudHistoryCache = snap.docs.map(d=> d.data());
+    }catch(e){ console.error('[SF Cloud] refreshCloudHistory lỗi:', e); cloudHistoryCache = []; }
+    renderCloudHistory();
+  }
+  function renderCloudHistory(){
+    const body = document.getElementById('cloudHistoryBody');
+    if(!body) return;
+    if(!available){ body.textContent = 'Cloud chưa được cấu hình.'; return; }
+    if(!user){ body.textContent = 'Đăng nhập Google để xem lịch sử dịch trên Cloud.'; return; }
+    if(!cloudHistoryCache.length){ body.textContent = 'Chưa có lịch sử nào.'; return; }
+    body.innerHTML = cloudHistoryCache.map(h=>{
+      const at = h.at ? new Date(h.at).toLocaleString('vi-VN') : '—';
+      const label = h.kind==='started' ? '🚀 Bắt đầu dịch' : (h.kind==='done' ? '🎉 Hoàn tất' : sf_escapeHtml(String(h.kind||'')));
+      return `<div class="histrow"><span class="t">${at}</span><span>${label} — ${sf_escapeHtml(h.name||'')}</span></div>`;
+    }).join('');
+  }
+
+  /* ---------- Backup API key / bộ kết nối lên Cloud, mã hoá phía client (mục X) ---------- */
+  function toB64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
+  function fromB64(b64){ return Uint8Array.from(atob(b64), c=>c.charCodeAt(0)); }
+  async function deriveKey(passphrase, saltB64){
+    const enc = new TextEncoder();
+    const salt = saltB64 ? fromB64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
+    const baseKey = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+    const key = await crypto.subtle.deriveKey(
+      { name:'PBKDF2', salt, iterations:150000, hash:'SHA-256' },
+      baseKey, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
+    );
+    return { key, saltB64: saltB64 || toB64(salt) };
+  }
+  async function toggleKeyBackup(){
+    const sw = document.getElementById('cloudBackupSwitch');
+    if(!sw) return;
+    if(!available || !user){ alert('Đăng nhập Google trước khi bật Backup Cloud.'); return; }
+    const turningOn = !sw.classList.contains('on');
+    if(!turningOn){ sw.classList.remove('on'); return; } // chỉ tắt hiển thị công tắc, KHÔNG xoá backup đã có trên Cloud
+    const passphrase = prompt('Đặt một mật khẩu để mã hoá API key trước khi upload Cloud.\nStoryForge KHÔNG lưu mật khẩu này ở đâu — nếu quên, sẽ không khôi phục được backup.');
+    if(!passphrase) return;
+    sw.classList.add('on');
+    await backupProfilesNow(passphrase);
+  }
+  async function backupProfilesNow(passphrase){
+    try{
+      const profiles = loadProfiles(); // chỉ đọc từ localStorage hiện có — không đổi cơ chế Profile cũ
+      const { key, saltB64 } = await deriveKey(passphrase, null);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const enc = new TextEncoder();
+      const ciphertext = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, enc.encode(JSON.stringify(profiles)));
+      // KHÔNG BAO GIỜ ghi plaintext key lên Firestore — chỉ ciphertext + iv + salt.
+      await enqueue('settings', { ciphertext: toB64(ciphertext), iv: toB64(iv), salt: saltB64, updatedAt: Date.now() });
+      alert('Đã đưa backup (đã mã hoá) vào hàng đợi đồng bộ Cloud.');
+    }catch(e){ console.error('[SF Cloud] Mã hoá/backup profiles lỗi:', e); alert('Backup thất bại: ' + e.message); }
+  }
+  async function restoreKeyBackup(){
+    if(!available || !user){ alert('Đăng nhập Google trước.'); return; }
+    try{
+      const doc = await db.collection('users').doc(user.uid).collection('settings').doc('profiles').get();
+      if(!doc.exists){ alert('Chưa có backup nào trên Cloud cho tài khoản này.'); return; }
+      const data = doc.data();
+      const passphrase = prompt('Nhập mật khẩu đã dùng khi backup để giải mã:');
+      if(!passphrase) return;
+      const { key } = await deriveKey(passphrase, data.salt);
+      const plain = await crypto.subtle.decrypt({ name:'AES-GCM', iv: fromB64(data.iv) }, key, fromB64(data.ciphertext));
+      const profiles = JSON.parse(new TextDecoder().decode(plain));
+      const existing = loadProfiles();
+      const merged = existing.filter(p=> !profiles.some(np=> np.name===p.name)).concat(profiles);
+      saveProfilesToStorage(merged);
+      if(typeof renderProfiles === 'function') renderProfiles();
+      alert('Đã khôi phục ' + profiles.length + ' bộ kết nối từ Cloud vào trình duyệt này.');
+    }catch(e){
+      console.error('[SF Cloud] restoreKeyBackup lỗi:', e);
+      alert('Giải mã thất bại — sai mật khẩu hoặc dữ liệu backup lỗi.');
+    }
+  }
+
+  return {
+    init, signIn, signOut, isSignedIn, syncNow,
+    enqueueFileMeta, enqueueChunk, enqueueSourceText, enqueueDeleteFile, enqueueHistoryEvent,
+    uploadChunkManifest, downloadFile, toggleKeyBackup, restoreKeyBackup,
+    refreshCloudLibrary, refreshCloudHistory
+  };
+})();
+
+function toggleCloudLibraryPanel(){
+  const p = document.getElementById('cloudLibraryPanel');
+  const wasShown = p.classList.contains('show');
+  document.getElementById('cloudHistoryPanel').classList.remove('show');
+  p.classList.toggle('show', !wasShown);
+  if(!wasShown) sfCloud.refreshCloudLibrary();
+}
+function toggleCloudHistoryPanel(){
+  const p = document.getElementById('cloudHistoryPanel');
+  const wasShown = p.classList.contains('show');
+  document.getElementById('cloudLibraryPanel').classList.remove('show');
+  p.classList.toggle('show', !wasShown);
+  if(!wasShown) sfCloud.refreshCloudHistory();
+}
+function sfShowSecurityRules(){
+  document.getElementById('rulesModalOverlay').style.display = 'flex';
+}
+
 /* KEEP ALIVE / INITIALIZE */
 updateStats();
 hydrateLibrary().catch(e=>console.error('[SF Library] Lỗi khởi tạo thư viện:', e));
+sfCloud.init();
 </script>
 </body>
 </html>
