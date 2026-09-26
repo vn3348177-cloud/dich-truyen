@@ -1237,13 +1237,24 @@ async function fetchModels(){
     res = await fetch(wrapUrl(url), { method:'GET', headers });
   }catch(networkErr){
     grid.innerHTML = '';
-    alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
+    alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + '\n\nURL đã gọi: ' + url + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
     return;
   }
   if(!res.ok){
     grid.innerHTML = '';
+    const ct = res.headers.get('content-type') || '';
     const t = await res.text().catch(()=>'');
-    alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : ''));
+    // A JSON/plain-text API error is useful to show verbatim. An HTML body (a static host's
+    // default error page, a wrong path landing on a website instead of an API, etc.) is not —
+    // dumping it raw into alert() just shows unreadable markup and hides the real problem.
+    const looksHtml = /html/i.test(ct) || /^\s*<(!doctype|html)/i.test(t);
+    if(looksHtml){
+      alert('Không lấy được danh sách model: HTTP ' + res.status + ' — endpoint trả về một trang HTML, không phải dữ liệu API.\n\n'
+        + 'URL đã gọi: ' + url + '\n\n'
+        + 'Nhiều khả năng Base URL đang trỏ nhầm (ví dụ vào một trang web tĩnh/GitHub Pages thay vì API endpoint thật), hoặc endpoint này không hỗ trợ GET /models. Hãy kiểm tra lại Base URL, hoặc gõ tay tên model.');
+    } else {
+      alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : '') + '\n\nURL đã gọi: ' + url);
+    }
     return;
   }
   let data;
