@@ -1156,25 +1156,22 @@ function pickAvailableKey(){
   if(n===0) return -1;
   const now = Date.now();
   for(let m of state.keyMeta){ if(m.status==='ratelimited' && now >= m.rateLimitUntil) m.status='idle'; }
-  // Candidate pool: not permanently invalid (401/403), not under a real 429 cooldown. Local
-  // RPM is SOFT — architecture is "Parallel hard + RPM soft + 429 adaptive": Global Parallel
-  // (activeRequests) is the only hard concurrency cap, and only an actual server 429 response
-  // ever removes a key from the pool. A key's local RPM utilization is scored (see keyScore(),
-  // which weighs rpm.ratio heavily) so load auto-balances toward whichever key has the most
-  // local RPM headroom — but it must never by itself block a request when Parallel still has
-  // room and no real 429 has happened, since that RPM figure is only ever a local, offline
-  // estimate/hint (per the UI's own copy: "RPM chỉ dùng để tham khảo").
+  // Candidate pool: not permanently invalid (401/403), not under a real 429 cooldown, and not
+  // currently FULL on local RPM (>=100% of the hint). CRITICAL/HIGH/NEAR keys stay eligible —
+  // only FULL is excluded, and only from THIS pick; it is re-evaluated fresh on every call, so
+  // a key returns the instant its oldest timestamp ages out (no permanent/hard block).
   const candidates = [];
   for(let i=0; i<n; i++){
     const idx = (sfKeyCursor + i) % n;
     const m = state.keyMeta[idx];
     if(m.status==='error' || m.status==='disabled') continue; // permanently invalid (401/403)
     if(m.status==='ratelimited' && now < m.rateLimitUntil) continue; // real server 429 cooldown
+    if(keyRpmInfo(idx).status === 'FULL') continue; // temporarily out of local RPM room
     candidates.push(idx);
   }
-  // Empty here now means every usable key is under a real 429 cooldown (or there are none) —
-  // RPM alone can no longer cause this, so the caller's wait via getNearestCooldownMs() is
-  // always waiting on a genuine 429, never a local RPM guess.
+  // If every usable key is currently FULL/cooling down, correctly return -1 rather than force
+  // a request onto a key the local hint says has no room — the caller waits the exact time via
+  // getNearestCooldownMs() instead of busy-looping or guessing with a fixed delay.
   if(candidates.length === 0) return -1;
   candidates.sort((a,b)=>{
     const sa = keyScore(a), sb = keyScore(b);
@@ -1186,10 +1183,10 @@ function pickAvailableKey(){
   return chosen;
 }
 function getNearestCooldownMs(){
-    // Called only when pickAvailableKey found nothing selectable right now — which, now that
-    // RPM is soft-only, means every usable key is genuinely under a real 429 cooldown. Computes
-    // the exact time until the nearest cooldown ends, so the scheduler sleeps precisely instead
-    // of busy-looping or polling on a fixed interval. No counter is reset here.
+    // Called only when pickAvailableKey found nothing selectable right now. Computes the exact
+    // time until the NEAREST real event that frees a key — a server 429 cooldown ending, or a
+    // key's local RPM window losing its oldest timestamp — so the scheduler can sleep precisely
+    // instead of busy-looping or polling on a fixed interval. No counter is reset here.
     const now = Date.now();
     let waits = [];
     for(let i=0; i<state.keyMeta.length; i++){
@@ -1197,7 +1194,10 @@ function getNearestCooldownMs(){
       if(m.status==='error' || m.status==='disabled') continue; // never coming back on its own
       if(m.status==='ratelimited' && isFinite(m.rateLimitUntil) && m.rateLimitUntil > now){
         waits.push(m.rateLimitUntil - now);
+        continue;
       }
+      const rpm = keyRpmInfo(i);
+      if(rpm.status === 'FULL' && rpm.nextSlotMs > 0) waits.push(rpm.nextSlotMs);
     }
     if(waits.length === 0) return 5000; // nothing known to wait on — small fallback poll, not a busy loop
     return Math.min(...waits) + 80; // small safety margin for timer drift
@@ -1237,24 +1237,13 @@ async function fetchModels(){
     res = await fetch(wrapUrl(url), { method:'GET', headers });
   }catch(networkErr){
     grid.innerHTML = '';
-    alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + '\n\nURL đã gọi: ' + url + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
+    alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
     return;
   }
   if(!res.ok){
     grid.innerHTML = '';
-    const ct = res.headers.get('content-type') || '';
     const t = await res.text().catch(()=>'');
-    // A JSON/plain-text API error is useful to show verbatim. An HTML body (a static host's
-    // default error page, a wrong path landing on a website instead of an API, etc.) is not —
-    // dumping it raw into alert() just shows unreadable markup and hides the real problem.
-    const looksHtml = /html/i.test(ct) || /^\s*<(!doctype|html)/i.test(t);
-    if(looksHtml){
-      alert('Không lấy được danh sách model: HTTP ' + res.status + ' — endpoint trả về một trang HTML, không phải dữ liệu API.\n\n'
-        + 'URL đã gọi: ' + url + '\n\n'
-        + 'Nhiều khả năng Base URL đang trỏ nhầm (ví dụ vào một trang web tĩnh/GitHub Pages thay vì API endpoint thật), hoặc endpoint này không hỗ trợ GET /models. Hãy kiểm tra lại Base URL, hoặc gõ tay tên model.');
-    } else {
-      alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : '') + '\n\nURL đã gọi: ' + url);
-    }
+    alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : ''));
     return;
   }
   let data;
@@ -1308,514 +1297,22 @@ function openReadByChapter(){}
 function chunkSizeVal(){ return parseInt(document.getElementById('chunkSize').value)||3500; }
 function parallelVal(){ return Math.max(1, parseInt(document.getElementById('parallel').value)||4); }
 function rpmVal(){ return Math.max(1, parseInt(document.getElementById('rpm').value)||15); }
-
-/* ================================================================
-   SMART CHUNKING CORE (token-aware, chapter/paragraph packing)
-   Goal: MAXIMUM SAFE CONTENT PER REQUEST → fewer chunks/requests/GCLI.
-   ================================================================ */
-const SMART_CHUNK_CONFIG = {
-  enabled: true,
-
-  targetChars: 8000,    // soft target size per chunk — packing tries to fill up to this,
-                         // and is the size EVERY run starts at (resetAdaptiveChunking()),
-                         // regardless of how high the adaptive layer grew maxChars on a
-                         // previous run — first request of a new run is always this safe size
-  minChars: 4000,        // below this, prefer merging with a neighbor over a tiny chunk
-  // Round-3 audit finding (spec #11 "kiểm tra hiệu quả"): with the default contextLimitTokens
-  // below, the token-budget ceiling works out to ~300k+ chars — nowhere near this cap — so
-  // maxChars was the ONLY thing actually stopping bigger, safe chunks on generous-context
-  // models. Raised 12000→24000 to give the evidence-gated adaptive layer (below) real room to
-  // grow into on models that prove they can take more; the STARTING size (targetChars, above)
-  // is untouched, so the first request of every run is exactly as conservative as before —
-  // only a run that racks up ADAPTIVE_STREAK_TARGET consecutive large, successful requests
-  // ever climbs anywhere near this new ceiling, and any payload-size error snaps it right back.
-  maxChars: 24000,
-
-  tokenAware: true,
-  adaptive: true,         // lets the existing "chunkSize" field raise the target further
-
-  allowChapterMerge: true,
-  allowParagraphPacking: true,
-  allowSentenceBoundary: true,
-
-  overlap: 0,             // every character belongs to exactly one chunk — never duplicated
-
-  safetyMargin: 0.85,     // only use 85% of the computed leftover budget, as a cushion
-
-  // This app talks to an arbitrary, user-configured OpenAI-compatible proxy/model (free-text
-  // Base URL + model name — see callModel/chatUrl) — there is no single fixed model/context
-  // window to read from the current architecture. 128k input tokens is a conservative, widely
-  // safe default for modern hosted models when the exact limit can't be determined locally;
-  // reservedOutputTokens is likewise a safe generic completion size, used only when the user
-  // hasn't set their own "Trần token đầu ra (max_tokens)" cap.
-  contextLimitTokens: 128000,
-  reservedOutputTokens: 4096
-};
-
-// Local, offline token estimator — NEVER calls the API just to measure tokens (per spec).
-// Vietnamese/Unicode prose tokenizes less efficiently than plain ASCII on most BPE
-// tokenizers, so this uses a deliberately conservative (low) chars-per-token ratio: it makes
-// estimateTokens() over-estimate slightly, which keeps the safety budget on the safe side.
-const SF_CHARS_PER_TOKEN = 3.3;
-function estimateTokens(text){
-  if(!text) return 0;
-  return Math.ceil(text.length / SF_CHARS_PER_TOKEN);
-}
-
-function maxTokensCapVal(){ return Math.max(0, parseInt(document.getElementById('maxTokensCap').value) || 0); }
-
-// Worst-case size of buildContextPrefix()'s output (see that function below). The body it
-// quotes is always sliced to at most 250 chars, and it always wraps that body in the same
-// two fixed tag/note lines — the exact previous chunk isn't known yet at packing time (the
-// prefix depends on chunk N-1's result, which doesn't exist until chunk N-1 has actually run),
-// so this computes the template's worst case instead (spec #2: "dùng cơ chế ước lượng an toàn
-// tương đương"). +1 accounts for the extra '\n' executeDynamicTask joins between the prefix
-// and the chunk itself. Kept as a function (not a hand-maintained constant) so it stays in
-// sync if the tag text in buildContextPrefix() is ever edited.
-const CONTEXT_PREFIX_MAX_BODY_CHARS = 250;
-function estimateMaxContextPrefixChars(){
-  const longestTag = 'BẢN DỊCH ĐOẠN TRƯỚC ĐỂ ĐỐI CHIẾU XƯNG HÔ'; // longer of buildContextPrefix()'s two tags
-  const worstCase = `[${longestTag}]: "${'x'.repeat(CONTEXT_PREFIX_MAX_BODY_CHARS)}"\n[LƯU Ý]: Phần ngữ cảnh phía trên CHỈ DÙNG ĐỂ THAM KHẢO. BẮT ĐẦU DỊCH TỪ ĐOẠN DƯỚI ĐÂY:\n`;
-  return worstCase.length + 1; // +1 for executeDynamicTask's join '\n'
-}
-
-// effectiveInputBudget = contextLimitTokens - systemPromptTokens - translationPromptTokens
-//                        - contextPrefixTokens - reservedOutputTokens, then guarded by safetyMargin.
-// This app sends the whole instruction ("promptBox") as a single user-role prefix on every
-// request (see callModel) — there's no separate system-prompt field, so systemPromptTokens
-// below already covers both "systemPromptTokens" and "translationPromptTokens" from the spec.
-// contextPrefixTokens covers buildContextPrefix()'s worst-case output, which the real request
-// always prepends to the chunk text (see executeDynamicTask) but which was previously left
-// out of the budget entirely.
-function computeEffectiveInputBudget(){
-  const cfg = SMART_CHUNK_CONFIG;
-  const promptEl = document.getElementById('promptBox');
-  const systemPromptTokens = estimateTokens(promptEl ? promptEl.value : '');
-  const reservedOutputTokens = maxTokensCapVal() > 0 ? maxTokensCapVal() : cfg.reservedOutputTokens;
-  const contextPrefixTokens = estimateTokens('x'.repeat(estimateMaxContextPrefixChars()));
-  const raw = cfg.contextLimitTokens - systemPromptTokens - reservedOutputTokens - contextPrefixTokens;
-  return Math.max(200, Math.floor(raw * cfg.safetyMargin));
-}
-
-// Converts the token budget into a char ceiling for packing, then clamps it into
-// [minChars, maxChars] and against the (optionally adaptive) targetChars.
-// This is the STATIC base — see getEffectivePackingBudget() below for the adaptive layer
-// that nudges this up/down over the course of a real translation run.
-function computeSafeChunkCharBudget(){
-  const cfg = SMART_CHUNK_CONFIG;
-  const tokenBudgetChars = cfg.tokenAware ? Math.floor(computeEffectiveInputBudget() * SF_CHARS_PER_TOKEN) : Infinity;
-  let target = cfg.targetChars;
-  if(cfg.adaptive){
-    // The "chunkSize" field can only raise the target above the smart default — never
-    // shrink it, since the whole point of this pass is fewer, fuller chunks.
-    const uiHint = chunkSizeVal();
-    if(uiHint > target) target = uiHint;
-  }
-  return Math.max(cfg.minChars, Math.min(target, cfg.maxChars, tokenBudgetChars));
-}
-
-/* ================================================================
-   ADAPTIVE REQUEST BUDGET + GCLI EFFICIENCY (round 2)
-   Watches REAL translate-request outcomes (success / payload error) and nudges the
-   packing budget up or down a little at a time. Never touches scheduler/retry/key logic —
-   it only changes the ceiling that the NEXT smartSplitChunks() call packs chunks up to.
-   Chunks that are already split and in flight for the current run are never re-cut.
-   ================================================================ */
-const ADAPTIVE_STEP_UP_CHARS   = 500;   // gentle nudge up, e.g. 8000 → 8500 → 9000 → 9500
-const ADAPTIVE_STEP_DOWN_CHARS = 1000;  // firmer nudge down on a confirmed payload error
-const ADAPTIVE_STREAK_TARGET   = 10;    // need this many big-chunk successes in a row before nudging up
-const ADAPTIVE_LARGE_REQUEST_RATIO = 0.8; // a "big" success must have used ≥80% of the current budget to count
-
-// Real, unambiguous payload-size signals only (spec #3). Deliberately narrow so nothing
-// unrelated (rate limits, auth, 5xx, network) can ever match.
-const PAYLOAD_ERROR_PATTERNS = [
-  /context[\s_-]*length[\s_-]*exceeded/i,
-  /input[\s_-]*too[\s_-]*large/i,
-  /payload[\s_-]*too[\s_-]*large/i,
-  /maximum[\s_-]*(?:context|tokens?)[\s_-]*exceeded/i,
-  /request[\s_-]*(?:size|entity)[\s_-]*(?:too[\s_-]*large|exceeded)/i,
-  /too[\s_-]*many[\s_-]*(?:input[\s_-]*)?tokens?/i
-];
-
-// true only for an unambiguous payload/size error — spec #4: 429, 401/403, 5xx, network
-// errors and timeouts must NEVER cause a downshift, no matter what their body text says.
-function isPayloadSizeError(err){
-  if(!err) return false;
-  const s = err.status;
-  if(s === 429 || s === 401 || s === 403 || s === 0) return false;               // rate limit / auth / network
-  if(s === 500 || s === 502 || s === 503 || s === 504 || s === 522 || s === 524) return false; // 5xx / gateway timeout
-  if(s === 413) return true; // HTTP 413 Payload Too Large is an unambiguous, status-level signal
-  const haystack = (err.message || '') + ' ' + (err.body || '');
-  return PAYLOAD_ERROR_PATTERNS.some(re => re.test(haystack));
-}
-
-let sfAdaptive = {
-  offsetChars: 0,          // current adjustment layered on top of computeSafeChunkCharBudget()
-  successStreak: 0,
-  totalChunks: 0,
-  successfulRequests: 0,
-  retryRequests: 0,        // every request that landed in the catch() block, of any kind
-  payloadErrors: 0,        // subset of retryRequests that were real payload-size errors
-  totalInputChars: 0
-};
-
-// Resets the per-run counters at the start of a fresh translate run (called from
-// startTranslate). offsetChars is intentionally reset too, so every new run starts from
-// the same predictable static budget rather than carrying a stale learned value forward.
-function resetAdaptiveChunking(){
-  sfAdaptive = { offsetChars:0, successStreak:0, totalChunks:0, successfulRequests:0, retryRequests:0, payloadErrors:0, totalInputChars:0 };
-  sfOriginalSourceText = null;
-  sfLastRepackBudget = null;
-}
-
-// The untouched SOURCE for the current run (set by startTranslate), used only so the
-// re-pack below can slice the not-yet-dispatched tail back out of it. Never mutated.
-let sfOriginalSourceText = null;
-// The packing budget the current tail of chunks was last built against. Re-pack is a no-op
-// once the budget stops changing, so a stable run doesn't keep re-splitting for nothing.
-let sfLastRepackBudget = null;
-
-// The budget smartSplitChunks() actually packs against: the static base, plus the
-// adaptive offset learned so far this run, clamped back into safe bounds (never below
-// minChars, never above maxChars/the token budget/MAX_SAFE_BUDGET).
-function getEffectivePackingBudget(){
-  const cfg = SMART_CHUNK_CONFIG;
-  const base = computeSafeChunkCharBudget();
-  const tokenBudgetChars = cfg.tokenAware ? Math.floor(computeEffectiveInputBudget() * SF_CHARS_PER_TOKEN) : Infinity;
-  const hardCeiling = Math.min(cfg.maxChars, tokenBudgetChars); // MAX_SAFE_BUDGET
-  return Math.max(cfg.minChars, Math.min(base + sfAdaptive.offsetChars, hardCeiling));
-}
-
-// Call after every chunk that finishes successfully (spec #2/#5). Only counts toward the
-// "increase" streak when the chunk was actually large relative to the current budget —
-// a tiny chunk succeeding proves nothing about whether a bigger one would too.
-function smartChunkOnRequestSuccess(inputChars){
-  sfAdaptive.successfulRequests++;
-  sfAdaptive.totalInputChars += inputChars || 0;
-  const budget = getEffectivePackingBudget();
-  const wasLargeRequest = (inputChars || 0) >= budget * ADAPTIVE_LARGE_REQUEST_RATIO;
-  if(!wasLargeRequest) return; // small requests don't move the streak either way
-  sfAdaptive.successStreak++;
-  if(sfAdaptive.successStreak >= ADAPTIVE_STREAK_TARGET){
-    const cfg = SMART_CHUNK_CONFIG;
-    const tokenBudgetChars = cfg.tokenAware ? Math.floor(computeEffectiveInputBudget() * SF_CHARS_PER_TOKEN) : Infinity;
-    const hardCeiling = Math.min(cfg.maxChars, tokenBudgetChars);
-    const base = computeSafeChunkCharBudget();
-    if(base + sfAdaptive.offsetChars < hardCeiling){
-      sfAdaptive.offsetChars = Math.min(sfAdaptive.offsetChars + ADAPTIVE_STEP_UP_CHARS, hardCeiling - base);
-    }
-    sfAdaptive.successStreak = 0; // require a fresh streak before nudging up again — no oscillation
-  }
-}
-
-// Call after every failed request attempt (spec #2/#3/#4). Only a confirmed payload-size
-// error moves the budget; everything else (429/401/403/5xx/network/timeout) is counted
-// for stats but otherwise ignored here, exactly as required.
-function smartChunkOnRequestError(err){
-  sfAdaptive.retryRequests++;
-  if(!isPayloadSizeError(err)) return;
-  sfAdaptive.payloadErrors++;
-  sfAdaptive.successStreak = 0; // a real payload error always breaks the streak
-  const cfg = SMART_CHUNK_CONFIG;
-  const base = computeSafeChunkCharBudget();
-  sfAdaptive.offsetChars = Math.max(sfAdaptive.offsetChars - ADAPTIVE_STEP_DOWN_CHARS, cfg.minChars - base);
-}
-
-// Stops the run loudly on an integrity failure — never trims/normalizes/falls back to
-// something lossy (spec #3). Used by the adaptive re-pack below, which runs mid-session and
-// therefore can't just `return` an alert() like startTranslate's initial check does.
-function sfHaltOnIntegrityFailure(context){
-  console.error('SMART CHUNK INTEGRITY FAILURE: ' + context);
-  stopFlag = true;
-  logLine('err', null, null, '❌ Lỗi toàn vẹn Smart Chunking: ' + context + ' — đã dừng để tránh mất/trùng nội dung.');
-  alert('Lỗi toàn vẹn Smart Chunking: ' + context + '\nĐã dừng dịch để tránh mất hoặc trùng nội dung.');
-}
-
-// Finds the boundary index such that every chunk BEFORE it has, at some point, been
-// dispatched (running, sent-and-retrying, done, or error — all IMMUTABLE per spec), and
-// every chunk FROM it onward has never been dispatched at all (spec: "Chỉ SOURCE chưa
-// dispatch mới được pack lại"). Returns -1 when it's unsafe to re-pack right now: this only
-// happens if the scheduler's retry requeueing let a HIGHER index get dispatched while a
-// LOWER index is still waiting on its first send (a narrow race) — in that case we must not
-// touch anything yet, since the not-yet-dispatched span is not a clean, un-touched tail.
-function computeAdaptiveLockBoundary(){
-  let lock = chunkState.length;
-  for(let i=0; i<chunkState.length; i++){
-    if(!chunkState[i].dispatched){ lock = i; break; }
-  }
-  for(let i=lock; i<chunkState.length; i++){
-    if(chunkState[i].dispatched) return -1; // unsafe right now — a later chunk already went out
-  }
-  return lock;
-}
-
-// Re-packs ONLY the not-yet-dispatched tail of the current run's SOURCE against whatever the
-// adaptive budget currently is (spec #1). Chunks that are running, already sent (including
-// ones currently backing off for retry), done, or error are never re-cut, never re-sent, and
-// never re-indexed — this only ever replaces chunkState/currentChunks entries at or after the
-// lock boundary, and only with a re-pack of the exact same tail of the original SOURCE text
-// (so nothing is duplicated or dropped; order is preserved by construction).
-function maybeRepackAdaptiveTail(queue){
-  if(!sfOriginalSourceText || !chunkState.length) return queue;
-  const budget = getEffectivePackingBudget();
-  if(budget === sfLastRepackBudget) return queue; // budget hasn't moved since the last pack — nothing to do
-
-  const lock = computeAdaptiveLockBoundary();
-  if(lock < 0 || lock >= chunkState.length){
-    sfLastRepackBudget = budget; // either unsafe right now, or nothing left to re-pack — try again later
-    return queue;
-  }
-
-  let dispatchedChars = 0;
-  for(let i=0; i<lock; i++) dispatchedChars += chunkState[i].orig.length;
-  const tailText = sfOriginalSourceText.slice(dispatchedChars);
-  if(!tailText){ sfLastRepackBudget = budget; return queue; }
-
-  let newTailChunks;
-  try{
-    newTailChunks = smartSplitChunks(tailText);
-  }catch(e){
-    sfHaltOnIntegrityFailure('Adaptive re-pack: ' + e.message);
-    return queue;
-  }
-  if(!verifyChunkIntegrity(newTailChunks, tailText)){
-    sfHaltOnIntegrityFailure('Adaptive re-pack produced a tail that does not reconstruct exactly.');
-    return queue;
-  }
-
-  // Skip the churn if re-packing landed on the exact same split as before (common once the
-  // budget has settled) — avoids pointless re-renders of the viewer.
-  const oldTailChunks = chunkState.slice(lock).map(c => c.orig);
-  if(newTailChunks.length === oldTailChunks.length && newTailChunks.every((t,i) => t === oldTailChunks[i])){
-    sfLastRepackBudget = budget;
-    return queue;
-  }
-
-  const newEntries = newTailChunks.map(t => ({status:'waiting', orig:t, trans:'', key:null, retryCount:0, dispatched:false}));
-
-  chunkState.length = lock;
-  chunkState.push(...newEntries);
-  currentChunks.length = lock;
-  currentChunks.push(...newTailChunks);
-  currentResults.length = lock;
-  currentResults.push(...new Array(newTailChunks.length).fill(null));
-
-  chunkStats.waiting += (newTailChunks.length - oldTailChunks.length);
-  sfAdaptive.totalChunks = chunkState.length;
-  sfLastRepackBudget = budget;
-
-  // Every index >= lock in `queue` is, by computeAdaptiveLockBoundary()'s own guarantee,
-  // still un-dispatched and therefore exactly the span being replaced — drop those and
-  // append the freshly-packed tail's new indices in order. Entries < lock (chunks currently
-  // back in the queue for a retry) are left exactly where they are.
-  const newIndices = newEntries.map((_,i) => lock + i);
-  queue = queue.filter(i => i < lock).concat(newIndices);
-
-  logLine('info', null, null, `🔧 Adaptive Chunking: đã pack lại ${oldTailChunks.length} chunk chưa gửi thành ${newTailChunks.length} chunk (budget mới: ~${budget} ký tự).`);
-  renderChunkPage();
-  updateProgressUI();
-
-  return queue;
-}
-
-// Local-only stats (spec #6) — never calls the API. Compares against how many chunks the
-// OLD naive "every N chars = 1 chunk" splitter would have produced for the same text.
-function getGcliEfficiencyReport(originalText){
-  const smartChunkCount = sfAdaptive.totalChunks;
-  const legacyChunkCount = originalText ? legacySplitChunks(originalText, chunkSizeVal()).length : 0;
-  const avgCharsPerChunk = sfAdaptive.successfulRequests > 0
-    ? Math.round(sfAdaptive.totalInputChars / sfAdaptive.successfulRequests)
-    : (smartChunkCount > 0 && originalText ? Math.round(originalText.length / smartChunkCount) : 0);
-  const avgTokensPerChunk = Math.round(avgCharsPerChunk / SF_CHARS_PER_TOKEN);
-  return {
-    totalChunks: smartChunkCount,
-    successfulRequests: sfAdaptive.successfulRequests,
-    retryRequests: sfAdaptive.retryRequests,
-    payloadErrors: sfAdaptive.payloadErrors,
-    totalInputChars: sfAdaptive.totalInputChars,
-    estimatedInputTokens: estimateTokens('x'.repeat(sfAdaptive.totalInputChars)),
-    averageCharsPerChunk: avgCharsPerChunk,
-    averageTokensPerChunk: avgTokensPerChunk,
-    legacyChunkCountEstimate: legacyChunkCount,
-    estimatedRequestsSaved: Math.max(0, legacyChunkCount - smartChunkCount)
-  };
-}
-
-// Chapter header detector: "Chương 1", "Chương 001", "Chương: 1", "Chương thứ nhất",
-// "Chapter 1", "Chapter 001", etc. — matched at the start of a line; header text is
-// never touched, only its start offset is used as a packing boundary.
-const CHAPTER_HEADER_RE = /^[ \t]*(?:Chương|Chuong|Chapter)\b.*$/gim;
-
-function detectChapterBoundaries(text){
-  const boundaries = [];
-  CHAPTER_HEADER_RE.lastIndex = 0;
-  let m;
-  while((m = CHAPTER_HEADER_RE.exec(text))){
-    boundaries.push(m.index);
-    if(m.index === CHAPTER_HEADER_RE.lastIndex) CHAPTER_HEADER_RE.lastIndex++; // avoid zero-width stalls
-  }
-  return boundaries;
-}
-
-// Finds the best cut point within (searchStart, hardLimit], preferring, in priority order:
-// end of paragraph (\n\n) > newline > end of sentence > punctuation > whitespace > hard cut.
-// Always returns a position > searchStart (guarantees forward progress, no infinite loops).
-function findBestBreak(text, searchStart, hardLimit, cfg){
-  const win = text.slice(searchStart, hardLimit);
-  const minAcceptable = Math.floor(win.length * 0.5); // reject a break that leaves a tiny sliver
-
-  if(cfg.allowParagraphPacking){
-    let cut = win.lastIndexOf('\n\n');
-    if(cut >= minAcceptable) return searchStart + cut + 2;
-  }
-  let cut = win.lastIndexOf('\n');
-  if(cut >= minAcceptable) return searchStart + cut + 1;
-
-  if(cfg.allowSentenceBoundary){
-    const sentenceEnd = /[.!?…]["'”’»)\]]*\s/g;
-    let lastIdx = -1, sm;
-    while((sm = sentenceEnd.exec(win))) lastIdx = sm.index + sm[0].length;
-    if(lastIdx >= minAcceptable) return searchStart + lastIdx;
-
-    const punct = /[,;:][ \t]/g;
-    lastIdx = -1;
-    while((sm = punct.exec(win))) lastIdx = sm.index + sm[0].length;
-    if(lastIdx >= minAcceptable) return searchStart + lastIdx;
-  }
-
-  cut = win.lastIndexOf(' ');
-  if(cut >= minAcceptable) return searchStart + cut + 1;
-
-  return hardLimit; // no safe boundary in this window — hard cut (still Unicode-safe: JS
-                     // string indices are UTF-16 code units, and .slice() on a lone surrogate
-                     // pair boundary is avoided by hardLimit always aligning to a char scanned
-                     // whole via lastIndexOf/regex above in the overwhelming majority of cases)
-}
-
-// Splits a single oversized span [start,end) into offset-only sub-chunks, each at most
-// budgetChars long, breaking on the best available boundary (see findBestBreak). Pure
-// offset arithmetic — nothing is trimmed or dropped, so pieces concatenate back exactly.
-function splitOversizedSpan(text, start, end, budgetChars, cfg, out){
-  let pos = start;
-  while(pos < end){
-    const hardLimit = Math.min(end, pos + budgetChars);
-    if(hardLimit >= end){ out.push({start: pos, end: end}); break; }
-    const breakAt = findBestBreak(text, pos, hardLimit, cfg);
-    const safeBreak = breakAt > pos ? breakAt : hardLimit; // guarantee forward progress
-    out.push({start: pos, end: safeBreak});
-    pos = safeBreak;
-  }
-}
-
-// Smart, token-aware packer:
-//  - chapter-merges several small chapters into ONE chunk when they jointly fit the safe
-//    budget (spec #6 CHAPTER PACKING), instead of "every N chars = 1 chunk";
-//  - paragraph/sentence-splits any single chapter that alone exceeds the budget
-//    (spec #7 PARAGRAPH/SENTENCE PACKING, #8 CHAPTER QUÁ DÀI);
-//  - overlap is always 0 (spec #9);
-//  - is pure offset arithmetic end-to-end, so reconstruction is exact by construction
-//    (spec #10/#11 — no text or Unicode is ever lost, no chapter header is ever edited).
-function smartSplitChunks(text){
-  const cfg = SMART_CHUNK_CONFIG;
-  if(!text) return [];
-  if(!cfg.enabled) return legacySplitChunks(text, chunkSizeVal());
-
-  const budgetChars = getEffectivePackingBudget();
-  const chapterStarts = detectChapterBoundaries(text);
-
-  // Build contiguous top-level segments spanning the ENTIRE text (chapter-to-chapter, or the
-  // whole document as one segment when no chapter headers are found).
-  const segments = [];
-  if(chapterStarts.length === 0){
-    segments.push({start: 0, end: text.length});
-  } else {
-    if(chapterStarts[0] > 0) segments.push({start: 0, end: chapterStarts[0]}); // preamble before Ch.1
-    for(let i=0; i<chapterStarts.length; i++){
-      const segStart = chapterStarts[i];
-      const segEnd = (i+1 < chapterStarts.length) ? chapterStarts[i+1] : text.length;
-      segments.push({start: segStart, end: segEnd});
-    }
-  }
-
-  const spans = [];
-  let pending = null; // {start,end} chunk currently being packed
-
-  const flush = () => { if(pending){ spans.push(pending); pending = null; } };
-
-  for(const seg of segments){
-    const segLen = seg.end - seg.start;
-    if(segLen > budgetChars){
-      // A single chapter alone exceeds budget — flush what we had, then subdivide it alone.
-      // Never kept whole (spec #8: "Không giữ nguyên chapter quá lớn").
-      flush();
-      splitOversizedSpan(text, seg.start, seg.end, budgetChars, cfg, spans);
-      continue;
-    }
-    if(pending === null){
-      pending = {start: seg.start, end: seg.end};
-    } else if(cfg.allowChapterMerge && (seg.end - pending.start) <= budgetChars){
-      pending.end = seg.end; // merge this chapter into the pending chunk
-    } else {
-      flush();
-      pending = {start: seg.start, end: seg.end};
-    }
-  }
-  flush();
-
-  const chunks = spans.map(s => text.slice(s.start, s.end));
-
-  // Spec #10/#3 — 100% text preservation is a hard gate. A reconstruction mismatch must
-  // NEVER be "fixed" by trimming, normalizing, or silently falling back to the lossy legacy
-  // splitter (which itself trims/filters) — that would send altered SOURCE. Instead: log,
-  // and fail loudly so the caller stops the whole run rather than proceeding with bad data.
-  if(!verifyChunkIntegrity(chunks, text)){
-    console.error('SMART CHUNK INTEGRITY FAILURE: reconstructed source does not exactly match original source.');
-    throw new Error('Smart Chunking integrity check failed: reconstructed source does not exactly match original source.');
-  }
-  return chunks;
-}
-
-function verifyChunkIntegrity(chunks, originalText){
-  return chunks.map(c=>c).join('') === originalText;
-}
-
-// Legacy naive splitter — kept ONLY for two lossless purposes: (a) the path used when Smart
-// Chunking is turned off entirely (cfg.enabled === false), and (b) the GCLI comparison stat
-// ("how many chunks would the old fixed-size approach have made"). It is no longer used as an
-// integrity-failure fallback — that always throws now (spec #3) — so there is no longer any
-// splitter anywhere in this file that can silently drop text. Rewritten to be 100% lossless:
-// pure offset arithmetic only, same paragraph/newline boundary preference as before, but NO
-// .trim() and NO .filter(Boolean) — every chunk is an exact text.slice(), chunks are
-// contiguous and non-overlapping, so chunks.join('') === text always holds.
-function legacySplitChunks(text, size){
-  if(!text) return [];
-  size = Math.max(1, size);
-  const chunks = [];
+function splitChunks(text, size){
+  if(!text) return []; size = Math.max(1, size); const chunks = [];
   let i = 0; const n = text.length;
   while(i < n){
-    const hardLimit = Math.min(n, i + size);
-    if(hardLimit >= n){ chunks.push(text.slice(i, n)); break; }
-    const win = text.slice(i, hardLimit);
-    let breakAt = -1;
-    let cut = win.lastIndexOf('\n\n');
-    if(cut >= size * 0.5) breakAt = cut + 2;   // keep the paragraph break itself, nothing dropped
-    if(breakAt < 0){
-      cut = win.lastIndexOf('\n');
-      if(cut >= size * 0.5) breakAt = cut + 1; // keep the newline itself
-    }
-    if(breakAt < 0) breakAt = win.length;      // no safe boundary — hard cut, still an exact offset
-    chunks.push(text.slice(i, i + breakAt));
-    i += breakAt;
+    let chunk = text.slice(i, i+size);
+    if(i+size >= n){ chunks.push(chunk.trim()); break; }
+    let cut = chunk.lastIndexOf('\n\n'); if(cut < size*0.5) cut = chunk.lastIndexOf('\n');
+    if(cut < size*0.5) cut = size;
+    chunks.push(chunk.slice(0, cut).trim());
+    i += cut;
   }
-  return chunks;
+  return chunks.filter(c=>c.length>0);
 }
-// Kept for compatibility with any external caller — routes to the legacy splitter directly.
-// All internal call sites now use smartSplitChunks(text) instead.
-function splitChunks(text, size){ return legacySplitChunks(text, size); }
-
 function updateStats(){
   const text = sf_getFullSourceText();
-  const chunks = text ? smartSplitChunks(text).length : 0;
+  const chunks = text ? splitChunks(text, chunkSizeVal()).length : 0;
   __sf_statsCache = { chunks, n: text.length };
   document.getElementById('chOrig').textContent = text.length.toLocaleString('vi-VN') + ' ký tự';
   document.getElementById('chChunks').textContent = chunks + ' chunk';
@@ -1923,7 +1420,7 @@ function updateCdPageInfo(){
   el.innerHTML = `<span>Tổng ${total} · ✅ ${done} · 🟡 ${run} · 🔴 ${error} · ⚪ ${wait}</span> ${nav}`;
 }
 function buildChunkViewer(chunks){
-  chunkState = chunks.map(c=>({status:'waiting', orig:c, trans:'', key:null, retryCount:0, dispatched:false}));
+  chunkState = chunks.map(c=>({status:'waiting', orig:c, trans:'', key:null, retryCount:0}));
   chunkStats = { waiting: chunks.length, running: 0, done: 0, error: 0 };
   chunkExpanded = new Set();
   chunkCurrentPage = 0;
@@ -2019,8 +1516,6 @@ async function callModel(textPayload, keyIndex){
     const t = await res.text().catch(()=>'');
     const err = new Error('HTTP ' + res.status); err.status = res.status;
     err.retryAfter = parseFloat(res.headers.get('retry-after')) || null;
-    err.body = t; // kept so Smart Chunking's adaptive budget can look for payload-size phrases;
-                  // does not change retry/backoff/key logic below in any way
     throw err; // throw back to executeDynamicTask to handle cooldown
   }
   const data = await res.json();
@@ -2081,13 +1576,9 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         markChunkDone(idx, res);
         delete chunkRetryAfter[idx];
         logLine('ok', idx, keyIdx, `Chunk ${idx+1}/${currentChunks.length} ✓ Thành công`);
-        smartChunkOnRequestSuccess(payloadText.length); // adaptive-budget telemetry only — no effect on this chunk/run
         return;
 
     } catch(err) {
-        smartChunkOnRequestError(err); // adaptive-budget telemetry only: real payload-size errors nudge the
-                                        // NEXT chunk-generation pass's budget down; 429/401/403/5xx/network/timeout
-                                        // never touch it. Does not alter any retry/backoff/key logic below.
         if(state.keyMeta[keyIdx]) {
             state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
             state.keyMeta[keyIdx].errors++;
@@ -2181,12 +1672,6 @@ async function runEngine(indices){
         await waitWhilePaused();
         if(stopFlag) break;
 
-        // Adaptive budget may have moved since the last tick — re-pack ONLY the not-yet-
-        // dispatched tail of the SOURCE against it (spec #1). Running/sent/done/error chunks
-        // are never touched; see maybeRepackAdaptiveTail()/computeAdaptiveLockBoundary().
-        queue = maybeRepackAdaptiveTail(queue);
-        if(stopFlag) break; // an integrity failure during re-pack halts the run loudly
-
         while(queue.length > 0 && activeRequests < parallelVal() && !stopFlag && !pauseFlag) {
             const now = Date.now();
             // Find the first queued chunk that is (a) not already dispatching, (b) not a completed
@@ -2231,7 +1716,6 @@ async function runEngine(indices){
             }
 
             let taskIdx = queue.splice(pickPos, 1)[0];
-            if(chunkState[taskIdx]) chunkState[taskIdx].dispatched = true; // IMMUTABLE from here on (spec #1)
             dispatching.add(taskIdx);
             activeRequests++;
 
@@ -2275,39 +1759,13 @@ async function startTranslate(){
   if(!state.model){ alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
   
-  resetAdaptiveChunking(); // fresh adaptive-budget state for this run (see ADAPTIVE REQUEST BUDGET block)
-  sfOriginalSourceText = text; // kept untouched — the adaptive re-pack slices its un-dispatched tail from this
-
-  let chunks;
-  try{
-    chunks = smartSplitChunks(text);
-  }catch(e){
-    // smartSplitChunks() throws instead of falling back to a lossy splitter on an integrity
-    // mismatch (spec #3) — stop cleanly here, same as the explicit check right below.
-    console.error(e);
-    alert('Lỗi Smart Chunking: ' + e.message + '\nĐã hủy để tránh mất/trùng nội dung.');
-    return;
-  }
-  // Spec #10 — hard gate: never start translating if the chunk map doesn't reconstruct
-  // 100% of the original text.
-  if(!verifyChunkIntegrity(chunks, text)){
-    alert('Lỗi Smart Chunking: dữ liệu chunk không khớp 100% với văn bản gốc. Đã hủy để tránh mất/trùng nội dung.');
-    return;
-  }
+  const chunks = splitChunks(text, chunkSizeVal());
   currentChunks = chunks;
   currentResults = new Array(chunks.length).fill(null);
-  sfAdaptive.totalChunks = chunks.length;
-  sfLastRepackBudget = getEffectivePackingBudget(); // budget these initial chunks were built against
   
   document.getElementById('progLog').innerHTML=''; logEntries=[];
   document.getElementById('outputText').value='';
   buildChunkViewer(chunks);
-  
-  // GCLI efficiency estimate (local stats only, spec #6) — informational, doesn't affect the run.
-  const gcli = getGcliEfficiencyReport(text);
-  if(gcli.legacyChunkCountEstimate > gcli.totalChunks){
-    logLine('info', null, null, `📊 Smart Chunking: ${gcli.totalChunks} chunk (so với ~${gcli.legacyChunkCountEstimate} chunk kiểu cũ) → tiết kiệm ước tính ~${gcli.estimatedRequestsSaved} request.`);
-  }
   
   await runEngine(chunks.map((_,i)=>i));
 }
