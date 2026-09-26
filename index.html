@@ -481,8 +481,8 @@
           <span class="sub">Provider, key, tốc độ, prompt</span>
         </div>
         <div class="qc-btn" id="qcHistoryBtn" onclick="toggleHistoryPanel()">
-          📖 Lịch sử dịch
-          <span class="sub" id="histCountLabel">0 lượt trong phiên này</span>
+          📚 Thư viện &amp; Lịch sử
+          <span class="sub" id="histCountLabel">0 truyện trong thư viện</span>
         </div>
         <div class="qc-btn" id="qcQueueBtn" onclick="toggleQueuePanel()">
           🗂️ Hàng đợi <span id="queueCount">0</span> mục
@@ -978,6 +978,631 @@ function sf_setSourceText(fullText, opts){
   }
 }
 
+/* =====================================================================
+   THƯ VIỆN TRUYỆN + LỊCH SỬ DỊCH PERSISTENT (IndexedDB)
+   ---------------------------------------------------------------------
+   Toàn bộ khối này chỉ bổ sung persistence. Không đụng tới Scheduler,
+   Smart Chunking, Key Pool, RPM, Retry hay Chatbot hiện có — các hàm
+   dưới đây chỉ được GỌI THÊM từ những điểm cần thiết (markChunkDone,
+   markChunkError, markChunkWaiting, startTranslate, readFile, ...).
+   ===================================================================== */
+
+/* ---------- 1. IndexedDB: mở DB + tạo object store ---------- */
+const SF_DB_NAME = 'StoryForgeLibrary';
+const SF_DB_VERSION = 1;
+let __sfDbPromise = null;
+
+function openSFDatabase(){
+  if(__sfDbPromise) return __sfDbPromise;
+  __sfDbPromise = new Promise((resolve, reject)=>{
+    if(!('indexedDB' in window)){
+      reject(new Error('Trình duyệt này không hỗ trợ IndexedDB — không thể lưu thư viện.'));
+      return;
+    }
+    let req;
+    try{ req = indexedDB.open(SF_DB_NAME, SF_DB_VERSION); }
+    catch(e){ reject(e); return; }
+    req.onupgradeneeded = (e)=>{
+      const db = e.target.result;
+      if(!db.objectStoreNames.contains('files')){
+        const fs = db.createObjectStore('files', { keyPath:'id' });
+        fs.createIndex('updatedAt', 'updatedAt', { unique:false });
+        fs.createIndex('sourceHash', 'sourceHash', { unique:false });
+      }
+      if(!db.objectStoreNames.contains('chunks')){
+        const cs = db.createObjectStore('chunks', { keyPath:'id' });
+        cs.createIndex('fileId', 'fileId', { unique:false });
+      }
+      if(!db.objectStoreNames.contains('sessions')){
+        const ss = db.createObjectStore('sessions', { keyPath:'id' });
+        ss.createIndex('fileId', 'fileId', { unique:false });
+      }
+    };
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error || new Error('Không mở được IndexedDB.'));
+    req.onblocked = ()=> console.warn('SF DB: nâng cấp bị chặn bởi một tab khác đang mở.');
+  });
+  return __sfDbPromise;
+}
+function sf_reqToPromise(req){
+  return new Promise((resolve, reject)=>{
+    req.onsuccess = ()=> resolve(req.result);
+    req.onerror = ()=> reject(req.error);
+  });
+}
+function sf_txDone(tx){
+  return new Promise((resolve, reject)=>{
+    tx.oncomplete = ()=> resolve();
+    tx.onerror = ()=> reject(tx.error);
+    tx.onabort = ()=> reject(tx.error);
+  });
+}
+
+/* ---------- 2. Hash / stable id helpers (mục 6: STABLE CHUNK ID) ---------- */
+function sf_fnv1aHash(str){
+  let h = 0x811c9dc5;
+  for(let i=0; i<str.length; i++){
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+function sf_computeSourceHash(text){
+  text = text || '';
+  return sf_fnv1aHash(text) + '_' + text.length;
+}
+function sf_genFileId(){
+  return 'f_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+}
+// Stable identity KHÔNG phụ thuộc array index — dựa trên sourceStart/sourceEnd,
+// nên khi Smart Chunking/Adaptive Repack (nếu có) thay đổi phần CHƯA dispatch,
+// các chunk đã DONE vẫn giữ nguyên identity và không bị ghi đè record.
+function sf_makeStableId(start, end){
+  return (start != null ? start : 'x') + '-' + (end != null ? end : 'x');
+}
+
+/* ---------- 3. CRUD helpers (mục 18: API tham khảo) ---------- */
+async function saveFileRecord(file){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').put(file);
+    await sf_txDone(tx);
+    return file;
+  }catch(e){ console.error('[SF Library] saveFileRecord lỗi:', e); return null; }
+}
+async function getFileRecord(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('files', 'readonly');
+    const res = await sf_reqToPromise(tx.objectStore('files').get(fileId));
+    return res || null;
+  }catch(e){ console.error('[SF Library] getFileRecord lỗi:', e); return null; }
+}
+async function listFileRecords(){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('files', 'readonly');
+    const res = await sf_reqToPromise(tx.objectStore('files').getAll());
+    return res || [];
+  }catch(e){ console.error('[SF Library] listFileRecords lỗi:', e); return []; }
+}
+async function deleteFileRecord(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('files', 'readwrite');
+    tx.objectStore('files').delete(fileId);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[SF Library] deleteFileRecord lỗi:', e); return false; }
+}
+async function saveChunkRecord(chunk){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('chunks', 'readwrite');
+    tx.objectStore('chunks').put(chunk);
+    await sf_txDone(tx);
+    return chunk;
+  }catch(e){ console.error('[SF Library] saveChunkRecord lỗi:', e); return null; }
+}
+// Ghi nhiều chunk trong 1 transaction duy nhất (mục 19: tránh ghi toàn bộ DB
+// nhiều lần) — chỉ dùng khi khởi tạo/khôi phục bộ khung chunk, KHÔNG dùng sau
+// mỗi request dịch (mỗi request chỉ gọi saveChunkRecord cho đúng 1 chunk).
+async function saveChunkRecords(chunkArr){
+  if(!chunkArr || !chunkArr.length) return true;
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('chunks', 'readwrite');
+    const store = tx.objectStore('chunks');
+    chunkArr.forEach(c=> store.put(c));
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[SF Library] saveChunkRecords lỗi:', e); return false; }
+}
+async function getChunkRecords(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('chunks', 'readonly');
+    const idx = tx.objectStore('chunks').index('fileId');
+    const res = await sf_reqToPromise(idx.getAll(IDBKeyRange.only(fileId)));
+    return (res || []).sort((a,b)=> (a.sourceStart||0) - (b.sourceStart||0));
+  }catch(e){ console.error('[SF Library] getChunkRecords lỗi:', e); return []; }
+}
+async function deleteChunksForFile(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('chunks', 'readwrite');
+    const idx = tx.objectStore('chunks').index('fileId');
+    await new Promise((resolve, reject)=>{
+      const cReq = idx.openCursor(IDBKeyRange.only(fileId));
+      cReq.onsuccess = (e)=>{ const cur = e.target.result; if(cur){ cur.delete(); cur.continue(); } else resolve(); };
+      cReq.onerror = ()=> reject(cReq.error);
+    });
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[SF Library] deleteChunksForFile lỗi:', e); return false; }
+}
+async function saveSession(session){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('sessions', 'readwrite');
+    tx.objectStore('sessions').put(session);
+    await sf_txDone(tx);
+    return session;
+  }catch(e){ console.error('[SF Library] saveSession lỗi:', e); return null; }
+}
+async function getSession(sessionId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('sessions', 'readonly');
+    const res = await sf_reqToPromise(tx.objectStore('sessions').get(sessionId));
+    return res || null;
+  }catch(e){ console.error('[SF Library] getSession lỗi:', e); return null; }
+}
+async function deleteSession(sessionId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('sessions', 'readwrite');
+    tx.objectStore('sessions').delete(sessionId);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[SF Library] deleteSession lỗi:', e); return false; }
+}
+// CLEAR ENTIRE LIBRARY (mục 3 & 14) — xóa cả 3 store, chỉ gọi sau khi user confirm.
+async function clearEntireLibraryStorage(){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction(['files','chunks','sessions'], 'readwrite');
+    tx.objectStore('files').clear();
+    tx.objectStore('chunks').clear();
+    tx.objectStore('sessions').clear();
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[SF Library] clearEntireLibraryStorage lỗi:', e); return false; }
+}
+
+/* ---------- 4. Runtime pointers cho file đang mở/đang dịch ---------- */
+let sfCurrentFileId = null;     // fileId của truyện đang active trong runtime
+let sfCurrentFileMeta = null;   // cache record 'files' đang active (RAM), ghi debounce xuống DB
+let sfChunkOffsets = [];        // song song với currentChunks: {start,end,stableId}
+let sfLastUploadName = null;    // tên file .txt vừa tải lên gần nhất
+let libraryFiles = [];          // cache toàn bộ 'files' record, mới nhất trước (dùng cho UI)
+let sfResumeCandidateId = null; // fileId đang được đề nghị "Tiếp tục" ở resumeBanner
+let sfResumeDismissed = false;  // user đã bấm "❌ Bỏ tiến trình" cho phiên trình duyệt này chưa
+
+/* ---------- 5. Thu thập / áp dụng config (mục 12: AUTOSAVE CONFIG) ---------- */
+function sf_collectConfig(){
+  const canonSwitch = document.getElementById('canonSwitch');
+  const ctxBtn = document.querySelector('.ctxmode-preset.active');
+  return {
+    chunkSize: chunkSizeVal(),
+    parallel: parallelVal(),
+    rpm: rpmVal(),
+    maxTokensCap: parseInt(document.getElementById('maxTokensCap')?.value) || 0,
+    sourceLang: document.getElementById('sourceLang')?.value || 'auto',
+    contextMode: ctxBtn ? ctxBtn.dataset.cm : 'hybrid',
+    canonOn: !!(canonSwitch && canonSwitch.classList.contains('on')),
+    canonInput: document.getElementById('canonInput')?.value || '',
+    corsOn: typeof corsOn !== 'undefined' ? corsOn : false,
+    corsProxyUrl: document.getElementById('corsProxyUrl')?.value || ''
+  };
+  // Ghi chú mục 12: KHÔNG lưu API key vào record lịch sử — key vẫn chỉ nằm trong
+  // state.keys/state.keyMeta (quản lý bởi Key Manager hiện tại), không đưa vào đây.
+}
+function sf_applyConfigToUI(cfg){
+  if(!cfg) return;
+  if(cfg.chunkSize && document.getElementById('chunkSize')) document.getElementById('chunkSize').value = cfg.chunkSize;
+  if(cfg.parallel && document.getElementById('parallel')) document.getElementById('parallel').value = cfg.parallel;
+  if(cfg.rpm && document.getElementById('rpm')) document.getElementById('rpm').value = cfg.rpm;
+  if(document.getElementById('maxTokensCap')) document.getElementById('maxTokensCap').value = cfg.maxTokensCap || 0;
+  if(cfg.sourceLang && document.getElementById('sourceLang')) document.getElementById('sourceLang').value = cfg.sourceLang;
+  if(cfg.contextMode){
+    document.querySelectorAll('.ctxmode-preset').forEach(b=> b.classList.toggle('active', b.dataset.cm === cfg.contextMode));
+  }
+  const canonSwitch = document.getElementById('canonSwitch');
+  if(canonSwitch){ canonSwitch.classList.toggle('on', !!cfg.canonOn); state.canonOn = !!cfg.canonOn; }
+  if(document.getElementById('canonInput')) document.getElementById('canonInput').value = cfg.canonInput || '';
+}
+// Hook đã được tham chiếu sẵn ở toggleCors() từ trước (typeof-guarded) — giờ triển khai thật.
+function saveLastSessionConfig(){
+  if(!sfCurrentFileMeta) return;
+  sfCurrentFileMeta.config = sf_collectConfig();
+  sfCurrentFileMeta.baseUrl = document.getElementById('baseUrl') ? document.getElementById('baseUrl').value.trim() : sfCurrentFileMeta.baseUrl;
+  sfCurrentFileMeta.model = state.model;
+  sfCurrentFileMeta.prompt = document.getElementById('promptBox') ? document.getElementById('promptBox').value : sfCurrentFileMeta.prompt;
+  sf_scheduleFileSave();
+}
+
+/* ---------- 6. Debounced metadata save (mục 19: PERFORMANCE) ---------- */
+let __sfFileSaveTimer = null;
+function sf_scheduleFileSave(){
+  if(__sfFileSaveTimer) return;
+  __sfFileSaveTimer = setTimeout(async ()=>{
+    __sfFileSaveTimer = null;
+    if(!sfCurrentFileMeta) return;
+    sfCurrentFileMeta.updatedAt = Date.now();
+    await saveFileRecord(sfCurrentFileMeta);
+    const i = libraryFiles.findIndex(f=> f.id === sfCurrentFileMeta.id);
+    if(i >= 0) libraryFiles[i] = Object.assign({}, sfCurrentFileMeta);
+    else libraryFiles.unshift(Object.assign({}, sfCurrentFileMeta));
+    renderLibraryUI();
+  }, 600);
+}
+function sf_computeFileStatus(){
+  const total = chunkState.length;
+  if(total === 0) return (sfCurrentFileMeta && sfCurrentFileMeta.status) || 'new';
+  if(chunkStats.done >= total) return 'done';
+  if(running) return 'translating';
+  if(chunkStats.error > 0) return 'error';
+  return 'paused';
+}
+function sf_bumpFileCountersFromChunkState(){
+  if(!sfCurrentFileMeta) return;
+  sfCurrentFileMeta.totalChunks = chunkState.length;
+  sfCurrentFileMeta.translatedChunks = chunkStats.done;
+  sfCurrentFileMeta.errorChunks = chunkStats.error;
+  sfCurrentFileMeta.status = sf_computeFileStatus();
+}
+
+/* ---------- 7. AUTOSAVE NGAY SAU MỖI CHUNK (mục 2) ---------- */
+// Được gọi thêm từ markChunkDone/markChunkError/markChunkWaiting. Chỉ ghi ĐÚNG
+// 1 chunk record + lên lịch ghi debounce metadata file — không ghi lại toàn bộ
+// database, không JSON.stringify toàn bộ nguồn/bản dịch (mục 19).
+function sf_autosaveChunk(idx){
+  if(!sfCurrentFileId) return; // chưa có file active (vd: đang test) — bỏ qua an toàn
+  const c = chunkState[idx]; if(!c) return;
+  const off = sfChunkOffsets[idx];
+  const stableId = c.stableId || (off && off.stableId) || sf_makeStableId(idx, idx);
+  const sourceStart = c.sourceStart != null ? c.sourceStart : (off ? off.start : idx);
+  const sourceEnd = c.sourceEnd != null ? c.sourceEnd : (off ? off.end : idx);
+  const rec = {
+    id: sfCurrentFileId + '::' + stableId,
+    fileId: sfCurrentFileId,
+    stableId,
+    sourceStart, sourceEnd,
+    sourceText: c.orig,
+    // Chunk DONE giữ nguyên translatedText; chunk lỗi/đang chờ KHÔNG ghi đè bằng
+    // chuỗi thông báo lỗi hiển thị (c.trans) lên trường translatedText thật.
+    translatedText: c.status === 'done' ? (c.trans || '') : '',
+    status: c.status,
+    retryCount: c.retryCount || 0,
+    keyIndex: c.key,
+    updatedAt: Date.now()
+  };
+  saveChunkRecord(rec).catch(e=> console.error('[SF Library] autosave chunk lỗi:', e));
+  sf_bumpFileCountersFromChunkState();
+  sf_scheduleFileSave();
+}
+
+/* ---------- 8. Chuẩn bị file record + khung chunk khi bắt đầu dịch mới ---------- */
+// Gọi từ startTranslate() (nút 🚀 Bắt đầu dịch / 🔄 Bắt đầu lại). Đây LUÔN LÀ một
+// lượt dịch MỚI cho toàn bộ chunk (giống hành vi gốc của startTranslate trước khi
+// có persistence), nên các chunk record cũ của CHÍNH file này được thay bằng bộ
+// khung 'waiting' mới tương ứng với cách chia chunk hiện tại.
+async function sf_prepareFileForTranslation(text, offsets){
+  const hash = sf_computeSourceHash(text);
+  let fileId = sfCurrentFileId;
+  let existing = fileId ? await getFileRecord(fileId) : null;
+  if(!existing){
+    existing = libraryFiles.find(f=> f.sourceHash === hash) || null;
+    if(existing) fileId = existing.id;
+  }
+  if(!fileId) fileId = sf_genFileId();
+
+  const now = Date.now();
+  const cfg = sf_collectConfig();
+  const rec = {
+    id: fileId,
+    name: (existing && existing.name) || sfLastUploadName || 'Truyện dán trực tiếp',
+    sourceHash: hash,
+    sourceText: text,
+    createdAt: (existing && existing.createdAt) || now,
+    updatedAt: now,
+    status: 'translating',
+    totalChars: text.length,
+    totalChunks: offsets.length,
+    translatedChunks: 0,
+    errorChunks: 0,
+    model: state.model,
+    baseUrl: document.getElementById('baseUrl').value.trim(),
+    prompt: document.getElementById('promptBox').value,
+    config: cfg
+  };
+
+  sfCurrentFileId = fileId;
+  sfCurrentFileMeta = rec;
+
+  // Bộ khung chunk mới thay thế bộ cũ của CHÍNH file này (lượt dịch mới, không phải Continue).
+  await deleteChunksForFile(fileId);
+  sfChunkOffsets = offsets.map(o=> ({ start:o.start, end:o.end, stableId: sf_makeStableId(o.start, o.end) }));
+  const chunkRecs = offsets.map((o,i)=>({
+    id: fileId + '::' + sfChunkOffsets[i].stableId,
+    fileId,
+    stableId: sfChunkOffsets[i].stableId,
+    sourceStart: o.start, sourceEnd: o.end,
+    sourceText: o.text,
+    translatedText: '',
+    status: 'waiting',
+    retryCount: 0,
+    keyIndex: null,
+    updatedAt: now
+  }));
+  await saveChunkRecords(chunkRecs);
+  await saveFileRecord(rec);
+  await saveSession({ id: 'sess_' + fileId, fileId, startedAt: now, updatedAt: now, status: 'translating', currentConfig: cfg });
+  await hydrateLibrary();
+  return rec;
+}
+
+/* ---------- 9. Khôi phục 1 truyện đã lưu (mục 9: OPEN FILE ĐÃ LƯU) ---------- */
+// Nạp source + toàn bộ chunk từ IndexedDB vào runtime, dùng chung buildChunkViewer/
+// renderChunkPage hiện có (viewer vẫn chỉ render 100 chunk/trang — không đổi gì ở đó).
+async function restoreFile(fileId){
+  if(running){ alert('Đang có tiến trình dịch chạy. Vui lòng dừng trước khi mở truyện khác.'); return null; }
+  const fileRec = await getFileRecord(fileId);
+  if(!fileRec){ alert('Không tìm thấy truyện này trong thư viện (có thể đã bị xóa).'); return null; }
+  const chunkRecs = await getChunkRecords(fileId);
+
+  sfCurrentFileId = fileId;
+  sfCurrentFileMeta = fileRec;
+
+  sf_setSourceText(fileRec.sourceText || '');
+
+  if(fileRec.baseUrl) document.getElementById('baseUrl').value = fileRec.baseUrl;
+  if(fileRec.model){
+    state.model = fileRec.model;
+    document.getElementById('modelInput').value = fileRec.model;
+    document.getElementById('pillModel').textContent = fileRec.model;
+  }
+  if(fileRec.prompt) document.getElementById('promptBox').value = fileRec.prompt;
+  sf_applyConfigToUI(fileRec.config);
+  if(document.getElementById('chatUrlPreview')) document.getElementById('chatUrlPreview').textContent = chatUrl() || '—';
+  if(document.getElementById('modelsUrlPreview')) document.getElementById('modelsUrlPreview').textContent = modelsUrl() || '—';
+  refreshStatus();
+  if(typeof updatePromptLen === 'function') updatePromptLen();
+
+  currentChunks = chunkRecs.map(c=> c.sourceText);
+  currentResults = chunkRecs.map(c=> c.status === 'done' ? (c.translatedText || '') : null);
+  sfChunkOffsets = chunkRecs.map(c=> ({ start:c.sourceStart, end:c.sourceEnd, stableId:c.stableId }));
+  chunkState = chunkRecs.map(c=> ({
+    status: c.status === 'done' ? 'done' : (c.status === 'error' ? 'error' : 'waiting'),
+    orig: c.sourceText,
+    trans: c.status === 'done' ? (c.translatedText || '') : '',
+    key: null,
+    retryCount: c.retryCount || 0,
+    stableId: c.stableId, sourceStart: c.sourceStart, sourceEnd: c.sourceEnd
+  }));
+  chunkStats = { waiting:0, running:0, done:0, error:0 };
+  chunkState.forEach(c=>{ if(chunkStats[c.status] != null) chunkStats[c.status]++; });
+  chunkExpanded = new Set();
+  chunkCurrentPage = 0;
+  chunkRetryAfter = Object.create(null);
+  stopFlag = false; pauseFlag = false;
+
+  document.getElementById('progLog').innerHTML = ''; logEntries = [];
+  renderChunkPage();
+  updateStats();
+  updateProgressUI();
+  if(chunkState.length > 0) document.getElementById('progwrap').classList.add('show');
+
+  document.getElementById('outputText').value = currentResults.map(r=> r != null ? r : '').join('\n\n');
+  document.getElementById('resumeBanner').style.display = 'none';
+  return fileRec;
+}
+
+/* ---------- 10. Sau khi vòng dịch (runEngine) kết thúc: cập nhật trạng thái file ---------- */
+async function sf_onEngineFinished(){
+  if(!sfCurrentFileMeta) return;
+  sfCurrentFileMeta.status = stopFlag ? 'paused' : sf_computeFileStatus();
+  sfCurrentFileMeta.translatedChunks = chunkStats.done;
+  sfCurrentFileMeta.errorChunks = chunkStats.error;
+  sfCurrentFileMeta.totalChunks = chunkState.length;
+  sfCurrentFileMeta.updatedAt = Date.now();
+  await saveFileRecord(sfCurrentFileMeta);
+  await hydrateLibrary();
+}
+
+/* ---------- 11. Tiếp tục dịch phần CHƯA xong (mục 5: CONTINUE PHẢI AN TOÀN) ---------- */
+// runEngine() vốn đã tự lọc `queue = indices.filter(i => chunkState[i].status !== 'done')`
+// nên gọi lại với TOÀN BỘ index là an toàn — chunk DONE không bao giờ bị dịch lại.
+async function continueUnfinishedTranslation(fileId){
+  if(running){ alert('Đang có một tiến trình dịch chạy. Vui lòng dừng trước khi tiếp tục truyện khác.'); return; }
+  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(state.keys.length === 0){ alert('Thêm API key.'); return; }
+
+  const rec = await restoreFile(fileId);
+  if(!rec) return;
+  if(!state.model){ alert('Nhập model trước khi tiếp tục.'); return; }
+  if(chunkState.length === 0){ alert('Truyện này chưa có chunk nào để tiếp tục.'); return; }
+
+  const stillPending = chunkState.some(c=> c.status !== 'done');
+  if(!stillPending){ alert('Truyện này đã dịch xong toàn bộ.'); renderLibraryUI(); return; }
+
+  sfCurrentFileMeta.status = 'translating';
+  await saveFileRecord(sfCurrentFileMeta);
+
+  await runEngine(chunkState.map((_,i)=> i));
+  await sf_onEngineFinished();
+}
+async function openLibraryFile(fileId){ await restoreFile(fileId); }
+
+/* ---------- 12. Resume banner (mục 4: KHÔI PHỤC SAU F5 / ĐÓNG TRÌNH DUYỆT) ---------- */
+function checkForResumableFile(){
+  const banner = document.getElementById('resumeBanner');
+  if(sfResumeDismissed){ banner.style.display = 'none'; return; }
+  const candidate = libraryFiles.find(f=> f.totalChunks > 0 && f.status !== 'done');
+  if(candidate){
+    sfResumeCandidateId = candidate.id;
+    const upd = candidate.updatedAt ? new Date(candidate.updatedAt).toLocaleString('vi-VN') : '—';
+    document.getElementById('resumeInfo').textContent =
+      `${candidate.name || 'Truyện chưa đặt tên'} · ${candidate.translatedChunks||0}/${candidate.totalChunks} chunk đã dịch · cập nhật ${upd}`;
+    banner.style.display = 'flex';
+  } else {
+    sfResumeCandidateId = null;
+    banner.style.display = 'none';
+  }
+}
+async function resumeContinue(){
+  if(!sfResumeCandidateId) return;
+  await continueUnfinishedTranslation(sfResumeCandidateId);
+}
+async function resumeRestart(){
+  if(!sfResumeCandidateId) return;
+  if(!confirm('Bắt đầu dịch lại toàn bộ truyện này từ đầu? Bản dịch đã có của truyện này sẽ được dịch lại.')) return;
+  const rec = await restoreFile(sfResumeCandidateId);
+  if(!rec) return;
+  document.getElementById('resumeBanner').style.display = 'none';
+  await startTranslate(); // startTranslate() sẽ dùng lại sfCurrentFileId, tạo bộ khung chunk mới
+}
+function resumeDiscard(){
+  sfResumeDismissed = true;
+  document.getElementById('resumeBanner').style.display = 'none';
+}
+
+/* ---------- 13. UI Thư viện (mục 8) ---------- */
+function sf_escapeHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, m=> ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
+function sf_statusBadge(status){
+  if(status === 'done') return { text:'🟢 Hoàn thành' };
+  if(status === 'error') return { text:'🔴 Có lỗi' };
+  return { text:'🟡 Đang dịch' };
+}
+function renderLibraryUI(){
+  const body = document.getElementById('histBody');
+  const label = document.getElementById('histCountLabel');
+  if(label) label.textContent = libraryFiles.length + ' truyện trong thư viện';
+  if(!body) return;
+  if(!libraryFiles.length){ body.innerHTML = 'Chưa có truyện nào trong thư viện.'; return; }
+  body.innerHTML = libraryFiles.map(f=>{
+    const st = sf_statusBadge(f.status);
+    const upd = f.updatedAt ? new Date(f.updatedAt).toLocaleString('vi-VN') : '—';
+    const fid = sf_escapeHtml(f.id);
+    return `<div class="histrow" style="flex-direction:column; align-items:stretch; gap:6px;">
+      <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+        <b style="flex:1; min-width:120px;">${sf_escapeHtml(f.name || '(Không tên)')}</b>
+        <span>${st.text}</span>
+      </div>
+      <div class="t" style="font-size:11.5px;">
+        📦 ${f.totalChunks||0} chunk · ✅ ${f.translatedChunks||0} · ❌ ${f.errorChunks||0} · 📄 ${(f.totalChars||0).toLocaleString('vi-VN')} ký tự · 🕒 ${upd}
+      </div>
+      <div class="btn-row" style="margin-top:0;">
+        <button class="btn small primary" onclick="continueUnfinishedTranslation('${fid}')">▶ Tiếp tục</button>
+        <button class="btn small" onclick="openLibraryFile('${fid}')">📂 Mở</button>
+        <button class="btn small" onclick="exportLibraryFileTxt('${fid}')">⬇ Xuất TXT</button>
+        <button class="btn small danger" onclick="deleteLibraryFile('${fid}')">🗑 Xóa</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+async function hydrateLibrary(){
+  try{
+    const files = await listFileRecords();
+    libraryFiles = files.sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0));
+    historyArr = libraryFiles; // mục 13: historyArr chỉ là cache UI, dữ liệu gốc luôn từ IndexedDB
+    renderLibraryUI();
+    checkForResumableFile();
+  }catch(e){ console.error('[SF Library] hydrateLibrary lỗi:', e); }
+}
+
+/* ---------- 14. Export TXT theo thứ tự sourceStart (mục 10) ---------- */
+async function exportLibraryFileTxt(fileId){
+  try{
+    const fileRec = await getFileRecord(fileId);
+    const chunks = await getChunkRecords(fileId); // đã sort theo sourceStart
+    if(!chunks.length){ alert('Truyện này chưa có chunk nào.'); return; }
+    const text = chunks.map(c=>{
+      if(c.status === 'done') return c.translatedText || '';
+      if(c.status === 'error') return `\n[LỖI DỊCH CHUNK]\n${c.sourceText || ''}`;
+      return ''; // chunk chưa dịch: giữ nguyên chính sách hiện tại, KHÔNG tự dịch lại ở đây
+    }).join('\n\n');
+    const blob = new Blob([text], { type:'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = (fileRec && fileRec.name ? fileRec.name.replace(/\.[^.]+$/, '') : 'ban-dich') + '.txt';
+    a.click();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+  }catch(e){ console.error('[SF Library] exportLibraryFileTxt lỗi:', e); alert('Xuất TXT thất bại: ' + e.message); }
+}
+
+/* ---------- 15. Xóa (mục 3 & 14: SAFE DELETE, phân biệt RESET / DELETE / CLEAR) ---------- */
+async function deleteLibraryFile(fileId){
+  if(!confirm('Xóa truyện này khỏi thư viện? Hành động này không thể hoàn tác.')) return;
+  await deleteChunksForFile(fileId);
+  await deleteFileRecord(fileId);
+  await deleteSession('sess_' + fileId);
+  if(sfCurrentFileId === fileId){ sfCurrentFileId = null; sfCurrentFileMeta = null; }
+  if(sfResumeCandidateId === fileId) sfResumeCandidateId = null;
+  await hydrateLibrary();
+}
+async function clearEntireFileLibrary(){
+  if(!confirm('Xóa TOÀN BỘ thư viện (tất cả truyện, chunk và phiên đã lưu)? Hành động này không thể hoàn tác và KHÔNG xóa các bộ kết nối proxy đã lưu.')) return;
+  await clearEntireLibraryStorage();
+  sfCurrentFileId = null; sfCurrentFileMeta = null; sfResumeCandidateId = null;
+  await hydrateLibrary();
+}
+
+/* ---------- 16. Autosave source ngay khi upload (mục 11: AUTOSAVE SOURCE) ---------- */
+// Lưu NGAY khi tải file .txt, độc lập với việc textarea đang hiển thị preview hay
+// full source — sf_setSourceText() giữ full text trong window.__loadedSourceText,
+// còn ở đây ta lưu chính xác full text đó vào IndexedDB (field sourceText).
+async function sf_onSourceLoaded(text, name){
+  try{
+    const hash = sf_computeSourceHash(text);
+    let existing = libraryFiles.find(f=> f.sourceHash === hash) || null;
+    const now = Date.now();
+    if(existing){
+      existing.sourceText = text;
+      existing.updatedAt = now;
+      if(name) existing.name = name;
+      sfCurrentFileId = existing.id;
+      sfCurrentFileMeta = existing;
+      await saveFileRecord(existing);
+    } else {
+      const fileId = sf_genFileId();
+      const rec = {
+        id: fileId,
+        name: name || 'Truyện không tên',
+        sourceHash: hash,
+        sourceText: text,
+        createdAt: now, updatedAt: now,
+        status: 'new',
+        totalChars: text.length,
+        totalChunks: 0, translatedChunks: 0, errorChunks: 0,
+        model: state.model,
+        baseUrl: document.getElementById('baseUrl').value.trim(),
+        prompt: document.getElementById('promptBox').value,
+        config: sf_collectConfig()
+      };
+      sfCurrentFileId = fileId;
+      sfCurrentFileMeta = rec;
+      await saveFileRecord(rec);
+    }
+    await hydrateLibrary();
+  }catch(e){ console.error('[SF Library] Lỗi lưu source vào thư viện:', e); }
+}
+
 /* ---------------- KEY META HELPERS ---------------- */
 function newKeyMeta(){
   return { status:'idle', requests:0, success:0, errors:0, retries:0, c429:0, c401:0, c5xx:0, lastUsed:0, rateLimitUntil:0, inFlight:0, currentChunk:null, avgLatency:0, latencyCount:0 };
@@ -1042,6 +1667,7 @@ function toggleSettingsCard(){
   btn.classList.toggle('active', isHidden);
 }
 function toggleHistoryPanel(){ document.getElementById('histPanel').classList.toggle('show'); }
+function toggleQueuePanel(){ const el = document.getElementById('queuePanel'); if(el) el.classList.toggle('show'); }
 
 let corsOn = false;
 function toggleCors(){ corsOn = !corsOn; document.getElementById('corsSwitch').classList.toggle('on', corsOn); document.getElementById('corsRow').style.display = corsOn ? 'block' : 'none'; if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); }
@@ -1288,7 +1914,16 @@ function toggleModelGridVisible(){
 }
 
 /* UPLOAD */
-function readFile(f){ const r=new FileReader(); r.onload=()=>{ sf_setSourceText(r.result); updateStats(); }; r.readAsText(f,'UTF-8'); }
+function readFile(f){
+  const r=new FileReader();
+  r.onload=()=>{
+    sf_setSourceText(r.result);
+    updateStats();
+    sfLastUploadName = f.name || sfLastUploadName;
+    sf_onSourceLoaded(r.result, f.name).catch(e=>console.error('[SF Library] readFile autosave lỗi:', e));
+  };
+  r.readAsText(f,'UTF-8');
+}
 document.getElementById('fileInput').addEventListener('change', e=>{ if(e.target.files[0]) readFile(e.target.files[0]); });
 
 function scanHanTu(){}
@@ -1297,18 +1932,38 @@ function openReadByChapter(){}
 function chunkSizeVal(){ return parseInt(document.getElementById('chunkSize').value)||3500; }
 function parallelVal(){ return Math.max(1, parseInt(document.getElementById('parallel').value)||4); }
 function rpmVal(){ return Math.max(1, parseInt(document.getElementById('rpm').value)||15); }
-function splitChunks(text, size){
-  if(!text) return []; size = Math.max(1, size); const chunks = [];
+// Giữ nguyên 100% thuật toán Smart Chunking gốc, chỉ bổ sung sourceStart/sourceEnd
+// (vị trí thật trong text gốc) để làm STABLE CHUNK ID cho persistence (mục 6).
+// splitChunks(text,size) bên dưới vẫn trả về đúng mảng string y hệt bản gốc.
+function splitChunksWithOffsets(text, size){
+  const out = [];
+  if(!text) return out;
+  size = Math.max(1, size);
   let i = 0; const n = text.length;
   while(i < n){
     let chunk = text.slice(i, i+size);
-    if(i+size >= n){ chunks.push(chunk.trim()); break; }
-    let cut = chunk.lastIndexOf('\n\n'); if(cut < size*0.5) cut = chunk.lastIndexOf('\n');
-    if(cut < size*0.5) cut = size;
-    chunks.push(chunk.slice(0, cut).trim());
-    i += cut;
+    let cutLen, isLast = false;
+    if(i+size >= n){ cutLen = chunk.length; isLast = true; }
+    else {
+      let cut = chunk.lastIndexOf('\n\n'); if(cut < size*0.5) cut = chunk.lastIndexOf('\n');
+      if(cut < size*0.5) cut = size;
+      cutLen = cut;
+    }
+    const rawSlice = text.slice(i, i + cutLen);
+    const trimmed = rawSlice.trim();
+    if(trimmed.length > 0){
+      const leadWs = rawSlice.length - rawSlice.replace(/^\s+/, '').length;
+      const start = i + leadWs;
+      const end = start + trimmed.length;
+      out.push({ text: trimmed, start, end });
+    }
+    i += cutLen;
+    if(isLast || cutLen<=0) break;
   }
-  return chunks.filter(c=>c.length>0);
+  return out;
+}
+function splitChunks(text, size){
+  return splitChunksWithOffsets(text, size).map(c=>c.text);
 }
 function updateStats(){
   const text = sf_getFullSourceText();
@@ -1320,6 +1975,13 @@ function updateStats(){
   updateDashboard();
 }
 document.getElementById('sourceText').addEventListener('input', ()=>{ clearTimeout(window._sT); window._sT=setTimeout(updateStats, 250); });
+
+/* Mục 12 AUTOSAVE CONFIG: mọi thay đổi cấu hình liên quan được lưu kèm file đang active */
+['chunkSize','parallel','rpm','maxTokensCap','sourceLang','canonInput'].forEach(id=>{
+  const el = document.getElementById(id);
+  if(el) el.addEventListener('input', ()=>{ if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); });
+});
+document.getElementById('promptBox').addEventListener('input', ()=>{ if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); });
 
 function updateDashboard(){
   document.getElementById('dashChars').textContent = __sf_statsCache.n.toLocaleString('vi-VN');
@@ -1420,7 +2082,15 @@ function updateCdPageInfo(){
   el.innerHTML = `<span>Tổng ${total} · ✅ ${done} · 🟡 ${run} · 🔴 ${error} · ⚪ ${wait}</span> ${nav}`;
 }
 function buildChunkViewer(chunks){
-  chunkState = chunks.map(c=>({status:'waiting', orig:c, trans:'', key:null, retryCount:0}));
+  chunkState = chunks.map((c,i)=>{
+    const off = sfChunkOffsets[i];
+    return {
+      status:'waiting', orig:c, trans:'', key:null, retryCount:0,
+      stableId: off ? off.stableId : null,
+      sourceStart: off ? off.start : i,
+      sourceEnd: off ? off.end : i
+    };
+  });
   chunkStats = { waiting: chunks.length, running: 0, done: 0, error: 0 };
   chunkExpanded = new Set();
   chunkCurrentPage = 0;
@@ -1471,9 +2141,9 @@ function refreshChunkRow(idx){
 
 function setChunkBadge(idx, cls, text, keyIndex){} // handled by refreshChunkRow now
 function markChunkRunning(idx, keyIndex){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'running'); c.key=keyIndex; refreshChunkRow(idx); if(state.keyMeta[keyIndex]) state.keyMeta[keyIndex].inFlight++; } }
-function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; refreshChunkRow(idx); } updateProgressUI(); }
-function markChunkError(idx, msg){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'error'); c.trans='Lỗi: '+msg; refreshChunkRow(idx); } updateProgressUI(); }
-function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'waiting'); c.key=null; refreshChunkRow(idx); } }
+function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
+function markChunkError(idx, msg){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'error'); c.trans='Lỗi: '+msg; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
+function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'waiting'); c.key=null; refreshChunkRow(idx); sf_autosaveChunk(idx); } }
 
 /* RATE LIMIT & LOGGING */
 let logEntries = [];
@@ -1759,15 +2429,21 @@ async function startTranslate(){
   if(!state.model){ alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
   
-  const chunks = splitChunks(text, chunkSizeVal());
+  const offsets = splitChunksWithOffsets(text, chunkSizeVal());
+  const chunks = offsets.map(o=>o.text);
   currentChunks = chunks;
   currentResults = new Array(chunks.length).fill(null);
   
   document.getElementById('progLog').innerHTML=''; logEntries=[];
   document.getElementById('outputText').value='';
+
+  try{ await sf_prepareFileForTranslation(text, offsets); }
+  catch(e){ console.error('[SF Library] Lỗi chuẩn bị lưu thư viện:', e); }
+
   buildChunkViewer(chunks);
   
   await runEngine(chunks.map((_,i)=>i));
+  await sf_onEngineFinished();
 }
 
 function stopTranslate(){
@@ -1780,6 +2456,7 @@ async function retryFailedChunks(){
   if(!indices.length) return;
   indices.forEach(i=> { if(chunkState[i]) chunkState[i].retryCount = 0; delete chunkRetryAfter[i]; markChunkWaiting(i); });
   await runEngine(indices);
+  await sf_onEngineFinished();
 }
 
 function updateProgressUI(){
@@ -1820,6 +2497,7 @@ function downloadOutputByChapter(){}
 
 /* KEEP ALIVE / INITIALIZE */
 updateStats();
+hydrateLibrary().catch(e=>console.error('[SF Library] Lỗi khởi tạo thư viện:', e));
 </script>
 </body>
 </html>
