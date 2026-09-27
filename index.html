@@ -780,7 +780,7 @@
         </div>
       </div>
 
-      <!-- Canon Pack -->
+      <!-- Canon Pack (Đợt 6 — mục V-X: quét toàn bộ file trước khi dịch, xây Canon Glossary) -->
       <div class="acc" id="acc-canon">
         <div class="acc-head" onclick="toggleAcc('acc-canon')">
           <span class="ic">📚</span><span class="title">Dịch với Canon Pack</span>
@@ -793,26 +793,52 @@
             <div class="switch" id="canonSwitch" onclick="toggleCanon()"></div>
             <span style="font-size:13px;">Áp dụng bảng thuật ngữ / tên riêng cố định (Canon Pack) khi dịch</span>
           </div>
-          <textarea id="canonInput" rows="6" placeholder="Nhập hoặc trích xuất danh sách thuật ngữ (mỗi dòng một cặp dạng: TừGốc = TênDịch hoặc TừGốc: TênDịch)..."></textarea>
-          <div class="btn-row" style="margin-top:8px;">
-            <button type="button" class="btn small" id="canonExtractBtn" onclick="autoExtractCanon()">🔍 AI Tự trích xuất Canon</button>
-            <button type="button" class="btn small danger" onclick="clearCanonTable()">🗑 Xóa bảng Canon</button>
+          <div class="statchips" style="margin-bottom:10px;">
+            <div class="statchip" id="canonStatusChip">Trạng thái: Chưa tạo</div>
+            <div class="statchip" id="canonCountsChip">0 thực thể</div>
           </div>
-          <div class="hint" id="canonExtractHint" style="margin-top:6px;">Trích xuất dựa trên ~10.000 ký tự đầu truyện (2-3 chương đầu). Bạn có thể chỉnh sửa tay trước khi dịch.</div>
+          <div class="btn-row" style="margin-bottom:10px;">
+            <button type="button" class="btn small" id="canonExtractBtn" onclick="sfCanon_scanFile()">🔍 Quét toàn bộ file</button>
+            <button type="button" class="btn small" onclick="sfCanon_openModal()">📋 Xem Canon</button>
+            <button type="button" class="btn small" onclick="sfCanon_exportJson()">⬇️ Xuất Canon</button>
+            <button type="button" class="btn small" onclick="document.getElementById('canonImportFile').click()">⬆️ Nhập Canon</button>
+            <input type="file" id="canonImportFile" accept="application/json" style="display:none" onchange="sfCanon_importJson(this.files[0])">
+            <button type="button" class="btn small danger" onclick="sfCanon_clearForFile()">🗑 Xóa Canon của file này</button>
+            <button type="button" class="btn small" onclick="sfCanon_resync()">🔄 Đồng bộ Canon với bản dịch</button>
+          </div>
+          <div class="hint" id="canonExtractHint" style="margin-bottom:10px;">Quét bằng chính API key/model đang cấu hình ở trên, đọc TOÀN BỘ file (chia cửa sổ phân tích riêng, KHÔNG dùng chung Smart Chunking của bản dịch). Chỉ phân tích — không dịch, không đổi source.</div>
+          <p class="sub" style="margin:0 0 4px;">Bảng thuật ngữ nhập tay (luôn được áp dụng, không cần Xác nhận):</p>
+          <textarea id="canonInput" rows="5" placeholder="Mỗi dòng một cặp dạng: TừGốc = TênDịch hoặc TừGốc: TênDịch..."></textarea>
+          <div class="btn-row" style="margin-top:8px;">
+            <button type="button" class="btn small danger" onclick="clearCanonTable()">🗑 Xóa bảng nhập tay</button>
+          </div>
         </div>
       </div>
 
-      <!-- Prompt dịch -->
+      <!-- Thư viện Prompt (Đợt 6 — mục II: Prompt gốc + nhiều prompt tuỳ chỉnh, không ghi đè nhau) -->
       <div class="acc" id="acc-prompt">
         <div class="acc-head" onclick="toggleAcc('acc-prompt')">
-          <span class="ic">📝</span><span class="title">Prompt dịch</span>
+          <span class="ic">📝</span><span class="title">Thư viện Prompt</span>
           <span class="acc-badge config">Tùy chọn</span>
           <span class="acc-summary" id="promptSummary">0 ký tự prompt</span>
           <span class="acc-chevron">▾</span>
         </div>
         <div class="acc-body">
-          <p class="sub">Chỉnh sửa theo ý bạn. Nội dung đoạn văn sẽ được nối vào cuối prompt này.</p>
-          <textarea id="promptBox" rows="10"></textarea>
+          <p class="sub">Prompt gốc luôn được giữ riêng, không bao giờ bị ghi đè. Thêm bao nhiêu prompt tuỳ chỉnh tuỳ ý, bật/tắt từng cái — nội dung đoạn văn sẽ được nối vào cuối pipeline khi dịch.</p>
+          <div id="promptLibraryList"></div>
+          <div class="btn-row" style="margin-top:6px;">
+            <button type="button" class="btn small" onclick="sfPromptLib_addCustom()">➕ Thêm prompt tuỳ chỉnh</button>
+            <button type="button" class="btn small" onclick="sfPromptLib_restoreDefaults()">↺ Khôi phục prompt mặc định</button>
+          </div>
+          <div class="acc" id="acc-prompt-preview" style="margin-top:12px;">
+            <div class="acc-head" onclick="toggleAcc('acc-prompt-preview')">
+              <span class="ic">👁️</span><span class="title" style="font-size:12.5px;">Xem trước prompt cuối cùng (chỉ đọc)</span>
+              <span class="acc-chevron">▾</span>
+            </div>
+            <div class="acc-body">
+              <textarea id="promptBox" rows="8" readonly style="opacity:.8;"></textarea>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -1015,6 +1041,20 @@ service firebase.storage {
   </div>
 </div>
 
+<!-- CANON PACK MODAL (Đợt 6 — mục X: Xem Canon / Confirm/Reject/Edit/Merge) -->
+<div class="read-overlay" id="canonModalOverlay">
+  <div class="read-modal">
+    <div class="read-head">
+      <h2>📚 Canon Pack — Danh sách thực thể</h2>
+      <button class="read-close" onclick="sfCanon_closeModal()" title="Đóng">✕</button>
+    </div>
+    <div class="read-body">
+      <div class="hint" style="margin-bottom:10px;">Chỉ các thực thể ở trạng thái <b>Đã xác nhận</b> mới được đưa vào Canon Context khi dịch. Thực thể mới quét luôn ở trạng thái <b>Chờ xác nhận</b> — không tự động tin, không tự gộp (mục VI).</div>
+      <div id="canonEntityTable"></div>
+    </div>
+  </div>
+</div>
+
 <!-- Firebase (compat SDK) — chỉ dùng cho tính năng Cloud Sync tuỳ chọn. Nếu FIREBASE_CONFIG
      bên dưới chưa điền, các script này vẫn tải nhưng sfCloud.init() sẽ tự phát hiện và
      chuyển toàn app sang Local Mode (không crash). -->
@@ -1024,6 +1064,89 @@ service firebase.storage {
 <script src="https://www.gstatic.com/firebasejs/10.13.2/firebase-storage-compat.js"></script>
 
 <script>
+/* =====================================================================
+   ĐỢT 6 — I. RUNTIME ERROR GUARD (mục III: TRANG WEB BỊ CRASH KHI DỊCH)
+   ---------------------------------------------------------------------
+   Lắp SỚM NHẤT có thể (ngay khi <script> mở ra) để bắt được cả lỗi xảy ra
+   trong lúc phần còn lại của file này đang khởi tạo. Mục tiêu: một lỗi
+   JS không bắt được (uncaught exception / unhandled Promise rejection)
+   KHÔNG được làm trắng trang / crash toàn bộ SPA — chỉ log + hiển thị
+   1 banner nhỏ, ứng dụng phải tiếp tục chạy được.
+   Lưu ý: đây không thể chặn được tab "Aw, Snap!" thật sự của Chrome (đó là
+   renderer process bị OOM/crash ở tầng trình duyệt, nằm ngoài khả năng của
+   JS) — nhưng phần lớn các trường hợp "trắng trang" trong thực tế đến từ
+   MỘT exception JS không bắt được làm dừng luồng render của SPA, và đó là
+   thứ error guard này khắc phục được trực tiếp.
+   ===================================================================== */
+let __sfErrorLog = [];
+const SF_ERROR_LOG_MAX = 50;
+let __sfErrorToastTimer = null;
+function sf_recordRuntimeError(kind, message, extra){
+  try{
+    const entry = { kind, message: String(message||'').slice(0,500), extra: extra||null, time: Date.now() };
+    // Chống spam: nếu lỗi giống hệt lỗi ngay trước đó, chỉ tăng đếm, không log lại vô hạn.
+    const last = __sfErrorLog[__sfErrorLog.length-1];
+    if(last && last.kind===kind && last.message===entry.message){ last.count=(last.count||1)+1; last.time=entry.time; }
+    else { entry.count=1; __sfErrorLog.push(entry); }
+    if(__sfErrorLog.length > SF_ERROR_LOG_MAX) __sfErrorLog.shift();
+    console.error('[SF Runtime Guard]', kind, message, extra||'');
+  }catch(e){ /* logging chính nó không được phép ném lỗi tiếp */ }
+  sf_showErrorToast(kind, message);
+}
+function sf_showErrorToast(kind, message){
+  try{
+    let el = document.getElementById('sfRuntimeErrorToast');
+    if(!el){
+      el = document.createElement('div');
+      el.id = 'sfRuntimeErrorToast';
+      el.style.cssText = 'position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:99999; max-width:min(92vw,520px); background:#3a1d24; border:1px solid #ef5b5b; color:#ffd9d9; padding:10px 14px; border-radius:10px; font-size:12.5px; font-family:inherit; box-shadow:0 6px 24px #0008; display:none;';
+      document.body && document.body.appendChild(el);
+    }
+    if(!el) return;
+    el.textContent = '⚠️ Đã xảy ra lỗi (' + kind + '): ' + String(message||'').slice(0,180) + ' — Ứng dụng vẫn tiếp tục chạy.';
+    el.style.display = 'block';
+    if(__sfErrorToastTimer) clearTimeout(__sfErrorToastTimer);
+    __sfErrorToastTimer = setTimeout(()=>{ if(el) el.style.display='none'; }, 6000);
+  }catch(e){ /* không để việc hiển thị lỗi tự nó gây thêm lỗi */ }
+}
+window.addEventListener('error', function(ev){
+  // Lỗi tải resource (ảnh/script 404,...) có ev.error===null và target!==window — bỏ qua,
+  // không phải lỗi JS runtime và không cần cảnh báo người dùng.
+  if(ev && ev.target && ev.target !== window && !ev.message) return;
+  sf_recordRuntimeError('js-error', (ev && ev.message) || 'Lỗi không rõ', { filename: ev&&ev.filename, lineno: ev&&ev.lineno });
+  // KHÔNG preventDefault() — vẫn để browser console log bình thường cho debug,
+  // nhưng có toast + log riêng để UI không "chết lặng" không rõ lý do.
+});
+window.addEventListener('unhandledrejection', function(ev){
+  const reason = ev && ev.reason;
+  const msg = (reason && (reason.message || reason.toString && reason.toString())) || 'Promise bị reject không rõ lý do';
+  sf_recordRuntimeError('unhandled-promise', msg, null);
+});
+// Helper: bọc một hàm render/UI để 1 lỗi bên trong không lan ra ngoài làm hỏng luồng gọi nó.
+// Dùng cho các điểm vẽ UI có khả năng đụng DOM null/dữ liệu bất thường (mục III).
+function sfSafeUI(fn, label){
+  return function(){
+    try{ return fn.apply(this, arguments); }
+    catch(e){ sf_recordRuntimeError('ui-render:'+(label||fn.name||'?'), e && e.message ? e.message : String(e)); return undefined; }
+  };
+}
+// Đọc localStorage + JSON.parse an toàn — không bao giờ throw, luôn trả fallback khi hỏng,
+// và KHÔNG xoá key cũ (giữ nguyên dữ liệu khác trong localStorage — mục I.5).
+function sf_safeJSONParse(raw, fallback){
+  if(raw == null) return fallback;
+  try{ const v = JSON.parse(raw); return v === undefined ? fallback : v; }
+  catch(e){ console.warn('[SF Runtime Guard] JSON.parse lỗi, dùng fallback:', e); return fallback; }
+}
+function sf_safeLocalGet(key, fallback){
+  try{ const raw = localStorage.getItem(key); return raw==null ? fallback : sf_safeJSONParse(raw, fallback); }
+  catch(e){ console.warn('[SF Runtime Guard] localStorage.getItem lỗi:', e); return fallback; }
+}
+function sf_safeLocalSet(key, value){
+  try{ localStorage.setItem(key, JSON.stringify(value)); return true; }
+  catch(e){ console.warn('[SF Runtime Guard] localStorage.setItem lỗi (có thể đầy quota):', e); return false; }
+}
+/* ===== HẾT I. RUNTIME ERROR GUARD ===== */
+
 /* ---------------- STATE ---------------- */
 let state = {
   proxyOn: true,
@@ -1082,7 +1205,7 @@ function sf_setSourceText(fullText, opts){
 
 /* ---------- 1. IndexedDB: mở DB + tạo object store ---------- */
 const SF_DB_NAME = 'StoryForgeLibrary';
-const SF_DB_VERSION = 2; // v2: + 'cloudQueue' store (Cloud Sync). Không đụng store cũ.
+const SF_DB_VERSION = 3; // v3 (Đợt 6): + 'prompts' (Prompt Library) + 'canonEntities' (Canon Pack). Không đụng store cũ.
 let __sfDbPromise = null;
 
 function openSFDatabase(){
@@ -1113,6 +1236,20 @@ function openSFDatabase(){
       if(!db.objectStoreNames.contains('cloudQueue')){
         // Hàng đợi đồng bộ Cloud, tồn tại qua reload — không mất khi mất mạng (mục XV/XXI).
         db.createObjectStore('cloudQueue', { keyPath:'id' });
+      }
+      // ĐỢT 6 — Prompt Library: mỗi prompt là 1 record độc lập (mục II), không còn 1 chuỗi
+      // duy nhất ghi đè lẫn nhau. KHÔNG xoá/đụng store cũ ở trên (mục I.5).
+      if(!db.objectStoreNames.contains('prompts')){
+        db.createObjectStore('prompts', { keyPath:'id' });
+      }
+      // ĐỢT 6 — Canon Pack: mỗi CANON_ENTITY là 1 record, gắn với fileId + sourceHash (mục IX).
+      if(!db.objectStoreNames.contains('canonEntities')){
+        const ce = db.createObjectStore('canonEntities', { keyPath:'id' });
+        ce.createIndex('fileId', 'fileId', { unique:false });
+      }
+      // ĐỢT 6 — Canon Pack cache metadata (trạng thái quét gần nhất theo fileId+sourceHash).
+      if(!db.objectStoreNames.contains('canonMeta')){
+        db.createObjectStore('canonMeta', { keyPath:'fileId' });
       }
     };
     req.onsuccess = ()=> resolve(req.result);
@@ -1278,6 +1415,108 @@ async function clearEntireLibraryStorage(){
     await sf_txDone(tx);
     return true;
   }catch(e){ console.error('[SF Library] clearEntireLibraryStorage lỗi:', e); return false; }
+}
+
+/* ---------- prompts store CRUD (Đợt 6 — Prompt Library, mục II) ---------- */
+async function sfPromptDB_getAll(){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('prompts', 'readonly');
+    const res = await sf_reqToPromise(tx.objectStore('prompts').getAll());
+    return res || [];
+  }catch(e){ console.error('[Prompt Library] getAll lỗi:', e); return []; }
+}
+async function sfPromptDB_put(rec){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('prompts', 'readwrite');
+    tx.objectStore('prompts').put(rec);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Prompt Library] put lỗi:', e); return false; }
+}
+async function sfPromptDB_putMany(list){
+  if(!list || !list.length) return true;
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('prompts', 'readwrite');
+    const store = tx.objectStore('prompts');
+    list.forEach(r=> store.put(r));
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Prompt Library] putMany lỗi:', e); return false; }
+}
+async function sfPromptDB_delete(id){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('prompts', 'readwrite');
+    tx.objectStore('prompts').delete(id);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Prompt Library] delete lỗi:', e); return false; }
+}
+
+/* ---------- canonEntities + canonMeta store CRUD (Đợt 6 — Canon Pack, mục V-X) ---------- */
+async function sfCanonDB_getAllForFile(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonEntities', 'readonly');
+    const idx = tx.objectStore('canonEntities').index('fileId');
+    const res = await sf_reqToPromise(idx.getAll(IDBKeyRange.only(fileId)));
+    return res || [];
+  }catch(e){ console.error('[Canon Pack] getAllForFile lỗi:', e); return []; }
+}
+async function sfCanonDB_putMany(list){
+  if(!list || !list.length) return true;
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonEntities', 'readwrite');
+    const store = tx.objectStore('canonEntities');
+    list.forEach(r=> store.put(r));
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Canon Pack] putMany lỗi:', e); return false; }
+}
+async function sfCanonDB_delete(id){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonEntities', 'readwrite');
+    tx.objectStore('canonEntities').delete(id);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Canon Pack] delete lỗi:', e); return false; }
+}
+async function sfCanonDB_clearForFile(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction(['canonEntities','canonMeta'], 'readwrite');
+    const idx = tx.objectStore('canonEntities').index('fileId');
+    await new Promise((resolve, reject)=>{
+      const cReq = idx.openCursor(IDBKeyRange.only(fileId));
+      cReq.onsuccess = (e)=>{ const cur = e.target.result; if(cur){ cur.delete(); cur.continue(); } else resolve(); };
+      cReq.onerror = ()=> reject(cReq.error);
+    });
+    tx.objectStore('canonMeta').delete(fileId);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Canon Pack] clearForFile lỗi:', e); return false; }
+}
+async function sfCanonDB_getMeta(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonMeta', 'readonly');
+    const res = await sf_reqToPromise(tx.objectStore('canonMeta').get(fileId));
+    return res || null;
+  }catch(e){ console.error('[Canon Pack] getMeta lỗi:', e); return null; }
+}
+async function sfCanonDB_putMeta(meta){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonMeta', 'readwrite');
+    tx.objectStore('canonMeta').put(meta);
+    await sf_txDone(tx);
+    return true;
+  }catch(e){ console.error('[Canon Pack] putMeta lỗi:', e); return false; }
 }
 
 /* ---------- cloudQueue store CRUD (dùng bởi module sfCloud bên dưới) ---------- */
@@ -1515,6 +1754,7 @@ async function sf_prepareFileForTranslation(text, offsets){
     sfCloud.uploadChunkManifest(fileId, chunkRecs).catch(e=> console.error('[SF Cloud] uploadChunkManifest lỗi:', e));
     sfCloud.enqueueHistoryEvent(fileId, rec.name, 'started');
   }
+  if(typeof sfCanon_ensureLoadedForCurrentFile === 'function') sfCanon_ensureLoadedForCurrentFile().catch(e=>sf_recordRuntimeError('canon-prepare', e && e.message ? e.message : String(e)));
   return rec;
 }
 
@@ -1538,7 +1778,17 @@ async function restoreFile(fileId){
     document.getElementById('modelInput').value = fileRec.model;
     document.getElementById('pillModel').textContent = fileRec.model;
   }
-  if(fileRec.prompt) document.getElementById('promptBox').value = fileRec.prompt;
+  // ĐỢT 6 — Fix 1: KHÔNG còn ghi đè thẳng #promptBox.value bằng fileRec.prompt (chuỗi đơn cũ) —
+  // làm vậy sẽ xoá mất mọi prompt tuỳ chỉnh đang có trong Thư viện Prompt. Nếu file cũ có prompt
+  // KHÁC với prompt gốc/mặc định hiện tại, di trú nó thành 1 prompt tuỳ chỉnh (không mất dữ liệu),
+  // rồi luôn dựng lại #promptBox từ pipeline BASE+TRANSLATION+CUSTOM hiện hành của Thư viện.
+  // Chỉ di trú ĐÚNG 1 LẦN/file (đánh dấu promptMigrated) — nếu không, mỗi lần mở lại file sẽ tạo
+  // thêm 1 bản "Đã di trú" trùng lặp vì #promptBox.value giờ luôn là chuỗi ĐÃ GHÉP (base+translation+...).
+  if(fileRec.prompt && !fileRec.promptMigrated){
+    await sfPromptLib_migrateLegacyString(fileRec.prompt, fileRec.name);
+    fileRec.promptMigrated = true;
+    await saveFileRecord(fileRec);
+  }
   sf_applyConfigToUI(fileRec.config);
   if(document.getElementById('chatUrlPreview')) document.getElementById('chatUrlPreview').textContent = chatUrl() || '—';
   if(document.getElementById('modelsUrlPreview')) document.getElementById('modelsUrlPreview').textContent = modelsUrl() || '—';
@@ -1557,6 +1807,7 @@ async function restoreFile(fileId){
     // mục 1A: tính lại cảnh báo thiếu header khi mở lại truyện (reload/Continue) —
     // không lưu field mới vào IndexedDB, chỉ suy ra lại từ sourceText/translatedText sẵn có.
     headerWarning: c.status === 'done' ? sf_findMissingHeaders(c.sourceText, c.translatedText || '') : null,
+    headerRepairAttempts: 0, headerRepairStatus: null,
     stableId: c.stableId, sourceStart: c.sourceStart, sourceEnd: c.sourceEnd
   }));
   chunkStats = { waiting:0, running:0, done:0, error:0 };
@@ -1574,11 +1825,20 @@ async function restoreFile(fileId){
 
   document.getElementById('outputText').value = currentResults.map(r=> r != null ? r : '').join('\n\n');
   document.getElementById('resumeBanner').style.display = 'none';
+  // ĐỢT 6 — mục IX: nạp lại Canon Pack gắn với ĐÚNG file vừa mở (không lẫn sang file khác).
+  if(typeof sfCanon_ensureLoadedForCurrentFile === 'function') sfCanon_ensureLoadedForCurrentFile().catch(e=>sf_recordRuntimeError('canon-restore', e && e.message ? e.message : String(e)));
   return fileRec;
 }
 
 /* ---------- 10. Sau khi vòng dịch (runEngine) kết thúc: cập nhật trạng thái file ---------- */
 async function sf_onEngineFinished(){
+  // ĐỢT 6 — mục IV: HEADER VALIDATION + REPAIR chạy SAU KHI toàn bộ batch/chunk dịch xong,
+  // trước khi chốt trạng thái file — vì repair có thể đổi lại c.trans của vài chunk cụ thể.
+  // Không chạy nếu vừa bị Dừng (stopFlag) giữa chừng — tránh dịch thêm khi người dùng muốn dừng.
+  if(!stopFlag){
+    try{ await sf_runHeaderRepairPass(); }
+    catch(e){ sf_recordRuntimeError('header-repair-pass', e && e.message ? e.message : String(e)); }
+  }
   if(!sfCurrentFileMeta) return;
   sfCurrentFileMeta.status = stopFlag ? 'paused' : sf_computeFileStatus();
   sfCurrentFileMeta.translatedChunks = chunkStats.done;
@@ -1592,6 +1852,52 @@ async function sf_onEngineFinished(){
     if(sfCurrentFileMeta.status === 'done') sfCloud.enqueueHistoryEvent(sfCurrentFileMeta.id, sfCurrentFileMeta.name, 'done');
   }
 }
+
+/* =====================================================================
+   ĐỢT 6 — IV. HEADER VALIDATION + REPAIR (chạy tự động sau mỗi batch)
+   ---------------------------------------------------------------------
+   Chỉ động vào ĐÚNG các chunk đang có headerWarning (do markChunkDone tính
+   bằng sf_findMissingHeaders — đã có sẵn từ trước). Dùng lại NGUYÊN VẸN
+   runEngine([idx]) cho từng chunk lỗi — không tạo request loop riêng, không
+   tạo chunk mới, không đổi stableId/sourceStart/sourceEnd, không đụng các
+   chunk khác đang ở trạng thái 'done'. Giới hạn HEADER_REPAIR_MAX_RETRY lần
+   thử lại MỖI chunk; hết lượt mà vẫn sai thì đánh dấu HEADER_REPAIR_FAILED
+   và dừng — không thử vô hạn, không tự sửa source gốc.
+   ===================================================================== */
+const HEADER_REPAIR_MAX_RETRY = 2;
+let __sfHeaderRepairRunning = false;
+async function sf_runHeaderRepairPass(){
+  if(__sfHeaderRepairRunning || running) return; // không chạy song song 2 lượt repair, không chạy khi có phiên dịch khác
+  const candidateIdx = chunkState.map((c,i)=>({c,i})).filter(({c})=>
+    c && c.status==='done' && c.headerWarning && c.headerWarning.length &&
+    (c.headerRepairAttempts||0) < HEADER_REPAIR_MAX_RETRY && c.headerRepairStatus !== 'HEADER_REPAIR_FAILED'
+  ).map(({i})=>i);
+  if(!candidateIdx.length) return;
+  __sfHeaderRepairRunning = true;
+  try{
+    logLine('warn', null, null, `🔧 Header Repair: ${candidateIdx.length} chunk thiếu/sai header, tự động dịch lại (tối đa ${HEADER_REPAIR_MAX_RETRY} lần/chunk)...`);
+    for(const i of candidateIdx){
+      const c = chunkState[i]; if(!c) continue;
+      while((c.headerRepairAttempts||0) < HEADER_REPAIR_MAX_RETRY && c.headerWarning && c.headerWarning.length){
+        c.headerRepairAttempts = (c.headerRepairAttempts||0) + 1;
+        c.retryCount = 0; delete chunkRetryAfter[i];
+        markChunkWaiting(i); // KHÔNG tạo chunk mới — chỉ tạm rời 'done' để scheduler nhận dịch lại đúng chunk này
+        try{ await runEngine([i]); } // dịch lại CHÍNH XÁC 1 chunk này; markChunkDone sẽ tự re-check header
+        catch(e){ sf_recordRuntimeError('header-repair-chunk-'+i, e && e.message ? e.message : String(e)); break; }
+      }
+      if(c.headerWarning && c.headerWarning.length){
+        c.headerRepairStatus = 'HEADER_REPAIR_FAILED';
+        logLine('err', i, null, `Chunk ${i+1}: HEADER_REPAIR_FAILED sau ${c.headerRepairAttempts}/${HEADER_REPAIR_MAX_RETRY} lần thử.`);
+      } else if(c.headerRepairAttempts > 0){
+        logLine('ok', i, null, `Chunk ${i+1}: Header Repair thành công sau ${c.headerRepairAttempts} lần thử lại.`);
+      }
+      refreshChunkRow(i);
+    }
+  } finally {
+    __sfHeaderRepairRunning = false;
+  }
+}
+/* ===== HẾT IV. HEADER VALIDATION + REPAIR ===== */
 
 /* ---------- 11. Tiếp tục dịch phần CHƯA xong (mục 5: CONTINUE PHẢI AN TOÀN) ---------- */
 // runEngine() vốn đã tự lọc `queue = indices.filter(i => chunkState[i].status !== 'done')`
@@ -1788,6 +2094,7 @@ async function sf_onSourceLoaded(text, name){
       await saveFileRecord(rec);
     }
     await hydrateLibrary();
+    if(typeof sfCanon_ensureLoadedForCurrentFile === 'function') await sfCanon_ensureLoadedForCurrentFile();
   }catch(e){ console.error('[SF Library] Lỗi lưu source vào thư viện:', e); }
 }
 
@@ -1830,7 +2137,28 @@ function formatDuration(sec){
   return [h,m,s].map(v=>String(v).padStart(2,'0')).join(':');
 }
 
-const DEFAULT_PROMPT = `[LỆNH BẮT BUỘC]
+/* =====================================================================
+   ĐỢT 6 — II. PROMPT LIBRARY (FIX 1: PROMPT BỊ ĐÈ / MẤT PROMPT GỐC)
+   ---------------------------------------------------------------------
+   Thay vì MỘT chuỗi duy nhất trong #promptBox bị ghi đè mỗi khi người dùng
+   sửa, giờ có một DANH SÁCH prompt độc lập (PROMPT_LIBRARY), mỗi prompt có
+   id/name/type/content/enabled riêng, lưu trong IndexedDB (store 'prompts').
+
+   PIPELINE (đúng mục II yêu cầu):
+     BASE PROMPT (bảo vệ, không bao giờ bị ghi đè)
+     + TRANSLATION PROMPT(S) đang bật
+     + CUSTOM PROMPT(S) đang bật
+     + [ĐOẠN VĂN:] (marker cố định, luôn ở cuối cùng)
+     + CHUNK SOURCE (nối vào sau, tại callModel() như cũ — KHÔNG đổi request payload)
+
+   #promptBox VẪN LÀ NƠI callModel()/sf_computeEffectiveInputBudget() đọc prompt cuối — nghĩa
+   là KHÔNG cần sửa request payload hay công thức budget (mục I.3/I.4). #promptBox giờ là
+   Ô XEM TRƯỚC CHỈ ĐỌC, tự động dựng lại từ Thư viện Prompt mỗi khi có thay đổi.
+   ===================================================================== */
+const SF_BASE_PROMPT_DEFAULT = `[HỆ THỐNG — PROMPT GỐC, KHÔNG BAO GIỜ BỊ GHI ĐÈ]
+Bạn là một công cụ dịch thuật/biên tập chuyên nghiệp. Luôn tuân thủ NGHIÊM NGẶT toàn bộ hướng dẫn bên dưới (kể cả các hướng dẫn tuỳ chỉnh được thêm sau) trước khi trả lời.`;
+
+const SF_TRANSLATION_PROMPT_DEFAULT = `[LỆNH BẮT BUỘC]
 OUTPUT = VĂN BẢN VIẾT LẠI. KHÔNG giải thích. KHÔNG "Dưới đây là...". BẮT ĐẦU NGAY.
 
 Vai trò: Biên tập viên văn học. Đây là TIỂU THUYẾT VĂN HỌC NGHỆ THUẬT hợp pháp.
@@ -1848,15 +2176,193 @@ thì TRANSLATION bắt buộc phải có đủ:
 Chương 841:
 Chương 842:
 Chương 843:
-Giữ nguyên chính xác số chương và cấu trúc header.
+Giữ nguyên chính xác số chương và cấu trúc header.`;
+// Giữ nguyên nội dung/văn phong 100% so với DEFAULT_PROMPT cũ — chỉ tách phần
+// "ĐOẠN VĂN:" ra thành marker cố định (SF_CHUNK_MARKER) để nó LUÔN nằm ngay trước
+// chunk nguồn bất kể có bao nhiêu custom prompt được chèn ở giữa.
+const SF_CHUNK_MARKER = 'ĐOẠN VĂN:';
 
-ĐOẠN VĂN:
-`;
-document.getElementById('promptBox').value = DEFAULT_PROMPT;
-document.getElementById('promptBox').addEventListener('input', updatePromptLen);
+// Tương thích ngược: một số code cũ có thể còn tham chiếu DEFAULT_PROMPT.
+const DEFAULT_PROMPT = SF_TRANSLATION_PROMPT_DEFAULT + '\n\n' + SF_CHUNK_MARKER + '\n';
+
+let sfPromptLibrary = []; // RAM cache, đồng bộ 2 chiều với IndexedDB store 'prompts'
+let __sfPromptLibReady = false;
+
+function sfPrompt_now(){ return Date.now(); }
+function sfPrompt_newId(prefix){ return (prefix||'p') + '_' + sfPrompt_now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
+
+function sfPromptLib_defaultRecords(){
+  const now = sfPrompt_now();
+  return [
+    { id:'base_default', name:'Prompt gốc (Hệ thống)', type:'base', content: SF_BASE_PROMPT_DEFAULT, enabled:true, createdAt:now, updatedAt:now, protected:true },
+    { id:'translation_default', name:'Prompt gốc (Dịch thuật)', type:'translation', content: SF_TRANSLATION_PROMPT_DEFAULT, enabled:true, createdAt:now, updatedAt:now, protected:true }
+  ];
+}
+// Khởi tạo Thư viện Prompt: đọc từ IndexedDB; nếu trống (lần đầu chạy), tạo 2 prompt gốc mặc định.
+// KHÔNG BAO GIỜ ghi đè prompt đã tồn tại trong DB (mục II — PROMPT GỐC không bị ghi đè).
+async function sfPromptLib_init(){
+  try{
+    let list = await sfPromptDB_getAll();
+    if(!list || list.length === 0){
+      list = sfPromptLib_defaultRecords();
+      await sfPromptDB_putMany(list);
+    } else {
+      // Đảm bảo 2 record bảo vệ luôn tồn tại ngay cả khi DB cũ (nâng cấp giữa chừng) thiếu chúng.
+      const haveBase = list.some(p=>p.id==='base_default');
+      const haveTrans = list.some(p=>p.id==='translation_default');
+      const toAdd = [];
+      if(!haveBase) toAdd.push(sfPromptLib_defaultRecords()[0]);
+      if(!haveTrans) toAdd.push(sfPromptLib_defaultRecords()[1]);
+      if(toAdd.length){ await sfPromptDB_putMany(toAdd); list = list.concat(toAdd); }
+    }
+    sfPromptLibrary = list.sort((a,b)=> (a.createdAt||0)-(b.createdAt||0));
+  }catch(e){
+    sf_recordRuntimeError('prompt-library-init', e && e.message ? e.message : String(e));
+    sfPromptLibrary = sfPromptLib_defaultRecords(); // fallback an toàn — app vẫn chạy được (mục III)
+  }
+  __sfPromptLibReady = true;
+  sfPromptLib_render();
+  sfPrompt_syncToBox();
+}
+// Di trú prompt kiểu cũ (1 chuỗi/file) sang Thư viện — gọi từ restoreFile() khi mở lại 1 truyện
+// đã lưu trước Đợt 6. Không tạo bản trùng nếu nội dung khớp một prompt đã có sẵn.
+async function sfPromptLib_migrateLegacyString(text, fileName){
+  try{
+    if(!text || !text.trim()) return;
+    const known = new Set([SF_TRANSLATION_PROMPT_DEFAULT.trim(), DEFAULT_PROMPT.trim(), (SF_TRANSLATION_PROMPT_DEFAULT+'\n\nĐOẠN VĂN:\n').trim()]);
+    if(known.has(text.trim())) return; // đúng y hệt prompt gốc mặc định — không cần di trú
+    const dup = sfPromptLibrary.find(p=> p.content.trim() === text.trim());
+    if(dup) return; // đã có prompt giống hệt trong thư viện rồi
+    const rec = { id: sfPrompt_newId('migrated'), name: 'Đã di trú: ' + (fileName||'prompt cũ'), type:'custom', content:text, enabled:false, createdAt: sfPrompt_now(), updatedAt: sfPrompt_now() };
+    await sfPromptDB_put(rec);
+    sfPromptLibrary.push(rec);
+    sfPromptLib_render();
+    sfPrompt_syncToBox();
+  }catch(e){ sf_recordRuntimeError('prompt-migrate', e && e.message ? e.message : String(e)); }
+}
+// Dựng prompt CUỐI CÙNG theo đúng pipeline mục II. KHÔNG gọi API — chỉ ghép chuỗi.
+function sfPrompt_composeFinal(){
+  const base = sfPromptLibrary.filter(p=> p.type==='base' && p.enabled).map(p=>p.content);
+  const trans = sfPromptLibrary.filter(p=> p.type==='translation' && p.enabled).map(p=>p.content);
+  const customs = sfPromptLibrary.filter(p=> (p.type==='custom' || p.type==='mature-safe') && p.enabled).map(p=>p.content);
+  const parts = [...base, ...trans, ...customs].map(s=> (s||'').trim()).filter(Boolean);
+  parts.push(SF_CHUNK_MARKER); // marker cố định luôn ở cuối, ngay trước chunk nguồn (nối ở callModel())
+  return parts.join('\n\n') + '\n';
+}
+// Ghi lại #promptBox (ô xem trước, readonly) từ Thư viện — mọi nơi khác trong app vẫn đọc
+// #promptBox.value như cũ (callModel, sf_computeEffectiveInputBudget, save/load file...).
+function sfPrompt_syncToBox(){
+  const box = document.getElementById('promptBox');
+  if(!box) return;
+  box.value = sfPrompt_composeFinal();
+  updatePromptLen();
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
 function updatePromptLen(){
-  const n = document.getElementById('promptBox').value.length;
-  document.getElementById('promptSummary').textContent = n.toLocaleString('vi-VN') + ' ký tự prompt';
+  const box = document.getElementById('promptBox');
+  const summary = document.getElementById('promptSummary');
+  if(!box || !summary) return;
+  const n = box.value.length;
+  const enabledCount = sfPromptLibrary.filter(p=>p.enabled).length;
+  summary.textContent = n.toLocaleString('vi-VN') + ' ký tự · ' + enabledCount + '/' + sfPromptLibrary.length + ' prompt đang bật';
+}
+
+/* ---------- Thao tác CRUD trên Thư viện Prompt (gọi từ UI) ---------- */
+async function sfPromptLib_persist(rec){ await sfPromptDB_put(rec); }
+function sfPromptLib_find(id){ return sfPromptLibrary.find(p=>p.id===id); }
+async function sfPromptLib_toggle(id){
+  const p = sfPromptLib_find(id); if(!p) return;
+  if(p.protected && p.enabled){
+    // Không cho tắt CẢ 2 prompt bảo vệ cùng lúc nếu sẽ khiến pipeline hoàn toàn rỗng —
+    // nhưng vẫn cho phép tắt riêng lẻ (vd tắt base, giữ translation) vì đó là lựa chọn hợp lệ.
+  }
+  p.enabled = !p.enabled; p.updatedAt = sfPrompt_now();
+  await sfPromptLib_persist(p);
+  sfPromptLib_render(); sfPrompt_syncToBox();
+}
+async function sfPromptLib_editContent(id, newContent){
+  const p = sfPromptLib_find(id); if(!p) return;
+  p.content = newContent; p.updatedAt = sfPrompt_now();
+  await sfPromptLib_persist(p);
+  sfPrompt_syncToBox(); // không cần render lại toàn bộ list khi chỉ gõ nội dung
+}
+async function sfPromptLib_rename(id, newName){
+  const p = sfPromptLib_find(id); if(!p) return;
+  p.name = (newName||'').trim() || p.name; p.updatedAt = sfPrompt_now();
+  await sfPromptLib_persist(p);
+}
+async function sfPromptLib_addCustom(){
+  const rec = { id: sfPrompt_newId('custom'), name: 'Prompt tuỳ chỉnh ' + (sfPromptLibrary.filter(p=>p.type==='custom').length+1), type:'custom', content:'', enabled:true, createdAt: sfPrompt_now(), updatedAt: sfPrompt_now() };
+  await sfPromptLib_persist(rec);
+  sfPromptLibrary.push(rec);
+  sfPromptLib_render(); sfPrompt_syncToBox();
+}
+async function sfPromptLib_duplicate(id){
+  const p = sfPromptLib_find(id); if(!p) return;
+  const rec = { id: sfPrompt_newId('dup'), name: p.name + ' (bản sao)', type: p.type==='base'?'custom':p.type, content: p.content, enabled: p.enabled, createdAt: sfPrompt_now(), updatedAt: sfPrompt_now() };
+  await sfPromptLib_persist(rec);
+  sfPromptLibrary.push(rec);
+  sfPromptLib_render(); sfPrompt_syncToBox();
+}
+async function sfPromptLib_delete(id){
+  const p = sfPromptLib_find(id); if(!p) return;
+  if(p.protected){ alert('Đây là Prompt gốc — không thể xoá. Bạn có thể Tắt nó hoặc bấm "Khôi phục prompt mặc định".'); return; }
+  if(!confirm('Xoá prompt "'+p.name+'"? Không thể hoàn tác.')) return;
+  await sfPromptDB_delete(id);
+  sfPromptLibrary = sfPromptLibrary.filter(x=>x.id!==id);
+  sfPromptLib_render(); sfPrompt_syncToBox();
+}
+// "Đặt làm mặc định": chỉ có ý nghĩa với prompt loại translation — bật ĐÚNG 1 prompt dịch,
+// tắt các prompt dịch khác (custom-type không bị đụng tới, vẫn bật/tắt độc lập theo ý người dùng).
+async function sfPromptLib_setDefault(id){
+  const p = sfPromptLib_find(id); if(!p || p.type!=='translation') return;
+  const toSave = [];
+  sfPromptLibrary.filter(x=>x.type==='translation').forEach(x=>{
+    const shouldBeOn = x.id===id;
+    if(x.enabled !== shouldBeOn){ x.enabled = shouldBeOn; x.updatedAt = sfPrompt_now(); toSave.push(x); }
+  });
+  if(toSave.length) await sfPromptDB_putMany(toSave);
+  sfPromptLib_render(); sfPrompt_syncToBox();
+}
+// "Khôi phục prompt mặc định": ghi lại NỘI DUNG của 2 prompt bảo vệ về nguyên bản, bật lại chúng.
+// KHÔNG xoá bất kỳ prompt tuỳ chỉnh nào (mục II — không được mất prompt tuỳ chỉnh khi restore).
+async function sfPromptLib_restoreDefaults(){
+  if(!confirm('Khôi phục 2 Prompt gốc (Hệ thống + Dịch thuật) về nội dung mặc định? Các prompt tuỳ chỉnh khác sẽ được GIỮ NGUYÊN.')) return;
+  const defs = sfPromptLib_defaultRecords();
+  for(const d of defs){
+    let p = sfPromptLib_find(d.id);
+    if(!p){ p = d; sfPromptLibrary.push(p); }
+    else { p.content = d.content; p.enabled = true; p.updatedAt = sfPrompt_now(); }
+  }
+  await sfPromptDB_putMany(defs.map(d=> sfPromptLib_find(d.id)));
+  sfPromptLib_render(); sfPrompt_syncToBox();
+}
+
+/* ---------- UI: render Thư viện Prompt (khu vực "📝 Thư viện Prompt") ---------- */
+const sfPromptLib_typeLabel = { base:'Gốc · Hệ thống', translation:'Gốc · Dịch thuật', custom:'Tuỳ chỉnh', 'mature-safe':'Phân loại nội dung' };
+function sfPromptLib_render(){
+  const wrap = document.getElementById('promptLibraryList');
+  if(!wrap) return;
+  try{
+    if(!sfPromptLibrary.length){ wrap.innerHTML = '<div class="hint">Đang tải Thư viện Prompt…</div>'; return; }
+    wrap.innerHTML = sfPromptLibrary.map(p=>{
+      const isProtected = !!p.protected;
+      return `<div class="sf-prompt-card" data-id="${p.id}" style="border:1px solid var(--panel-border); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:var(--input-bg);">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
+          <div class="switch ${p.enabled?'on':''}" onclick="sfPromptLib_toggle('${p.id}')" title="Bật/Tắt prompt này"></div>
+          <input type="text" value="${sf_escapeHtml(p.name)}" style="flex:1; min-width:120px; font-weight:600; padding:6px 8px;"
+            onchange="sfPromptLib_rename('${p.id}', this.value)" ${isProtected? '' : ''} />
+          <span class="acc-badge config" style="white-space:nowrap;">${sfPromptLib_typeLabel[p.type]||p.type}</span>
+          <div class="btn-row" style="gap:6px;">
+            ${p.type==='translation' ? `<button type="button" class="btn small" onclick="sfPromptLib_setDefault('${p.id}')" title="Chỉ dùng prompt dịch này">⭐ Đặt mặc định</button>` : ''}
+            <button type="button" class="btn small" onclick="sfPromptLib_duplicate('${p.id}')" title="Nhân bản">⧉ Nhân bản</button>
+            ${isProtected ? '' : `<button type="button" class="btn small danger" onclick="sfPromptLib_delete('${p.id}')" title="Xoá">🗑 Xoá</button>`}
+          </div>
+        </div>
+        <textarea rows="4" style="font-size:12.5px;" placeholder="Nội dung prompt…" onchange="sfPromptLib_editContent('${p.id}', this.value)">${sf_escapeHtml(p.content)}</textarea>
+      </div>`;
+    }).join('');
+  }catch(e){ sf_recordRuntimeError('prompt-library-render', e && e.message ? e.message : String(e)); }
 }
 
 function toggleAcc(id){ document.getElementById(id).classList.toggle('open'); }
@@ -2198,7 +2704,441 @@ function clearCanonTable(){
 // (mục 32/34 — KHÔNG tự thêm API probe/fake request). Giữ dạng stub thông báo,
 // giống hệt testConnection()/downloadCorsScript() đã có sẵn cho các tính năng
 // bị đơn giản hoá vì lý do dung lượng.
-function autoExtractCanon(){ alert('Tính năng AI tự trích xuất Canon đã được tối giản cho bản này. Vui lòng tự nhập vào ô bên dưới (mỗi dòng dạng: TừGốc = TênDịch).'); }
+function autoExtractCanon(){ sfCanon_scanFile(); } // giữ tên hàm cũ làm alias tương thích ngược
+
+/* =====================================================================
+   ĐỢT 6 — V-X. CANON PACK
+   ---------------------------------------------------------------------
+   Đọc TOÀN BỘ file truyện TRƯỚC khi dịch để xây CANON_ENTITY glossary.
+   KHÔNG dịch nội dung ở bước này — chỉ phân tích (mục V). Dùng cửa sổ quét
+   RIÊNG (sfCanon_splitScanWindows), hoàn toàn tách biệt khỏi Smart Chunking
+   dùng cho dịch (mục XIV — không đụng token-aware/smart packing hiện có).
+   Occurrences/firstSeen/lastSeen được TÍNH LẠI CỤC BỘ bằng cách đếm trong
+   chính source text (không tin số AI trả về) — tránh AI tự bịa (mục VI).
+   ===================================================================== */
+const SF_CANON_CATEGORIES = ['CHARACTER','LOCATION','ORGANIZATION','COUNTRY','CITY','SECT','TITLE','REALM','WEAPON','ARTIFACT','SKILL','ITEM','RACE','CREATURE','TERM','PRONOUN','RELATION','ALIAS','ABBREVIATION','VARIANT','CONFUSABLE','RECURRING'];
+const SF_CANON_SCAN_WINDOW = 6000; // ký tự / cửa sổ phân tích — độc lập với chunkSize dịch
+const SF_CANON_CONTEXT_MAX_ENTITIES = 24; // trần số entity/1 request dịch (mục VIII — giảm token)
+const SF_CANON_CONTEXT_MAX_CHARS = 1200;  // trần ký tự khối Canon Context/1 request (tính vào budget)
+
+let sfCanonEntities = [];      // cache RAM cho file đang mở, đồng bộ IndexedDB 'canonEntities'
+let sfCanonMetaCurrent = null; // { fileId, sourceHash, canonVersion, status, scannedAt, warnings }
+let sfCanonScanning = false;
+
+async function sfCanon_init(){ /* không cần preload gì lúc khởi động — Canon gắn theo từng file, nạp lazy (mục IX) */ }
+
+function sfCanon_newId(){ return 'ce_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
+function sfCanon_normalize(s){ return String(s||'').trim().toLowerCase().replace(/\s+/g,' '); }
+
+// Nạp lại Canon Pack của file hiện tại từ IndexedDB (gọi khi mở/khôi phục 1 truyện — mục IX:
+// cache theo fileId+sourceHash, không phân tích lại nếu source không đổi).
+async function sfCanon_ensureLoadedForCurrentFile(){
+  if(!sfCurrentFileId){ sfCanonEntities = []; sfCanonMetaCurrent = null; sfCanon_renderPanel(); return; }
+  try{
+    sfCanonEntities = await sfCanonDB_getAllForFile(sfCurrentFileId);
+    sfCanonMetaCurrent = await sfCanonDB_getMeta(sfCurrentFileId);
+    // Nếu source đã đổi (sourceHash khác lần quét gần nhất) -> Canon Pack cũ coi như stale;
+    // KHÔNG tự xoá dữ liệu (mục IX: "Không xóa Canon Pack của các file khác" + an toàn dữ liệu),
+    // chỉ đổi trạng thái hiển thị để người dùng biết cần quét lại.
+    if(sfCanonMetaCurrent && sfCurrentFileMeta && sfCanonMetaCurrent.sourceHash !== sfCurrentFileMeta.sourceHash){
+      sfCanonMetaCurrent = Object.assign({}, sfCanonMetaCurrent, { status: 'stale' });
+    }
+  }catch(e){
+    sf_recordRuntimeError('canon-load', e && e.message ? e.message : String(e));
+    sfCanonEntities = []; sfCanonMetaCurrent = null;
+  }
+  sfCanon_renderPanel();
+}
+
+/* ---------- Cửa sổ quét (KHÔNG dùng Smart Chunking của dịch — mục XIV) ---------- */
+function sfCanon_splitScanWindows(text, size){
+  size = size || SF_CANON_SCAN_WINDOW;
+  const out = [];
+  let i = 0;
+  const len = text.length;
+  while(i < len){
+    let end = Math.min(len, i + size);
+    if(end < len){
+      const nl = text.lastIndexOf('\n\n', end);
+      if(nl > i + Math.floor(size*0.5)) end = nl + 2;
+    }
+    out.push({ start: i, end, text: text.slice(i, end) });
+    i = end;
+  }
+  return out;
+}
+
+/* ---------- Parse kết quả JSON từ model (an toàn — không bao giờ throw ra ngoài) ---------- */
+function sfCanon_safeParseEntities(raw){
+  if(!raw) return [];
+  let s = String(raw).trim();
+  // Model đôi khi bọc trong ```json ... ``` — bóc fence trước khi parse (không phải markdown thật).
+  s = s.replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
+  const firstBracket = s.indexOf('[');
+  const lastBracket = s.lastIndexOf(']');
+  if(firstBracket >= 0 && lastBracket > firstBracket) s = s.slice(firstBracket, lastBracket+1);
+  let arr;
+  try{ arr = JSON.parse(s); }catch(e){ console.warn('[Canon Pack] Không parse được JSON từ model, bỏ qua cửa sổ này:', e); return []; }
+  if(!Array.isArray(arr)) return [];
+  return arr.filter(x=> x && x.sourceName).map(x=>({
+    sourceName: String(x.sourceName).trim(),
+    category: SF_CANON_CATEGORIES.includes(String(x.category||'').toUpperCase()) ? String(x.category).toUpperCase() : 'TERM',
+    aliases: Array.isArray(x.aliases) ? x.aliases.map(a=>String(a).trim()).filter(Boolean) : [],
+    translation: x.translation ? String(x.translation).trim() : '',
+    confidence: (typeof x.confidence === 'number' && x.confidence>=0 && x.confidence<=1) ? x.confidence : 0.5,
+    notes: x.notes ? String(x.notes).trim() : ''
+  }));
+}
+
+const SF_CANON_EXTRACT_SYSTEM_PROMPT = `Bạn là công cụ PHÂN TÍCH văn bản (KHÔNG dịch). Đọc đoạn văn bên dưới và trích xuất TẤT CẢ tên riêng/thuật ngữ cố định xuất hiện: tên nhân vật, địa danh, tổ chức, quốc gia, thành phố, tông môn/môn phái, chức vụ, cảnh giới/cấp bậc, vũ khí, pháp bảo, kỹ năng, vật phẩm, chủng tộc, sinh vật, thuật ngữ đặc biệt, đại từ/cách xưng hô, bí danh, tên viết tắt.
+CHỈ trích xuất những gì THỰC SỰ có trong văn bản — KHÔNG tự bịa thêm thực thể không xuất hiện.
+Nếu không chắc chắn, hạ "confidence" xuống thấp (0.0-0.5) thay vì bỏ qua hoặc khẳng định bừa.
+CHỈ trả lời bằng JSON THUẦN, không giải thích, không markdown, đúng định dạng mảng:
+[{"sourceName":"...", "category":"CHARACTER|LOCATION|ORGANIZATION|COUNTRY|CITY|SECT|TITLE|REALM|WEAPON|ARTIFACT|SKILL|ITEM|RACE|CREATURE|TERM|PRONOUN|RELATION|ALIAS|ABBREVIATION", "aliases":["..."], "translation":"đề xuất dịch sang tiếng Việt nếu có", "confidence":0.0-1.0, "notes":"..."}]
+Nếu văn bản không có thực thể nào đáng chú ý, trả về [].
+
+VĂN BẢN:
+`;
+
+// Gọi model CHO CANON PACK — tách biệt hoàn toàn khỏi #promptBox (không đụng prompt dịch),
+// dùng lại key pool hiện có (pickAvailableKey/chatUrl/wrapUrl) nhưng KHÔNG đi qua Scheduler/
+// chunkState của bản dịch (mục I.2 — không đổi kiến trúc Scheduler đang hoạt động).
+async function sfCanon_callExtract(windowText){
+  let keyIdx = pickAvailableKey();
+  if(keyIdx === -1){
+    await new Promise(r=>setTimeout(r, Math.min(5000, getNearestCooldownMs())));
+    keyIdx = pickAvailableKey();
+    if(keyIdx === -1) throw new Error('Không có API key khả dụng để quét Canon Pack.');
+  }
+  ensureKeyMeta();
+  const key = state.keys[keyIdx];
+  const meta = state.keyMeta[keyIdx];
+  recordKeyCall(keyIdx);
+  meta.requests++; meta.lastUsed = Date.now();
+  renderKeys();
+  let res;
+  try{
+    res = await fetch(wrapUrl(chatUrl()), {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key },
+      body: JSON.stringify({
+        model: state.model,
+        messages: [{ role:'user', content: SF_CANON_EXTRACT_SYSTEM_PROMPT + windowText }]
+      })
+    });
+  }catch(networkErr){ throw new Error('Lỗi mạng khi quét Canon: '+networkErr.message); }
+  if(!res.ok){ const t = await res.text().catch(()=>''); throw new Error('HTTP '+res.status+' khi quét Canon: '+t.slice(0,200)); }
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
+  meta.success++; renderKeys();
+  return content;
+}
+
+// Đếm occurrences/firstSeen/lastSeen THẬT trong toàn bộ source — không tin số AI trả về (mục VI).
+function sfCanon_countOccurrences(fullText, names){
+  let occ = 0, firstSeen = null, lastSeen = null;
+  const uniqNames = Array.from(new Set(names.filter(Boolean)));
+  for(const name of uniqNames){
+    if(!name) continue;
+    let from = 0;
+    while(true){
+      const idx = fullText.indexOf(name, from);
+      if(idx === -1) break;
+      occ++;
+      if(firstSeen === null) firstSeen = idx;
+      lastSeen = idx;
+      from = idx + name.length;
+    }
+  }
+  return { occurrences: occ, firstSeen, lastSeen };
+}
+
+// QUÉT TOÀN BỘ FILE — điểm vào chính của nút "🔍 Quét toàn bộ file".
+async function sfCanon_scanFile(){
+  if(sfCanonScanning){ alert('Đang quét Canon Pack, vui lòng đợi.'); return; }
+  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(state.keys.length===0){ alert('Thêm API key.'); return; }
+  if(!state.model){ alert('Nhập model.'); return; }
+  const text = sf_getFullSourceText();
+  if(!text || !text.trim()){ alert('Dán/nạp truyện trước khi quét Canon.'); return; }
+  if(!sfCurrentFileId){
+    // Đảm bảo có 1 file record để gắn Canon Pack vào (mục IX: gắn với fileId) — dùng lại
+    // đúng luồng lazy-create sẵn có, không tạo cơ chế lưu file song song mới.
+    try{ await sf_onSourceLoaded(text, sfLastUploadName); }catch(e){ sf_recordRuntimeError('canon-ensure-file', e.message); }
+  }
+  if(!sfCurrentFileId){ alert('Không thể tạo bản ghi truyện để gắn Canon Pack (IndexedDB lỗi?). Xem Console.'); return; }
+
+  const fileId = sfCurrentFileId;
+  const sourceHash = sf_computeSourceHash(text);
+  sfCanonScanning = true;
+  sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status:'scanning', scannedAt: Date.now(), warnings: 0 };
+  sfCanon_renderPanel();
+
+  const windows = sfCanon_splitScanWindows(text);
+  const merged = new Map(); // key: category::normalizedName -> entity draft
+  let warnings = 0;
+
+  for(let w=0; w<windows.length; w++){
+    try{
+      const raw = await sfCanon_callExtract(windows[w].text);
+      const items = sfCanon_safeParseEntities(raw);
+      for(const it of items){
+        const norm = sfCanon_normalize(it.sourceName);
+        if(!norm) continue;
+        const key = it.category + '::' + norm;
+        if(merged.has(key)){
+          const ex = merged.get(key);
+          ex.aliases = Array.from(new Set([...ex.aliases, ...it.aliases]));
+          if(!ex.translation && it.translation) ex.translation = it.translation;
+          if(ex.translation && it.translation && ex.translation !== it.translation){
+            // Nhiều cách dịch khác nhau cho cùng 1 thực thể -> hạ confidence, ghi chú để người
+            // dùng tự soát lại (mục VI: không tự khẳng định khi chưa chắc).
+            ex.confidence = Math.min(ex.confidence, it.confidence, 0.4);
+            ex.notes = (ex.notes?ex.notes+' | ':'') + 'Có bản dịch khác: "'+it.translation+'"';
+          } else {
+            ex.confidence = Math.max(ex.confidence, it.confidence);
+          }
+        } else {
+          merged.set(key, { sourceName: it.sourceName, normalizedName: norm, category: it.category, aliases: it.aliases, translation: it.translation, confidence: it.confidence, notes: it.notes });
+        }
+      }
+    }catch(e){
+      warnings++;
+      sf_recordRuntimeError('canon-scan-window-'+w, e && e.message ? e.message : String(e));
+      // 1 cửa sổ lỗi KHÔNG được làm dừng toàn bộ quét (mục III) — tiếp tục cửa sổ kế tiếp.
+    }
+  }
+
+  const now = Date.now();
+  const existingById = new Map(sfCanonEntities.map(e=>[e.category+'::'+e.normalizedName, e]));
+  const finalRecords = [];
+  for(const [key, draft] of merged.entries()){
+    const prior = existingById.get(key);
+    const names = [draft.sourceName, ...draft.aliases];
+    const { occurrences, firstSeen, lastSeen } = sfCanon_countOccurrences(text, names);
+    if(prior){
+      finalRecords.push(Object.assign({}, prior, {
+        aliases: Array.from(new Set([...(prior.aliases||[]), ...draft.aliases])),
+        translation: prior.translation || draft.translation,
+        confidence: draft.confidence,
+        occurrences, firstSeen, lastSeen,
+        notes: draft.notes || prior.notes,
+        updatedAt: now
+      }));
+    } else {
+      finalRecords.push({
+        id: sfCanon_newId(), fileId, sourceHash,
+        sourceName: draft.sourceName, normalizedName: draft.normalizedName, category: draft.category,
+        aliases: draft.aliases, translation: draft.translation, confidence: draft.confidence,
+        occurrences, firstSeen, lastSeen, notes: draft.notes,
+        status: 'pending', // mục VI: KHÔNG tự confirm — chờ người dùng Confirm/Reject
+        createdAt: now, updatedAt: now
+      });
+    }
+  }
+  // Giữ lại các entity CŨ không xuất hiện trong lượt quét mới (vd người dùng đã Confirm/Edit tay
+  // trước đó) — chỉ THÊM/CẬP NHẬT, không xoá ngầm (mục I.5: không xoá dữ liệu cũ).
+  const touchedKeys = new Set(finalRecords.map(r=> r.category+'::'+r.normalizedName));
+  for(const e of sfCanonEntities){ if(!touchedKeys.has(e.category+'::'+e.normalizedName)) finalRecords.push(e); }
+
+  await sfCanonDB_putMany(finalRecords);
+  sfCanonEntities = finalRecords;
+  sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status: warnings>0 ? 'warning' : 'done', scannedAt: now, warnings };
+  await sfCanonDB_putMeta(sfCanonMetaCurrent);
+  sfCanonScanning = false;
+  sfCanon_renderPanel();
+  logLine('ok', null, null, `📚 Canon Pack: quét xong ${windows.length} cửa sổ, ${finalRecords.length} thực thể (${warnings} cửa sổ lỗi).`);
+}
+
+// "Đồng bộ Canon với bản dịch": KHÔNG gọi lại AI — chỉ tính lại occurrences/firstSeen/lastSeen
+// của các entity đã có theo đúng source hiện tại (vd sau khi Confirm/Edit tay), nhanh & không tốn token.
+async function sfCanon_resync(){
+  if(!sfCurrentFileId || !sfCanonEntities.length){ alert('Chưa có Canon Pack nào để đồng bộ. Hãy "Quét toàn bộ file" trước.'); return; }
+  const text = sf_getFullSourceText();
+  const updated = sfCanonEntities.map(e=>{
+    const { occurrences, firstSeen, lastSeen } = sfCanon_countOccurrences(text, [e.sourceName, ...(e.aliases||[])]);
+    return Object.assign({}, e, { occurrences, firstSeen, lastSeen, updatedAt: Date.now() });
+  });
+  await sfCanonDB_putMany(updated);
+  sfCanonEntities = updated;
+  sfCanon_renderPanel();
+  alert('Đã đồng bộ lại số lần xuất hiện của Canon Pack theo nội dung hiện tại.');
+}
+
+async function sfCanon_clearForFile(){
+  if(!sfCurrentFileId){ alert('Chưa mở truyện nào.'); return; }
+  if(!confirm('Xoá toàn bộ Canon Pack của truyện này? Không ảnh hưởng Canon Pack của các truyện khác.')) return;
+  await sfCanonDB_clearForFile(sfCurrentFileId);
+  sfCanonEntities = [];
+  sfCanonMetaCurrent = null;
+  sfCanon_renderPanel();
+}
+
+function sfCanon_exportJson(){
+  if(!sfCanonEntities.length){ alert('Chưa có Canon Pack để xuất.'); return; }
+  const blob = new Blob([JSON.stringify({ fileId: sfCurrentFileId, exportedAt: Date.now(), entities: sfCanonEntities }, null, 2)], { type:'application/json;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'canon-pack-' + (sfCurrentFileMeta ? sfCurrentFileMeta.name.replace(/[^\w\-]+/g,'_') : 'export') + '.json';
+  a.click();
+  setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
+}
+async function sfCanon_importJson(file){
+  if(!file) return;
+  if(!sfCurrentFileId){ alert('Hãy mở/nạp một truyện trước khi nhập Canon Pack.'); return; }
+  try{
+    const text = await file.text();
+    const parsed = sf_safeJSONParse(text, null);
+    if(!parsed || !Array.isArray(parsed.entities)){ alert('File Canon Pack không đúng định dạng.'); return; }
+    const now = Date.now();
+    const records = parsed.entities.filter(e=>e && e.sourceName).map(e=>({
+      id: e.id || sfCanon_newId(), fileId: sfCurrentFileId,
+      sourceHash: sfCurrentFileMeta ? sfCurrentFileMeta.sourceHash : (e.sourceHash||''),
+      sourceName: e.sourceName, normalizedName: e.normalizedName || sfCanon_normalize(e.sourceName),
+      category: SF_CANON_CATEGORIES.includes(e.category) ? e.category : 'TERM',
+      aliases: Array.isArray(e.aliases) ? e.aliases : [], translation: e.translation || '',
+      confidence: typeof e.confidence === 'number' ? e.confidence : 0.5,
+      occurrences: e.occurrences||0, firstSeen: e.firstSeen!=null?e.firstSeen:null, lastSeen: e.lastSeen!=null?e.lastSeen:null,
+      notes: e.notes||'', status: e.status || 'pending', createdAt: e.createdAt||now, updatedAt: now
+    }));
+    await sfCanonDB_putMany(records);
+    await sfCanon_ensureLoadedForCurrentFile();
+    alert('Đã nhập ' + records.length + ' thực thể Canon Pack.');
+  }catch(e){ sf_recordRuntimeError('canon-import', e && e.message ? e.message : String(e)); alert('Nhập Canon Pack thất bại — xem Console.'); }
+}
+
+/* ---------- Confirm / Reject / Edit / Merge (mục VI) ---------- */
+async function sfCanon_setStatus(id, status){
+  const e = sfCanonEntities.find(x=>x.id===id); if(!e) return;
+  e.status = status; e.updatedAt = Date.now();
+  await sfCanonDB_putMany([e]);
+  sfCanon_renderModalTable();
+  sfCanon_renderPanel();
+}
+async function sfCanon_editEntity(id, field, value){
+  const e = sfCanonEntities.find(x=>x.id===id); if(!e) return;
+  if(field==='aliases') e.aliases = String(value).split(',').map(s=>s.trim()).filter(Boolean);
+  else e[field] = value;
+  e.updatedAt = Date.now();
+  await sfCanonDB_putMany([e]);
+}
+async function sfCanon_mergeInto(dropId, keepId){
+  if(dropId===keepId) return;
+  const drop = sfCanonEntities.find(x=>x.id===dropId);
+  const keep = sfCanonEntities.find(x=>x.id===keepId);
+  if(!drop || !keep) return;
+  keep.aliases = Array.from(new Set([...(keep.aliases||[]), drop.sourceName, ...(drop.aliases||[])]));
+  keep.occurrences = (keep.occurrences||0) + (drop.occurrences||0);
+  keep.updatedAt = Date.now();
+  await sfCanonDB_putMany([keep]);
+  await sfCanonDB_delete(dropId);
+  sfCanonEntities = sfCanonEntities.filter(x=>x.id!==dropId);
+  sfCanon_renderModalTable();
+  sfCanon_renderPanel();
+}
+function sfCanon_promptMerge(id){
+  const list = sfCanonEntities.filter(x=>x.id!==id);
+  if(!list.length){ alert('Không có thực thể khác để gộp.'); return; }
+  const names = list.map((x,i)=> (i+1)+'. ['+x.category+'] '+x.sourceName).join('\n');
+  const pick = prompt('Gộp thực thể này VÀO thực thể nào? Nhập số thứ tự:\n'+names);
+  const n = parseInt(pick, 10);
+  if(!n || n<1 || n>list.length) return;
+  sfCanon_mergeInto(id, list[n-1].id);
+}
+
+/* ---------- Render UI ---------- */
+const SF_CANON_STATUS_LABEL = { scanning:'Đang phân tích', done:'Hoàn thành', warning:'Có cảnh báo', stale:'Nguồn đã đổi — nên quét lại', error:'Lỗi' };
+function sfCanon_renderPanel(){
+  try{
+    const statusChip = document.getElementById('canonStatusChip');
+    const countsChip = document.getElementById('canonCountsChip');
+    if(statusChip){
+      const label = sfCanonMetaCurrent ? (SF_CANON_STATUS_LABEL[sfCanonMetaCurrent.status] || sfCanonMetaCurrent.status) : 'Chưa tạo';
+      statusChip.textContent = 'Trạng thái: ' + label;
+    }
+    if(countsChip){
+      const byCategory = {};
+      sfCanonEntities.forEach(e=>{ byCategory[e.category] = (byCategory[e.category]||0)+1; });
+      const confirmedN = sfCanonEntities.filter(e=>e.status==='confirmed').length;
+      countsChip.textContent = sfCanonEntities.length + ' thực thể (' + confirmedN + ' đã xác nhận)';
+    }
+  }catch(e){ sf_recordRuntimeError('canon-render-panel', e && e.message ? e.message : String(e)); }
+}
+function sfCanon_openModal(){ document.getElementById('canonModalOverlay').style.display='flex'; sfCanon_renderModalTable(); }
+function sfCanon_closeModal(){ document.getElementById('canonModalOverlay').style.display='none'; }
+function sfCanon_renderModalTable(){
+  const wrap = document.getElementById('canonEntityTable');
+  if(!wrap) return;
+  try{
+    if(!sfCanonEntities.length){ wrap.innerHTML = '<div class="hint">Chưa có thực thể nào — bấm "🔍 Quét toàn bộ file" trước.</div>'; return; }
+    const sorted = sfCanonEntities.slice().sort((a,b)=> (b.occurrences||0)-(a.occurrences||0));
+    wrap.innerHTML = sorted.map(e=>{
+      const statusColor = e.status==='confirmed' ? 'var(--green)' : (e.status==='rejected' ? 'var(--red)' : 'var(--amber)');
+      const statusLabel = e.status==='confirmed' ? '✅ Đã xác nhận' : (e.status==='rejected' ? '🚫 Đã từ chối' : '⏳ Chờ xác nhận');
+      return `<div class="sf-prompt-card" style="border:1px solid var(--panel-border); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:var(--input-bg);">
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:6px;">
+          <span class="acc-badge config">${sf_escapeHtml(e.category)}</span>
+          <b>${sf_escapeHtml(e.sourceName)}</b>
+          <span style="color:${statusColor}; font-size:12px;">${statusLabel}</span>
+          <span class="hint" style="margin:0;">×${e.occurrences||0} · độ tin cậy ${(Math.round((e.confidence||0)*100))}%</span>
+        </div>
+        <div class="row" style="gap:8px;">
+          <div class="col"><label>Bản dịch</label><input type="text" value="${sf_escapeHtml(e.translation||'')}" onchange="sfCanon_editEntity('${e.id}','translation', this.value)"></div>
+          <div class="col"><label>Bí danh / cách viết khác (phân cách bởi dấu phẩy)</label><input type="text" value="${sf_escapeHtml((e.aliases||[]).join(', '))}" onchange="sfCanon_editEntity('${e.id}','aliases', this.value)"></div>
+        </div>
+        ${e.notes ? `<div class="hint">Ghi chú: ${sf_escapeHtml(e.notes)}</div>` : ''}
+        <div class="btn-row" style="margin-top:6px;">
+          <button type="button" class="btn small" onclick="sfCanon_setStatus('${e.id}','confirmed')">✅ Confirm</button>
+          <button type="button" class="btn small" onclick="sfCanon_setStatus('${e.id}','rejected')">🚫 Reject</button>
+          <button type="button" class="btn small" onclick="sfCanon_promptMerge('${e.id}')">🔗 Merge vào...</button>
+        </div>
+      </div>`;
+    }).join('');
+  }catch(e){ sf_recordRuntimeError('canon-render-modal', e && e.message ? e.message : String(e)); }
+}
+
+/* ---------- Canon Context cho 1 chunk cụ thể (mục VIII) ---------- */
+// Chỉ lấy các entity ĐÃ XÁC NHẬN (status==='confirmed') + toàn bộ cặp nhập tay (#canonInput,
+// luôn được coi là đáng tin vì người dùng tự gõ) mà TÊN xuất hiện trong CHÍNH chunk đang dịch.
+// Giới hạn số lượng/độ dài (SF_CANON_CONTEXT_MAX_ENTITIES/CHARS) để không phá vỡ token budget
+// (mục XIV — Canon Context phải được TÍNH VÀO request budget, không được nhét vô hạn).
+function sfCanon_parseManualPairs(){
+  const raw = document.getElementById('canonInput')?.value || '';
+  const out = [];
+  raw.split(/\r?\n/).forEach(line=>{
+    const m = line.match(/^\s*(.+?)\s*[=:]\s*(.+?)\s*$/);
+    if(m && m[1] && m[2]) out.push({ source:m[1], translation:m[2] });
+  });
+  return out;
+}
+function buildCanonContext(idx){
+  if(!state.canonOn) return '';
+  const chunkText = currentChunks[idx]; if(!chunkText) return '';
+  const lines = [];
+  let usedChars = 0;
+  // 1) Cặp nhập tay — luôn ưu tiên trước, không cần lọc theo occurrence trong chunk vì thường ít.
+  for(const pair of sfCanon_parseManualPairs()){
+    if(!chunkText.includes(pair.source)) continue;
+    const line = `${pair.source} → ${pair.translation}`;
+    if(usedChars + line.length > SF_CANON_CONTEXT_MAX_CHARS) break;
+    lines.push(line); usedChars += line.length;
+  }
+  // 2) Entity đã xác nhận từ Canon Pack, ưu tiên occurrences cao (khả năng liên quan lớn hơn).
+  const confirmed = sfCanonEntities.filter(e=> e.status==='confirmed').sort((a,b)=>(b.occurrences||0)-(a.occurrences||0));
+  let count = 0;
+  for(const e of confirmed){
+    if(count >= SF_CANON_CONTEXT_MAX_ENTITIES) break;
+    const names = [e.sourceName, ...(e.aliases||[])];
+    if(!names.some(n=> n && chunkText.includes(n))) continue;
+    const line = `${e.sourceName}${e.aliases&&e.aliases.length?' ('+e.aliases.join('/')+')':''} [${e.category}] → ${e.translation||'?'}`;
+    if(usedChars + line.length > SF_CANON_CONTEXT_MAX_CHARS) break;
+    lines.push(line); usedChars += line.length; count++;
+  }
+  if(!lines.length) return '';
+  return `[CANON — GIỮ NHẤT QUÁN TÊN RIÊNG/THUẬT NGỮ SAU]:\n${lines.join('\n')}\n[HẾT CANON]\n`;
+}
+/* ===== HẾT V-X. CANON PACK ===== */
 
 // ---- 4) Preset "Kích thước chunk" — chỉ đổi giá trị ô #chunkSize đã có sẵn
 // (input này vẫn được đọc bình thường bởi chunkSizeVal()/splitChunksWithOffsets()
@@ -2693,12 +3633,19 @@ function sf_computeEffectiveInputBudget(cfg){
   const otherOverheadTokens = cfg.otherOverheadTokens || 0;
   const safetyMarginRatio = (cfg.safetyMarginRatio > 0 && cfg.safetyMarginRatio <= 1) ? cfg.safetyMarginRatio : 0.85;
 
+  // ĐỢT 6 — mục XIV: Canon Context PHẢI được tính vào request budget, không được bỏ qua.
+  // buildCanonContext() tự kẹp trần ở SF_CANON_CONTEXT_MAX_CHARS ký tự — dùng ĐÚNG trần đó
+  // (ước lượng qua estimateTokensLocal trên 1 chuỗi giả có độ dài bằng trần) làm mức DỰ TRỮ
+  // TỐI ĐA, để công thức luôn kẹp trần input đủ chặt bất kể chunk cụ thể dùng bao nhiêu entity.
+  const canonContextReserveTokens = (typeof state !== 'undefined' && state.canonOn && typeof SF_CANON_CONTEXT_MAX_CHARS === 'number')
+    ? estimateTokensLocal('x'.repeat(SF_CANON_CONTEXT_MAX_CHARS)) : 0;
+
   const rawInputBudget = contextLimitTokens - promptTokens - contextPrefixReserveTokens
-                          - reservedOutputTokens - otherOverheadTokens;
+                          - canonContextReserveTokens - reservedOutputTokens - otherOverheadTokens;
   const effectiveInputBudget = Math.floor(Math.max(0, rawInputBudget) * safetyMarginRatio);
 
   return {
-    contextLimitTokens, promptTokens, contextPrefixReserveTokens, reservedOutputTokens,
+    contextLimitTokens, promptTokens, contextPrefixReserveTokens, canonContextReserveTokens, reservedOutputTokens,
     otherOverheadTokens, safetyMarginRatio, rawInputBudget, effectiveInputBudget
   };
 }
@@ -3027,9 +3974,15 @@ function setViewerMode(mode){
 function sf_headerWarnMarkup(c, i){
   if(!c || !c.headerWarning || !c.headerWarning.length) return '';
   const items = c.headerWarning.map(h=> `<li>${sf_escapeHtml(h)}</li>`).join('');
+  // ĐỢT 6 — mục IV: nếu Header Repair tự động (sf_runHeaderRepairPass) đã thử đủ
+  // HEADER_REPAIR_MAX_RETRY lần mà vẫn sai, hiển thị rõ HEADER_REPAIR_FAILED cho người dùng biết,
+  // thay vì im lặng. Vẫn cho phép bấm "Dịch lại chunk" thủ công thêm lần nữa nếu muốn.
+  const failedBadge = c.headerRepairStatus==='HEADER_REPAIR_FAILED'
+    ? `<div class="cdwarn-title" style="color:var(--red);">❌ HEADER_REPAIR_FAILED — đã tự động thử lại ${c.headerRepairAttempts||0}/${HEADER_REPAIR_MAX_RETRY} lần, vẫn sai header. Cần kiểm tra thủ công.</div>` : '';
   return `<div class="cdwarn">
     <div class="cdwarn-title">⚠️ Thiếu header:</div>
     <ul class="cdwarn-list">${items}</ul>
+    ${failedBadge}
     <button class="btn small" onclick="event.stopPropagation(); sfRetryChunkForHeader(${i})">🔄 Dịch lại chunk</button>
   </div>`;
 }
@@ -3117,6 +4070,7 @@ function buildChunkViewer(chunks){
     const off = sfChunkOffsets[i];
     return {
       status:'waiting', orig:c, trans:'', key:null, retryCount:0, headerWarning: null,
+      headerRepairAttempts: 0, headerRepairStatus: null, // ĐỢT 6 — mục IV: HEADER VALIDATION + REPAIR
       stableId: off ? off.stableId : null,
       sourceStart: off ? off.start : i,
       sourceEnd: off ? off.end : i
@@ -3177,7 +4131,7 @@ function markChunkRunning(idx, keyIndex){ const c = chunkState[idx]; if(c){ setC
 // Mục 1A: sau khi chunk DỊCH XONG (kể cả dịch lần đầu lẫn dịch lại thủ công), kiểm tra
 // header CHƯƠNG giữa source thật của chính chunk (c.orig) và bản dịch mới. Chỉ để
 // CẢNH BÁO — không tự sửa translation, không tự chèn header, không tự retry.
-function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; c.headerWarning = sf_findMissingHeaders(c.orig, res); refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
+function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; c.headerWarning = sf_findMissingHeaders(c.orig, res); if(!c.headerWarning || !c.headerWarning.length) c.headerRepairStatus = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
 function markChunkError(idx, msg){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'error'); c.trans='Lỗi: '+msg; c.headerWarning = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
 function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'waiting'); c.key=null; c.headerWarning = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } }
 
@@ -3277,7 +4231,12 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
     try {
         markChunkRunning(idx, keyIdx);
         const ctxPrefix = buildContextPrefix(idx);
-        const payloadText = ctxPrefix ? (ctxPrefix + '\n' + currentChunks[idx]) : currentChunks[idx];
+        // ĐỢT 6 — mục VIII: chèn Canon Context (nếu bật) TRƯỚC context prefix + chunk nguồn.
+        // buildCanonContext() tự giới hạn số entity/độ dài, chỉ lấy entity liên quan đến CHÍNH
+        // chunk này — không nhét toàn bộ Canon Pack vào mọi request.
+        const canonBlock = (typeof buildCanonContext === 'function') ? (buildCanonContext(idx) || '') : '';
+        const payloadCore = ctxPrefix ? (ctxPrefix + '\n' + currentChunks[idx]) : currentChunks[idx];
+        const payloadText = canonBlock ? (canonBlock + '\n' + payloadCore) : payloadCore;
 
         let res = await callModel(payloadText, keyIdx);
 
@@ -3996,6 +4955,8 @@ function sfShowSecurityRules(){
 /* KEEP ALIVE / INITIALIZE */
 updateStats();
 hydrateLibrary().catch(e=>console.error('[SF Library] Lỗi khởi tạo thư viện:', e));
+sfPromptLib_init().catch(e=>sf_recordRuntimeError('prompt-library-init', e && e.message ? e.message : String(e)));
+sfCanon_init().catch(e=>sf_recordRuntimeError('canon-pack-init', e && e.message ? e.message : String(e)));
 sfCloud.init();
 </script>
 </body>
