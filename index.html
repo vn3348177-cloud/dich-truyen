@@ -882,7 +882,7 @@
         <div class="statchip" id="chChunks">0 chunk</div>
         <div class="statchip" id="chEst">~0 giây</div>
       </div>
-      <textarea id="sourceText" rows="10" placeholder="Nội dung truyện sẽ hiển thị ở đây...&#10;&#10;Bạn cũng có thể paste trực tiếp nội dung vào đây." oninput="updateStats()"></textarea>
+      <textarea id="sourceText" rows="10" placeholder="Nội dung truyện sẽ hiển thị ở đây...&#10;&#10;Bạn cũng có thể paste trực tiếp nội dung vào đây."></textarea>
 
       <div class="footerbar">
         <div class="info" id="startInfo">Chưa có nội dung. Tải file hoặc dán nội dung truyện để bắt đầu.</div>
@@ -1161,6 +1161,9 @@ let state = {
 };
 let running = false;
 let stopFlag = false;
+// ĐỢT 7C — mục III: tập các AbortController của các request ĐANG BAY, để stopTranslate() có
+// thể huỷ ngay lập tức thay vì phải chờ chúng tự hoàn tất (tốn mạng/pin, nhất là trên mobile).
+let activeAbortControllers = new Set();
 let historyArr = [];
 let chunkState = [];
 let translateStartTime = 0;
@@ -1192,6 +1195,64 @@ function sf_setSourceText(fullText, opts){
     window.__sourceIsTruncatedPreview = false;
     if(ta) ta.value = fullText;
   }
+}
+
+/* =====================================================================
+   ĐỢT 7B — mục I: SOURCE MEMORY
+   ---------------------------------------------------------------------
+   Trước đây RAM có thể giữ ĐỒNG THỜI nhiều bản copy gần bằng cỡ toàn bộ nguồn:
+   window.__loadedSourceText (bản gốc) + tổng các chunkState[i].orig (mỗi chunk
+   giữ riêng 1 chuỗi text của mình) + currentChunks (mảng text y hệt). Với file
+   50MB, con số này có thể nhân lên gấp 2-3 lần chỉ để giữ cùng 1 nội dung.
+
+   Hai helper dưới đây thay việc "lưu sẵn" text bằng việc TÍNH LẠI bằng slice()
+   từ ĐÚNG 1 nguồn sự thật (sf_getFullSourceText()) NGAY TẠI thời điểm bị đọc:
+     - sf_makeChunkStateEntry(): gắn "orig" như 1 GETTER dựa trên sourceStart/
+       sourceEnd đã có sẵn trên chính chunk đó — mọi nơi đang đọc c.orig (viewer,
+       markChunkDone header-check, buildContextPrefix, sf_autosaveChunk...) tiếp
+       tục nhận đúng giá trị y hệt trước đây, KHÔNG cần sửa từng chỗ.
+     - sf_makeLazyChunkTextView(): bọc 1 Array thật (đúng length) bằng Proxy —
+       currentChunks[idx]/.length/.map()/for...of... vẫn hoạt động y hệt (được
+       Proxy uỷ quyền xuống mảng thật), chỉ khác là KHÔNG có chuỗi text nào được
+       lưu sẵn bên trong — Scheduler/Smart Chunking/API payload không phải đổi
+       1 dòng nào.
+   Không đổi sourceStart/sourceEnd, không ảnh hưởng resume/viewer/retry/toàn vẹn
+   nguồn — các nơi cần "giữ orig" (VD: chunk record ghi xuống IndexedDB trong
+   sf_autosaveChunk/sf_prepareFileForTranslation) vẫn giữ đúng TEXT THẬT, chỉ
+   khác là không có thêm 1 bản sao "thừa" nằm mãi trong RAM khi không dùng tới.
+   ===================================================================== */
+function sf_makeChunkStateEntry(base){
+  Object.defineProperty(base, 'orig', {
+    enumerable: true,
+    configurable: true,
+    get(){
+      if(this.sourceStart == null || this.sourceEnd == null) return '';
+      return sf_getFullSourceText().slice(this.sourceStart, this.sourceEnd);
+    }
+  });
+  return base;
+}
+function sf_makeLazyChunkTextView(offsets){
+  const n = (offsets && typeof offsets.length === 'number') ? offsets.length : 0;
+  const backing = new Array(n); // chỉ giữ ĐÚNG length — không có phần tử text nào bên trong
+  return new Proxy(backing, {
+    get(target, prop, receiver){
+      if(typeof prop === 'string' && /^\d+$/.test(prop)){
+        const i = Number(prop);
+        const off = offsets[i];
+        if(!off) return undefined;
+        return sf_getFullSourceText().slice(off.start, off.end);
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    has(target, prop){
+      if(typeof prop === 'string' && /^\d+$/.test(prop)){
+        const i = Number(prop);
+        return i>=0 && i<n;
+      }
+      return Reflect.has(target, prop);
+    }
+  });
 }
 
 /* =====================================================================
@@ -1320,6 +1381,22 @@ async function listFileRecords(){
     const res = await sf_reqToPromise(tx.objectStore('files').getAll());
     return res || [];
   }catch(e){ console.error('[SF Library] listFileRecords lỗi:', e); return []; }
+}
+// ĐỢT 7B — mục I/II/VII: libraryFiles (cache RAM dùng cho UI thư viện) KHÔNG BAO GIỜ cần giữ
+// sourceText đầy đủ của từng truyện — renderLibraryUI/checkForResumableFile/tra sourceHash chỉ
+// đọc field nhẹ (tên, trạng thái, đếm chunk, sourceHash...). listFileRecords() gốc trả NGUYÊN
+// record IndexedDB (bao gồm CẢ sourceText của MỌI truyện) — với thư viện 200-1000 truyện, giữ
+// nguyên hết trong RAM chỉ để vẽ danh sách có thể tốn hàng trăm MB không cần thiết. Bóc field
+// nặng NGAY sau khi đọc để chuỗi gốc được giải phóng sớm, không bị libraryFiles giữ sống lâu dài.
+function sf_stripHeavyFileFields(rec){
+  if(!rec) return rec;
+  const light = Object.assign({}, rec);
+  delete light.sourceText;
+  return light;
+}
+async function listFileRecordsLight(){
+  const recs = await listFileRecords();
+  return recs.map(sf_stripHeavyFileFields);
 }
 async function deleteFileRecord(fileId){
   try{
@@ -1526,7 +1603,8 @@ async function sfQ_put(item){
     const tx = db.transaction('cloudQueue', 'readwrite');
     tx.objectStore('cloudQueue').put(item);
     await sf_txDone(tx);
-  }catch(e){ console.error('[SF Cloud] sfQ_put lỗi:', e); }
+    return true;
+  }catch(e){ console.error('[SF Cloud] sfQ_put lỗi:', e); return false; }
 }
 async function sfQ_delete(id){
   try{
@@ -1534,7 +1612,8 @@ async function sfQ_delete(id){
     const tx = db.transaction('cloudQueue', 'readwrite');
     tx.objectStore('cloudQueue').delete(id);
     await sf_txDone(tx);
-  }catch(e){ console.error('[SF Cloud] sfQ_delete lỗi:', e); }
+    return true; // ĐỢT 7B hotfix: xoá thành công — báo trạng thái rõ ràng thay vì nuốt lỗi
+  }catch(e){ console.error('[SF Cloud] sfQ_delete lỗi:', e); return false; } // ĐỢT 7B hotfix: xoá thất bại — để gọi nơi biết mà KHÔNG giảm pendingCount / KHÔNG coi item đã xong
 }
 async function sfQ_all(){
   try{
@@ -1543,6 +1622,17 @@ async function sfQ_all(){
     const res = await sf_reqToPromise(tx.objectStore('cloudQueue').getAll());
     return (res||[]).sort((a,b)=> (a.createdAt||0)-(b.createdAt||0));
   }catch(e){ console.error('[SF Cloud] sfQ_all lỗi:', e); return []; }
+}
+// ĐỢT 7B — mục III: đếm số item cloudQueue bằng IndexedDB count() — trình duyệt không cần
+// deserialize toàn bộ nội dung từng record như getAll(), rẻ hơn nhiều — CHỈ dùng ở các thời
+// điểm thực sự cần nạp lại số đếm THẬT (khởi động/khôi phục sau reload, làm mới thủ công),
+// không dùng thay cho sfQ_all() khi cần xử lý (flushQueue vẫn cần đọc đầy đủ để có payload).
+async function sfQ_count(){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('cloudQueue', 'readonly');
+    return await sf_reqToPromise(tx.objectStore('cloudQueue').count());
+  }catch(e){ console.error('[SF Cloud] sfQ_count lỗi:', e); return 0; }
 }
 
 /* ---------- 4. Runtime pointers cho file đang mở/đang dịch ---------- */
@@ -1606,10 +1696,21 @@ function sf_scheduleFileSave(){
     if(!sfCurrentFileMeta) return;
     sfCurrentFileMeta.updatedAt = Date.now();
     await saveFileRecord(sfCurrentFileMeta);
+    // ĐỢT 7B — mục I: chỉ cache bản NHẸ (không sourceText) vào libraryFiles — tránh mỗi lần
+    // autosave lại giữ thêm 1 bản copy toàn văn bản của CHÍNH truyện đang dịch trong RAM.
+    const light = sf_stripHeavyFileFields(sfCurrentFileMeta);
     const i = libraryFiles.findIndex(f=> f.id === sfCurrentFileMeta.id);
-    if(i >= 0) libraryFiles[i] = Object.assign({}, sfCurrentFileMeta);
-    else libraryFiles.unshift(Object.assign({}, sfCurrentFileMeta));
-    renderLibraryUI();
+    if(i >= 0){
+      libraryFiles[i] = light;
+      // ĐỢT 7B — mục II: CHỈ cập nhật đúng 1 dòng của file này (autosave debounce khi đang dịch
+      // gọi liên tục) — không renderLibraryUI() rebuild lại toàn bộ danh sách mỗi lần.
+      sf_updateLibraryRow(light);
+    } else {
+      // Trường hợp hiếm (file này chưa từng qua hydrateLibrary()) — thêm mới làm đổi thứ tự/trang,
+      // nên vẫn render lại toàn bộ 1 lần cho đúng vị trí.
+      libraryFiles.unshift(light);
+      renderLibraryUI();
+    }
   }, 600);
 }
 function sf_computeFileStatus(){
@@ -1795,17 +1896,23 @@ async function restoreFile(fileId){
   refreshStatus();
   if(typeof updatePromptLen === 'function') updatePromptLen();
 
-  currentChunks = chunkRecs.map(c=> c.sourceText);
-  currentResults = chunkRecs.map(c=> c.status === 'done' ? (c.translatedText || '') : null);
+  // ĐỢT 7B — mục I: sfChunkOffsets (start/end/stableId — KHÔNG có text) được dựng TRƯỚC, rồi
+  // currentChunks chỉ là 1 "view" lười slice() từ sf_getFullSourceText() (đã nạp qua
+  // sf_setSourceText() ở trên) khi thực sự bị đọc — không còn giữ mảng text riêng ~bằng cỡ
+  // toàn bộ nguồn (chunkRecs[i].sourceText đọc từ IndexedDB) sống mãi trong RAM.
   sfChunkOffsets = chunkRecs.map(c=> ({ start:c.sourceStart, end:c.sourceEnd, stableId:c.stableId }));
-  chunkState = chunkRecs.map(c=> ({
+  currentChunks = sf_makeLazyChunkTextView(sfChunkOffsets);
+  currentResults = chunkRecs.map(c=> c.status === 'done' ? (c.translatedText || '') : null);
+  chunkState = chunkRecs.map(c=> sf_makeChunkStateEntry({
     status: c.status === 'done' ? 'done' : (c.status === 'error' ? 'error' : 'waiting'),
-    orig: c.sourceText,
     trans: c.status === 'done' ? (c.translatedText || '') : '',
     key: null,
     retryCount: c.retryCount || 0,
     // mục 1A: tính lại cảnh báo thiếu header khi mở lại truyện (reload/Continue) —
     // không lưu field mới vào IndexedDB, chỉ suy ra lại từ sourceText/translatedText sẵn có.
+    // Vẫn dùng ĐÚNG c.sourceText đã lưu trong DB tại thời điểm dịch (nguồn integrity gốc) cho
+    // phép so sánh này — chunkState chỉ không LƯU LẠI chuỗi đó vào "orig" nữa (mục I), "orig"
+    // giờ là getter tính từ sourceStart/sourceEnd khi có nơi khác cần đọc (viewer/context/...).
     headerWarning: c.status === 'done' ? sf_findMissingHeaders(c.sourceText, c.translatedText || '') : null,
     headerRepairAttempts: 0, headerRepairStatus: null,
     stableId: c.stableId, sourceStart: c.sourceStart, sourceEnd: c.sourceEnd
@@ -1819,7 +1926,11 @@ async function restoreFile(fileId){
 
   document.getElementById('progLog').innerHTML = ''; logEntries = [];
   renderChunkPage();
-  updateStats();
+  // ĐỢT 7A — mục III: KHÔNG gọi updateStats() (sẽ chạy lại splitChunksWithOffsets() trên toàn
+  // bộ source chỉ để hiển thị dashboard). currentChunks/chunkState/sfChunkOffsets ở trên đã được
+  // nạp thẳng từ chunkRecs đã lưu — dùng lại đúng số liệu đó (+ số liệu đã persist trên fileRec
+  // nếu có) để hiển thị, không re-chunk, không đổi chunk ID/offset, không resend DONE.
+  sf_updateStatsFromRestoredFile(fileRec);
   updateProgressUI();
   if(chunkState.length > 0) document.getElementById('progwrap').classList.add('show');
 
@@ -1970,17 +2081,24 @@ function sf_statusBadge(status){
   if(status === 'error') return { text:'🔴 Có lỗi' };
   return { text:'🟡 Đang dịch' };
 }
-function renderLibraryUI(){
-  const body = document.getElementById('histBody');
-  const label = document.getElementById('histCountLabel');
-  if(label) label.textContent = libraryFiles.length + ' truyện trong thư viện';
-  if(!body) return;
-  if(!libraryFiles.length){ body.innerHTML = 'Chưa có truyện nào trong thư viện.'; return; }
-  body.innerHTML = libraryFiles.map(f=>{
-    const st = sf_statusBadge(f.status);
-    const upd = f.updatedAt ? new Date(f.updatedAt).toLocaleString('vi-VN') : '—';
-    const fid = sf_escapeHtml(f.id);
-    return `<div class="histrow" style="flex-direction:column; align-items:stretch; gap:6px;">
+// ĐỢT 7B — mục II: LIBRARY RENDER
+// ---------------------------------------------------------------------
+// Trước đây renderLibraryUI() luôn build lại innerHTML cho TOÀN BỘ thư viện
+// (libraryFiles.map(...).join('')) — với 500-1000 truyện, mỗi lần lưu 1 file
+// (autosave debounce khi đang dịch) lại dựng lại TOÀN BỘ DOM danh sách, dù chỉ
+// 1 dòng thay đổi.
+// Fix: (1) PHÂN TRANG — renderLibraryUI() chỉ vẽ 1 trang (LIBRARY_PAGE_SIZE mục)
+// thay vì toàn bộ danh sách; (2) INCREMENTAL — khi chỉ 1 file đổi (autosave),
+// sf_updateLibraryRow() cập nhật đúng 1 <div id="libfile-...">, không rebuild gì
+// thêm. Không đổi cách chọn file/xóa file/resume/cloud library — các thao tác đó
+// vẫn đọc thẳng libraryFiles/IndexedDB như cũ, chỉ phần HIỂN THỊ bị giới hạn theo trang.
+const LIBRARY_PAGE_SIZE = 50;
+let libraryCurrentPage = 0;
+function sf_libraryRowMarkup(f){
+  const st = sf_statusBadge(f.status);
+  const upd = f.updatedAt ? new Date(f.updatedAt).toLocaleString('vi-VN') : '—';
+  const fid = sf_escapeHtml(f.id);
+  return `<div class="histrow" id="libfile-${fid}" style="flex-direction:column; align-items:stretch; gap:6px;">
       <div style="display:flex; justify-content:space-between; gap:8px; flex-wrap:wrap;">
         <b style="flex:1; min-width:120px;">${sf_escapeHtml(f.name || '(Không tên)')}</b>
         <span>${st.text}</span>
@@ -1995,11 +2113,62 @@ function renderLibraryUI(){
         <button class="btn small danger" onclick="deleteLibraryFile('${fid}')">🗑 Xóa</button>
       </div>
     </div>`;
-  }).join('');
+}
+function sf_libraryMaxPage(){
+  return Math.max(0, Math.ceil(libraryFiles.length / LIBRARY_PAGE_SIZE) - 1);
+}
+function sf_libraryPagerMarkup(){
+  const total = libraryFiles.length;
+  const maxPage = sf_libraryMaxPage();
+  if(maxPage <= 0) return '';
+  let sel = `<select onchange="sfLibraryGotoPage(parseInt(this.value))" style="padding:2px 6px; font-size:11px; margin:0 6px; background:var(--input-bg); color:var(--text); border:1px solid var(--panel-border); border-radius:4px;">`;
+  for(let i=0;i<=maxPage;i++){
+    sel += `<option value="${i}" ${i===libraryCurrentPage?'selected':''}>Trang ${i+1} (${i*LIBRARY_PAGE_SIZE+1}-${Math.min(total,(i+1)*LIBRARY_PAGE_SIZE)})</option>`;
+  }
+  sel += `</select>`;
+  return `<div class="cd-pagenav" style="display:flex; align-items:center; margin:0 0 8px;">
+      <button class="btn small" onclick="sfLibraryChangePage(-1)" ${libraryCurrentPage===0?'disabled':''}>← Trước</button>
+      ${sel}
+      <button class="btn small" onclick="sfLibraryChangePage(1)" ${libraryCurrentPage===maxPage?'disabled':''}>Tiếp →</button>
+    </div>`;
+}
+function sfLibraryChangePage(delta){
+  libraryCurrentPage = Math.max(0, Math.min(sf_libraryMaxPage(), libraryCurrentPage + delta));
+  renderLibraryUI();
+}
+function sfLibraryGotoPage(p){
+  libraryCurrentPage = Math.max(0, Math.min(sf_libraryMaxPage(), p|0));
+  renderLibraryUI();
+}
+function renderLibraryUI(){
+  const body = document.getElementById('histBody');
+  const label = document.getElementById('histCountLabel');
+  if(label) label.textContent = libraryFiles.length + ' truyện trong thư viện';
+  if(!body) return;
+  if(!libraryFiles.length){ body.innerHTML = 'Chưa có truyện nào trong thư viện.'; return; }
+  if(libraryCurrentPage > sf_libraryMaxPage()) libraryCurrentPage = sf_libraryMaxPage();
+  const start = libraryCurrentPage * LIBRARY_PAGE_SIZE;
+  const end = Math.min(libraryFiles.length, start + LIBRARY_PAGE_SIZE);
+  const rows = libraryFiles.slice(start, end).map(sf_libraryRowMarkup).join('');
+  body.innerHTML = sf_libraryPagerMarkup() + rows;
+}
+// ĐỢT 7B — mục II: cập nhật ĐÚNG 1 dòng khi 1 file thay đổi (autosave debounce lúc đang dịch) —
+// KHÔNG rebuild toàn bộ danh sách. Nếu dòng đó hiện không nằm trên trang đang xem (đã phân
+// trang), bỏ qua cập nhật DOM (dữ liệu nền trong libraryFiles đã đúng, sẽ hiện đúng khi người
+// dùng lật sang trang đó) — vẫn cập nhật label tổng số cho chính xác.
+function sf_updateLibraryRow(f){
+  const label = document.getElementById('histCountLabel');
+  if(label) label.textContent = libraryFiles.length + ' truyện trong thư viện';
+  if(!f) return;
+  const el = document.getElementById('libfile-' + f.id);
+  if(!el) return;
+  el.outerHTML = sf_libraryRowMarkup(f);
 }
 async function hydrateLibrary(){
   try{
-    const files = await listFileRecords();
+    // ĐỢT 7B — mục I: dùng bản NHẸ (không sourceText) cho cache thư viện — xem
+    // sf_stripHeavyFileFields()/listFileRecordsLight() ở phần CRUD phía trên.
+    const files = await listFileRecordsLight();
     libraryFiles = files.sort((a,b)=> (b.updatedAt||0) - (a.updatedAt||0));
     historyArr = libraryFiles; // mục 13: historyArr chỉ là cache UI, dữ liệu gốc luôn từ IndexedDB
     renderLibraryUI();
@@ -2435,7 +2604,7 @@ function addKey(){ const inp = document.getElementById('newKey'); const v = inp.
 function removeKey(i){ state.keys.splice(i,1); state.keyMeta.splice(i,1); renderKeys(); }
 function toggleBulkKeyBox(show){ const box = document.getElementById('bulkKeyBox'); if(!box) return; const willShow = (show===undefined) ? (box.style.display==='none') : !!show; box.style.display = willShow ? 'block' : 'none'; }
 function confirmBulkImportKeys(){ const ta = document.getElementById('bulkKeyInput'); if(!ta) return; const lines = ta.value.split(/[\r\n,;]+/).map(s=>s.trim()).filter(Boolean); if(lines.length===0) return; state.keys.push(...lines); lines.forEach(()=> state.keyMeta.push(newKeyMeta())); renderKeys(); toggleBulkKeyBox(false); }
-function exportKeys(){ if(state.keys.length===0) return; const blob = new Blob([state.keys.join('\n')], {type:'text/plain;charset=utf-8'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'keys.txt'; a.click(); }
+function exportKeys(){ if(state.keys.length===0) return; const blob = new Blob([state.keys.join('\n')], {type:'text/plain;charset=utf-8'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'keys.txt'; a.click(); setTimeout(()=> URL.revokeObjectURL(a.href), 1000); /* ĐỢT 7B — mục V: revoke object URL sau khi download đã kích hoạt, tránh rò rỉ bộ nhớ nhỏ lặp lại */ }
 
 /* SMART KEY POOL — ADAPTIVE RPM AUTO-BALANCE */
 let sfKeyCursor = 0;
@@ -2621,13 +2790,36 @@ function toggleModelGridVisible(){
 }
 
 /* UPLOAD */
+// ĐỢT 7C — mục I: kiểm tra file.size TRƯỚC readAsText(). Chỉ CẢNH BÁO theo ngưỡng tăng dần,
+// KHÔNG tự ý cấm/cắt file lớn — >100MB mới cần xác nhận (confirm) trước khi đọc toàn bộ.
+const SF_FILE_WARN_20MB = 20*1024*1024;
+const SF_FILE_WARN_50MB = 50*1024*1024;
+const SF_FILE_WARN_100MB = 100*1024*1024;
 function readFile(f){
+  if(!f) return;
+  const size = f.size || 0;
+  const mb = (size/1024/1024).toFixed(1);
+  if(size > SF_FILE_WARN_100MB){
+    const ok = confirm(`⚠️ File RẤT LỚN (~${mb}MB). Đọc toàn bộ vào bộ nhớ có thể làm chậm/treo tạm trình duyệt, đặc biệt trên điện thoại. Vẫn đọc toàn bộ file (không cắt bớt dữ liệu)?`);
+    if(!ok){ logLine('warn', null, null, `Đã huỷ đọc file rất lớn (~${mb}MB) theo lựa chọn của người dùng.`); return; }
+    logLine('warn', null, null, `Xác nhận đọc file rất lớn (~${mb}MB)...`);
+  } else if(size > SF_FILE_WARN_50MB){
+    logLine('warn', null, null, `⚠️ File lớn (~${mb}MB) — có thể ảnh hưởng hiệu năng rõ rệt, nhất là trên điện thoại.`);
+  } else if(size > SF_FILE_WARN_20MB){
+    logLine('warn', null, null, `Lưu ý: file khá lớn (~${mb}MB), xử lý có thể chậm hơn bình thường.`);
+  }
   const r=new FileReader();
   r.onload=()=>{
     sf_setSourceText(r.result);
     updateStats();
     sfLastUploadName = f.name || sfLastUploadName;
     sf_onSourceLoaded(r.result, f.name).catch(e=>console.error('[SF Library] readFile autosave lỗi:', e));
+  };
+  // ĐỢT 7C — mục V: đọc file thất bại (hỏng/bị rút thiết bị/permission thu hồi giữa chừng...)
+  // trước đây không có xử lý gì — trang sẽ "im lặng" không phản hồi. Giờ báo rõ qua toast lỗi
+  // dùng chung (sf_recordRuntimeError), không nuốt lỗi, không làm sập các phần khác của trang.
+  r.onerror=()=>{
+    sf_recordRuntimeError('file-read', (r.error && r.error.message) || 'Đọc file thất bại không rõ lý do', { name: f.name, size: f.size });
   };
   r.readAsText(f,'UTF-8');
 }
@@ -2724,6 +2916,14 @@ const SF_CANON_CONTEXT_MAX_CHARS = 1200;  // trần ký tự khối Canon Contex
 let sfCanonEntities = [];      // cache RAM cho file đang mở, đồng bộ IndexedDB 'canonEntities'
 let sfCanonMetaCurrent = null; // { fileId, sourceHash, canonVersion, status, scannedAt, warnings }
 let sfCanonScanning = false;
+// ĐỢT 7A — P1 FIX 4 (mục VIII): cache "confirmed, đã sort theo occurrences" dùng bởi
+// buildCanonContext() (xem hàm sfCanon_getConfirmedSorted() bên dưới) + cờ dirty. MỌI nơi thay
+// đổi sfCanonEntities (status/aliases/occurrences/thêm/xoá entity) PHẢI gọi sfCanon_markDirty()
+// để lần buildCanonContext() kế tiếp rebuild lại đúng — nếu Canon không đổi, cache được tái sử
+// dụng nguyên vẹn qua hàng nghìn chunk mà không filter+sort lại (mục VIII/Test F).
+let sfCanonConfirmedSortedCache = null;
+let sfCanonDirty = true;
+function sfCanon_markDirty(){ sfCanonDirty = true; }
 
 async function sfCanon_init(){ /* không cần preload gì lúc khởi động — Canon gắn theo từng file, nạp lazy (mục IX) */ }
 
@@ -2733,7 +2933,7 @@ function sfCanon_normalize(s){ return String(s||'').trim().toLowerCase().replace
 // Nạp lại Canon Pack của file hiện tại từ IndexedDB (gọi khi mở/khôi phục 1 truyện — mục IX:
 // cache theo fileId+sourceHash, không phân tích lại nếu source không đổi).
 async function sfCanon_ensureLoadedForCurrentFile(){
-  if(!sfCurrentFileId){ sfCanonEntities = []; sfCanonMetaCurrent = null; sfCanon_renderPanel(); return; }
+  if(!sfCurrentFileId){ sfCanonEntities = []; sfCanonMetaCurrent = null; sfCanon_markDirty(); sfCanon_renderPanel(); return; }
   try{
     sfCanonEntities = await sfCanonDB_getAllForFile(sfCurrentFileId);
     sfCanonMetaCurrent = await sfCanonDB_getMeta(sfCurrentFileId);
@@ -2747,6 +2947,7 @@ async function sfCanon_ensureLoadedForCurrentFile(){
     sf_recordRuntimeError('canon-load', e && e.message ? e.message : String(e));
     sfCanonEntities = []; sfCanonMetaCurrent = null;
   }
+  sfCanon_markDirty(); // entity list vừa được nạp lại từ đầu -> cache confirmed/sort cũ không còn đúng
   sfCanon_renderPanel();
 }
 
@@ -2853,6 +3054,144 @@ function sfCanon_countOccurrences(fullText, names){
   return { occurrences: occ, firstSeen, lastSeen };
 }
 
+/* ĐỢT 7A — P1 FIX 3 (mục VI/VII): sfCanon_countOccurrences() ở trên quét TOÀN VĂN BẢN riêng cho
+   từng entity (mỗi tên/alias tự chạy 1 vòng indexOf từ đầu) — với nhiều entity, chi phí nhân lên
+   O(entity × tên/alias × N ký tự). sfCanon_countOccurrencesForAllEntities() gom TẤT CẢ tên/alias
+   của MỌI entity cần tính vào 1 lượt SINGLE PASS / MULTI-PATTERN INDEX (Aho-Corasick) trên toàn
+   văn bản, rồi suy ra occurrences/firstSeen/lastSeen cho từng entity từ occurrence map dùng chung.
+   GIỮ NGUYÊN 100% KẾT QUẢ so với gọi sfCanon_countOccurrences() riêng lẻ cho từng entity: với MỖI
+   pattern (1 tên/alias), thuật toán bên dưới tìm hết mọi vị trí khớp THÔ (kể cả chồng lấn) trong
+   1 lượt quét, sau đó lọc lại riêng cho từng pattern theo ĐÚNG quy tắc mà indexOf(name, from) cũ
+   áp dụng — "khớp trái nhất, rồi nhảy qua đúng độ dài pattern trước khi tìm khớp kế tiếp" (không
+   đếm 2 khớp chồng lấn của CHÍNH pattern đó) — trước khi cộng dồn theo entity (đúng như vòng
+   for(const name of uniqNames) cũ: mỗi tên trong entity tự đếm độc lập, occ/firstSeen/lastSeen của
+   entity là tổng/min/max qua các tên đó). Vì vậy occurrences/firstSeen/lastSeen ra giống hệt cũ.
+   Chỉ dùng đường tối ưu này khi quy mô đủ lớn (đủ pattern VÀ văn bản đủ dài) — file nhỏ/ít entity
+   vẫn dùng nguyên sfCanon_countOccurrences() cũ (mục VI: "KHÔNG làm chậm file nhỏ chỉ để tối ưu
+   file cực lớn"), tránh chi phí dựng automaton không cần thiết ở quy mô nhỏ. */
+const SF_CANON_FAST_SCAN_MIN_PATTERNS = 40;
+const SF_CANON_FAST_SCAN_MIN_TEXT_LEN = 200000;
+// Mục VII — không chạy 1 tác vụ đồng bộ khổng lồ trên main thread: quét theo lát, nhường control
+// (setTimeout 0) mỗi SF_CANON_SCAN_YIELD_EVERY_CHARS ký tự để UI vẫn phản hồi trong lúc quét file
+// rất lớn. KHÔNG dùng Web Worker cho bước này: chuyển toàn bộ source text (có thể nhiều MB) sang
+// ngữ cảnh Worker qua postMessage sẽ phải sao chép dữ liệu, tức là nhân đôi bộ nhớ — đúng điều mục
+// VII yêu cầu tránh ("không duplicate source nhiều lần trong RAM nếu có thể"); chia lát ngay trên
+// main thread đạt cùng mục tiêu (UI không bị đơ) mà không tốn thêm bộ nhớ nhân đôi source.
+const SF_CANON_SCAN_YIELD_EVERY_CHARS = 400000;
+
+function sfCanon_buildAhoCorasick(patterns){
+  const root = { children: Object.create(null), fail: null, output: [] };
+  for(const p of patterns){
+    let node = root;
+    for(let i=0; i<p.length; i++){
+      const ch = p[i]; // duyệt theo UTF-16 code unit — ĐÚNG như cách indexOf/String so khớp nội bộ,
+                        // nên surrogate pair (emoji), tổ hợp CJK, tiếng Việt có dấu... khớp y hệt.
+      let next = node.children[ch];
+      if(!next){ next = { children: Object.create(null), fail: null, output: [] }; node.children[ch] = next; }
+      node = next;
+    }
+    node.output.push(p);
+  }
+  const queue = [];
+  for(const ch in root.children){
+    root.children[ch].fail = root;
+    queue.push(root.children[ch]);
+  }
+  let qi = 0;
+  while(qi < queue.length){
+    const cur = queue[qi++];
+    for(const ch in cur.children){
+      const child = cur.children[ch];
+      let f = cur.fail;
+      while(f && !f.children[ch]) f = f.fail;
+      child.fail = f ? f.children[ch] : root;
+      child.output = child.output.length ? child.output.concat(child.fail.output) : child.fail.output;
+      queue.push(child);
+    }
+  }
+  return root;
+}
+// Từ danh sách vị trí khớp THÔ (kể cả chồng lấn, tăng dần theo i vì quét trái->phải) của 1 pattern,
+// suy ra occ/first/last theo ĐÚNG quy tắc "khớp trái nhất rồi nhảy qua độ dài pattern" mà vòng lặp
+// indexOf(name,from) cũ dùng — xem ghi chú lớn phía trên.
+function sfCanon__finalizeOccurrenceMap(rawPositions){
+  const out = new Map();
+  for(const [p, positions] of rawPositions.entries()){
+    let occ = 0, first = null, last = null, nextAllowed = 0;
+    for(const start of positions){
+      if(start < nextAllowed) continue; // chồng lấn với occurrence vừa đếm của CHÍNH pattern này
+      occ++;
+      if(first === null) first = start;
+      last = start;
+      nextAllowed = start + p.length;
+    }
+    out.set(p, { occ, first, last });
+  }
+  return out;
+}
+// Quét 1 lượt toàn văn bản bằng automaton multi-pattern, trả về Map<pattern,{occ,first,last}> đã
+// lọc "không chồng lấn" riêng cho từng pattern. Async + nhường control định kỳ (mục VII).
+async function sfCanon_scanAllOccurrencesAsync(text, patterns){
+  const rawPositions = new Map();
+  for(const p of patterns) rawPositions.set(p, []);
+  if(!text || !patterns.length) return sfCanon__finalizeOccurrenceMap(rawPositions);
+
+  const root = sfCanon_buildAhoCorasick(patterns);
+  let node = root;
+  const n = text.length;
+  let sinceYield = 0;
+  for(let i=0; i<n; i++){
+    const ch = text[i];
+    while(node !== root && !node.children[ch]) node = node.fail;
+    node = node.children[ch] || root;
+    if(node.output.length){
+      for(const p of node.output) rawPositions.get(p).push(i - p.length + 1);
+    }
+    sinceYield++;
+    if(sinceYield >= SF_CANON_SCAN_YIELD_EVERY_CHARS){
+      sinceYield = 0;
+      await new Promise(r=> setTimeout(r, 0)); // nhường control cho main thread (UI vẫn phản hồi)
+    }
+  }
+  return sfCanon__finalizeOccurrenceMap(rawPositions);
+}
+// Điểm vào dùng chung cho scanFile()/resync(): nhận mảng "danh sách tên/alias" (1 phần tử/entity,
+// ĐÚNG thứ tự entity truyền vào), trả về mảng {occurrences,firstSeen,lastSeen} cùng thứ tự đó.
+async function sfCanon_countOccurrencesForAllEntities(text, entityNameLists){
+  const patternSet = new Set();
+  for(const names of entityNameLists){ for(const nm of names){ if(nm) patternSet.add(nm); } }
+
+  if(!text || patternSet.size < SF_CANON_FAST_SCAN_MIN_PATTERNS || text.length < SF_CANON_FAST_SCAN_MIN_TEXT_LEN){
+    // Quy mô nhỏ — giữ nguyên thuật toán hiện tại (mục VI: không tối ưu hoá khi không cần).
+    return entityNameLists.map(names => sfCanon_countOccurrences(text, names));
+  }
+
+  const patterns = Array.from(patternSet);
+  const statsMap = await sfCanon_scanAllOccurrencesAsync(text, patterns);
+  // QUAN TRỌNG (phát hiện qua fuzz test, xem canon_test.js trong báo cáo): sfCanon_countOccurrences()
+  // gốc KHÔNG lấy min/max vị trí thật sự qua các tên — do cách gán "if(firstSeen===null) firstSeen=idx"
+  // chỉ set đúng 1 LẦN DUY NHẤT (ở tên ĐẦU TIÊN trong danh sách có match), và "lastSeen=idx" bị GHI ĐÈ
+  // KHÔNG ĐIỀU KIỆN bởi MỖI tên có match (nên kết quả cuối là của tên CUỐI CÙNG trong danh sách có
+  // match) — bất kể tên đó match ở vị trí sớm/muộn hơn tên khác trong text. Để "KHÔNG được thay đổi
+  // kết quả Canon" theo đúng nghĩa đen (kể cả hành vi phụ thuộc thứ tự này), ta lặp lại uniq theo
+  // ĐÚNG thứ tự cũ (sourceName rồi đến alias) và tái tạo chính xác quy tắc gán đó, thay vì tính
+  // min/max "đúng về mặt toán học" (sẽ cho kết quả KHÁC bản gốc khi 1 entity có ≥2 tên/alias).
+  return entityNameLists.map(names=>{
+    const uniq = Array.from(new Set(names.filter(Boolean)));
+    let occ = 0, firstSeen = null, lastSeen = null;
+    for(const nm of uniq){
+      const s = statsMap.get(nm);
+      if(!s) continue;
+      occ += s.occ;
+      if(s.occ > 0){
+        if(firstSeen === null) firstSeen = s.first; // chỉ gán từ tên ĐẦU TIÊN (theo thứ tự) có match — giống hệt bản gốc
+        lastSeen = s.last; // ghi đè không điều kiện bởi MỌI tên có match — giống hệt bản gốc
+      }
+    }
+    return { occurrences: occ, firstSeen, lastSeen };
+  });
+}
+
 // QUÉT TOÀN BỘ FILE — điểm vào chính của nút "🔍 Quét toàn bộ file".
 async function sfCanon_scanFile(){
   if(sfCanonScanning){ alert('Đang quét Canon Pack, vui lòng đợi.'); return; }
@@ -2913,10 +3252,17 @@ async function sfCanon_scanFile(){
   const now = Date.now();
   const existingById = new Map(sfCanonEntities.map(e=>[e.category+'::'+e.normalizedName, e]));
   const finalRecords = [];
-  for(const [key, draft] of merged.entries()){
+  // ĐỢT 7A — P1 FIX 3: gom tên/alias của TẤT CẢ entity vừa quét được và tính occurrences trong
+  // ĐÚNG 1 lượt (xem sfCanon_countOccurrencesForAllEntities) thay vì quét lại toàn văn bản riêng
+  // cho từng entity trong vòng lặp — kết quả từng entity giữ nguyên 100% (xem ghi chú hàm đó).
+  const mergedEntries = Array.from(merged.entries());
+  const occResults = await sfCanon_countOccurrencesForAllEntities(
+    text, mergedEntries.map(([, draft]) => [draft.sourceName, ...draft.aliases])
+  );
+  for(let mi=0; mi<mergedEntries.length; mi++){
+    const [key, draft] = mergedEntries[mi];
     const prior = existingById.get(key);
-    const names = [draft.sourceName, ...draft.aliases];
-    const { occurrences, firstSeen, lastSeen } = sfCanon_countOccurrences(text, names);
+    const { occurrences, firstSeen, lastSeen } = occResults[mi];
     if(prior){
       finalRecords.push(Object.assign({}, prior, {
         aliases: Array.from(new Set([...(prior.aliases||[]), ...draft.aliases])),
@@ -2944,6 +3290,7 @@ async function sfCanon_scanFile(){
 
   await sfCanonDB_putMany(finalRecords);
   sfCanonEntities = finalRecords;
+  sfCanon_markDirty(); // entity list vừa thay hoàn toàn -> cache confirmed/sort (mục VIII) phải rebuild
   sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status: warnings>0 ? 'warning' : 'done', scannedAt: now, warnings };
   await sfCanonDB_putMeta(sfCanonMetaCurrent);
   sfCanonScanning = false;
@@ -2956,12 +3303,19 @@ async function sfCanon_scanFile(){
 async function sfCanon_resync(){
   if(!sfCurrentFileId || !sfCanonEntities.length){ alert('Chưa có Canon Pack nào để đồng bộ. Hãy "Quét toàn bộ file" trước.'); return; }
   const text = sf_getFullSourceText();
-  const updated = sfCanonEntities.map(e=>{
-    const { occurrences, firstSeen, lastSeen } = sfCanon_countOccurrences(text, [e.sourceName, ...(e.aliases||[])]);
-    return Object.assign({}, e, { occurrences, firstSeen, lastSeen, updatedAt: Date.now() });
+  // ĐỢT 7A — P1 FIX 3: 1 lượt quét chung cho toàn bộ entity thay vì mỗi entity tự quét lại toàn
+  // văn bản (xem sfCanon_countOccurrencesForAllEntities).
+  const occResults = await sfCanon_countOccurrencesForAllEntities(
+    text, sfCanonEntities.map(e => [e.sourceName, ...(e.aliases||[])])
+  );
+  const now = Date.now();
+  const updated = sfCanonEntities.map((e,i)=>{
+    const { occurrences, firstSeen, lastSeen } = occResults[i];
+    return Object.assign({}, e, { occurrences, firstSeen, lastSeen, updatedAt: now });
   });
   await sfCanonDB_putMany(updated);
   sfCanonEntities = updated;
+  sfCanon_markDirty(); // occurrences đổi -> thứ tự sort của confirmed-list cache (mục VIII) không còn đúng
   sfCanon_renderPanel();
   alert('Đã đồng bộ lại số lần xuất hiện của Canon Pack theo nội dung hiện tại.');
 }
@@ -2972,6 +3326,7 @@ async function sfCanon_clearForFile(){
   await sfCanonDB_clearForFile(sfCurrentFileId);
   sfCanonEntities = [];
   sfCanonMetaCurrent = null;
+  sfCanon_markDirty();
   sfCanon_renderPanel();
 }
 
@@ -3013,6 +3368,7 @@ async function sfCanon_setStatus(id, status){
   const e = sfCanonEntities.find(x=>x.id===id); if(!e) return;
   e.status = status; e.updatedAt = Date.now();
   await sfCanonDB_putMany([e]);
+  sfCanon_markDirty(); // status đổi -> có thể vào/ra khỏi danh sách 'confirmed' (mục VIII)
   sfCanon_renderModalTable();
   sfCanon_renderPanel();
 }
@@ -3022,6 +3378,7 @@ async function sfCanon_editEntity(id, field, value){
   else e[field] = value;
   e.updatedAt = Date.now();
   await sfCanonDB_putMany([e]);
+  sfCanon_markDirty(); // field bất kỳ đổi (tên/alias/translation/category/occurrences...) -> cache stale
 }
 async function sfCanon_mergeInto(dropId, keepId){
   if(dropId===keepId) return;
@@ -3034,6 +3391,7 @@ async function sfCanon_mergeInto(dropId, keepId){
   await sfCanonDB_putMany([keep]);
   await sfCanonDB_delete(dropId);
   sfCanonEntities = sfCanonEntities.filter(x=>x.id!==dropId);
+  sfCanon_markDirty(); // 1 entity biến mất + occurrences của entity còn lại đổi -> cache stale
   sfCanon_renderModalTable();
   sfCanon_renderPanel();
 }
@@ -3112,6 +3470,18 @@ function sfCanon_parseManualPairs(){
   });
   return out;
 }
+// ĐỢT 7A — P1 FIX 4 (mục VIII): trước đây MỖI lần buildCanonContext() được gọi (tức MỖI chunk)
+// đều filter() + sort() lại TOÀN BỘ sfCanonEntities — với hàng nghìn chunk và/hoặc nhiều entity,
+// chi phí này lặp lại không cần thiết vì Canon Pack hầu như không đổi giữa các chunk của cùng 1
+// lượt dịch. sfCanon_getConfirmedSorted() chỉ rebuild khi sfCanonDirty===true (tức có mutation
+// thật sự — xem toàn bộ điểm gọi sfCanon_markDirty() ở trên); nếu không, trả thẳng cache cũ.
+function sfCanon_getConfirmedSorted(){
+  if(sfCanonDirty || sfCanonConfirmedSortedCache === null){
+    sfCanonConfirmedSortedCache = sfCanonEntities.filter(e=> e.status==='confirmed').sort((a,b)=>(b.occurrences||0)-(a.occurrences||0));
+    sfCanonDirty = false;
+  }
+  return sfCanonConfirmedSortedCache;
+}
 function buildCanonContext(idx){
   if(!state.canonOn) return '';
   const chunkText = currentChunks[idx]; if(!chunkText) return '';
@@ -3125,7 +3495,7 @@ function buildCanonContext(idx){
     lines.push(line); usedChars += line.length;
   }
   // 2) Entity đã xác nhận từ Canon Pack, ưu tiên occurrences cao (khả năng liên quan lớn hơn).
-  const confirmed = sfCanonEntities.filter(e=> e.status==='confirmed').sort((a,b)=>(b.occurrences||0)-(a.occurrences||0));
+  const confirmed = sfCanon_getConfirmedSorted();
   let count = 0;
   for(const e of confirmed){
     if(count >= SF_CANON_CONTEXT_MAX_ENTITIES) break;
@@ -3495,11 +3865,20 @@ function sf_buildSmartChunkOffsets(text, cfg){
   // số cố định kiểu Latin sẽ khiến bước nhảy quá lớn với CJK và tạo chunk vượt xa maxInputTokens.
   let level3 = [];
   {
-    const queue = level2.slice();
+    // ĐỢT 7C — mục IV: trước đây dùng queue.shift() + queue.unshift(...) — unshift() phải dịch
+    // chuyển TOÀN BỘ phần tử còn lại trong mảng nên là O(n) mỗi lần gọi; khi 1 đoạn oversize bị
+    // cắt tiếp thành nhiều mảnh (nhiều unshift liên tiếp) và việc này lặp lại nhiều vòng trên văn
+    // bản có hàng chục nghìn breakpoint, tổng chi phí suy biến thành O(n²), rất chậm với file lớn.
+    // Thay bằng NGĂN XẾP (stack: push/pop ở CUỐI mảng, cả hai đều O(1)) — hành vi hệt cũ: đẩy
+    // level2 vào stack theo thứ tự NGƯỢC để pop() trả về đúng thứ tự trái->phải; mỗi khi 1 đoạn
+    // bị cắt tiếp, đẩy các mảnh con lên ĐỈNH stack cũng theo thứ tự ngược, để chúng được xử lý
+    // NGAY (trước phần còn lại), giữ đúng ngữ nghĩa DFS trái->phải như bản queue+unshift cũ.
+    const stack = [];
+    for(let i=level2.length-1; i>=0; i--) stack.push(level2[i]);
     let guardTotal = 0;
     const guardMax = 200000; // van an toàn tuyệt đối — không nên chạm tới trong thực tế
-    while(queue.length){
-      const seg = queue.shift();
+    while(stack.length){
+      const seg = stack.pop();
       guardTotal++;
       if(!seg.oversize || guardTotal > guardMax){ level3.push(seg); continue; }
       const segText = text.slice(seg.start, seg.end);
@@ -3516,9 +3895,7 @@ function sf_buildSmartChunkOffsets(text, cfg){
         continue;
       }
       const packed = sf_packRange(text, seg.start, seg.end, hInner, target, max);
-      // Đẩy lại đầu hàng đợi để phần còn oversize (nếu có) được cắt tiếp ở vòng sau — giữ
-      // đúng thứ tự trái->phải bằng cách unshift ngược.
-      for(let i=packed.length-1; i>=0; i--) queue.unshift(packed[i]);
+      for(let i=packed.length-1; i>=0; i--) stack.push(packed[i]);
     }
   }
 
@@ -3868,6 +4245,63 @@ function splitChunks(text, size){
   const offsets = splitChunksWithOffsets(text, size);
   return offsets ? offsets.map(c=>c.text) : [];
 }
+/* ĐỢT 7A — P0 FIX: TÁCH HAI PIPELINE THỐNG KÊ (mục II)
+   ------------------------------------------------------------------
+   A. sf_updateStatsPreview()  — chạy trên MỖI input (debounce 250ms). CHỈ tính số ký tự +
+      ước tính token thô bằng estimateTokensLocal() (1 lượt quét tuyến tính đơn giản, KHÔNG
+      có boundary regex/paragraph/sentence/chapter/packing/merge). KHÔNG BAO GIỜ gọi
+      splitChunksWithOffsets()/sf_buildSmartChunkOffsets(), và KHÔNG được đụng tới
+      currentChunks/chunkState/sfChunkOffsets/currentResults/stableId/sourceStart/sourceEnd —
+      đây thuần là số liệu hiển thị tạm thời, không phải nguồn sự thật cho việc dịch.
+   B. updateStats()  — GIỮ NGUYÊN hành vi cũ (chạy Smart Chunking thật qua
+      splitChunksWithOffsets() để có số chunk/token chính xác). Không còn được gọi từ sự kiện
+      gõ phím nữa — chỉ còn được gọi từ các thời điểm hợp lệ theo mục II.B: nạp file mới
+      (readFile), đổi cấu hình chunking cần re-chunk (setChunkSizePreset), hoặc reset phiên. */
+function sf_updateStatsPreview(){
+  const text = sf_getFullSourceText();
+  const n = text.length;
+  document.getElementById('chOrig').textContent = n.toLocaleString('vi-VN') + ' ký tự';
+  if(n === 0){
+    __sf_statsCache = { chunks: 0, n: 0 };
+    document.getElementById('chChunks').textContent = '0 chunk';
+    document.getElementById('startInfo').innerHTML = '';
+    updateDashboard();
+    return;
+  }
+  // Ước tính thô số chunk = tổng token ước tính / kích thước chunk mục tiêu — CHỈ để hiển thị
+  // ngay lập tức trong lúc gõ; số chunk CHÍNH XÁC (theo đúng ranh giới Smart Chunking) chỉ có
+  // khi updateStats() thật sự chạy (lúc bắt đầu dịch/đổi cấu hình).
+  // LƯU Ý: chunkSizeVal() là kích thước tính theo KÝ TỰ (ô nhập "Chunk size"), không phải token —
+  // splitChunksWithOffsets() tự quy đổi sang token bằng size/3.2 (xem dòng "cfg.tokenAware" ở đó)
+  // để khớp với đơn vị token mà estimateTokensLocal() trả về; preview áp dụng ĐÚNG quy đổi đó để
+  // ước tính không bị lệch ~3.2 lần.
+  const approxTokens = estimateTokensLocal(text);
+  const targetTokens = Math.max(1, Math.round(chunkSizeVal() / 3.2));
+  const approxChunks = Math.max(1, Math.ceil(approxTokens / targetTokens));
+  __sf_statsCache = { chunks: approxChunks, n };
+  document.getElementById('chChunks').textContent = `~${approxChunks} chunk (ước tính nhanh, ~${approxTokens.toLocaleString('vi-VN')} token/chunk mục tiêu ${targetTokens.toLocaleString('vi-VN')})`;
+  document.getElementById('startInfo').innerHTML = `Ước tính nhanh: <b>~${approxChunks}</b> chunk, tổng ~<b>${approxTokens.toLocaleString('vi-VN')}</b> token đầu vào. Số chunk chính xác sẽ được tính khi bắt đầu dịch.`;
+  updateDashboard();
+}
+// ĐỢT 7A — mục III (RESTORE FILE): hiển thị thống kê cho 1 truyện vừa mở lại từ Thư viện,
+// dùng THẲNG chunkState.length/currentChunks (đã nạp từ chunkRecs đã lưu trong IndexedDB)
+// + các trường đã persist sẵn trên fileRec (totalChars/totalChunks/estimatedInputTokens —
+// xem sf_prepareFileForTranslation) — KHÔNG gọi splitChunksWithOffsets() trên toàn bộ source.
+// Tương thích ngược: nếu là file cũ chưa có các trường persist mới (trước ĐỢT 3/4), fallback
+// về chunkState.length/currentChunks hiện đã có trong RAM (vẫn không re-chunk).
+function sf_updateStatsFromRestoredFile(fileRec){
+  const n = (fileRec && fileRec.totalChars != null) ? fileRec.totalChars : sf_getFullSourceText().length;
+  const count = (fileRec && fileRec.totalChunks != null) ? fileRec.totalChunks : chunkState.length;
+  const totalTokens = (fileRec && fileRec.estimatedInputTokens != null) ? fileRec.estimatedInputTokens : null;
+  __sf_statsCache = { chunks: count, n };
+  document.getElementById('chOrig').textContent = n.toLocaleString('vi-VN') + ' ký tự';
+  document.getElementById('chChunks').textContent = count + ' chunk' +
+    (count>0 && totalTokens!=null ? ` (~${Math.round(totalTokens/count).toLocaleString('vi-VN')} token/chunk ước tính)` : '');
+  document.getElementById('startInfo').innerHTML = (n>0
+    ? `Sẵn sàng: <b>${count}</b> chunk sẽ được dịch${totalTokens!=null ? ` (tổng ước tính ~<b>${totalTokens.toLocaleString('vi-VN')}</b> token đầu vào)` : ''}.`
+    : '');
+  updateDashboard();
+}
 function updateStats(){
   const text = sf_getFullSourceText();
   const offsets = text ? splitChunksWithOffsets(text, chunkSizeVal()) : [];
@@ -3883,7 +4317,10 @@ function updateStats(){
     : (text.length>0 ? `Sẵn sàng: <b>${stats.count}</b> chunk sẽ được dịch (tổng ước tính ~<b>${stats.totalTokens.toLocaleString('vi-VN')}</b> token đầu vào).` : '');
   updateDashboard();
 }
-document.getElementById('sourceText').addEventListener('input', ()=>{ clearTimeout(window._sT); window._sT=setTimeout(updateStats, 250); });
+// ĐỢT 7A: input trên textarea nguồn giờ CHỈ chạy preview nhanh (không Smart Chunking) —
+// khắc phục P0 (trước đây còn có thêm oninput="updateStats()" trực tiếp trên thẻ <textarea>,
+// chạy đồng bộ, KHÔNG debounce, trên MỌI ký tự — đã bị xoá, xem thẻ textarea #sourceText).
+document.getElementById('sourceText').addEventListener('input', ()=>{ clearTimeout(window._sT); window._sT=setTimeout(sf_updateStatsPreview, 250); });
 
 /* Mục 12 AUTOSAVE CONFIG: mọi thay đổi cấu hình liên quan được lưu kèm file đang active */
 ['chunkSize','parallel','rpm','maxTokensCap','sourceLang','canonInput'].forEach(id=>{
@@ -4066,17 +4503,23 @@ function updateCdPageInfo(){
   el.innerHTML = `<span>Tổng ${total} · ✅ ${done} · 🟡 ${run} · 🔴 ${error} · ⚪ ${wait}</span> ${nav}`;
 }
 function buildChunkViewer(chunks){
-  chunkState = chunks.map((c,i)=>{
+  // ĐỢT 7B — mục I: chỉ cần SỐ LƯỢNG chunk ở đây (n = chunks.length) — không index vào
+  // 'chunks' để lấy text (có thể là view lười của sf_makeLazyChunkTextView, hoặc offsets thô
+  // của Smart Chunking) chỉ để rồi gán cho "orig" và bỏ đi ngay; "orig" giờ là getter (xem
+  // sf_makeChunkStateEntry) tự tính từ sourceStart/sourceEnd khi thực sự có nơi đọc tới.
+  const n = (chunks && typeof chunks.length === 'number') ? chunks.length : sfChunkOffsets.length;
+  chunkState = new Array(n);
+  for(let i=0;i<n;i++){
     const off = sfChunkOffsets[i];
-    return {
-      status:'waiting', orig:c, trans:'', key:null, retryCount:0, headerWarning: null,
+    chunkState[i] = sf_makeChunkStateEntry({
+      status:'waiting', trans:'', key:null, retryCount:0, headerWarning: null,
       headerRepairAttempts: 0, headerRepairStatus: null, // ĐỢT 6 — mục IV: HEADER VALIDATION + REPAIR
       stableId: off ? off.stableId : null,
       sourceStart: off ? off.start : i,
       sourceEnd: off ? off.end : i
-    };
-  });
-  chunkStats = { waiting: chunks.length, running: 0, done: 0, error: 0 };
+    });
+  }
+  chunkStats = { waiting: n, running: 0, done: 0, error: 0 };
   chunkExpanded = new Set();
   chunkCurrentPage = 0;
   renderChunkPage();
@@ -4153,7 +4596,7 @@ function setLogFilter(f){ /* simplified */ }
 function clearLog(){ document.getElementById('progLog').innerHTML=''; }
 
 /* API CALL */
-async function callModel(textPayload, keyIndex){
+async function callModel(textPayload, keyIndex, signal){
   ensureKeyMeta();
   const key = state.keys[keyIndex]; const meta = state.keyMeta[keyIndex];
   recordKeyCall(keyIndex); // count against this key's RPM window at send-time, not while holding a slot waiting
@@ -4167,9 +4610,15 @@ async function callModel(textPayload, keyIndex){
       body: JSON.stringify({
         model: state.model,
         messages: [{ role:'user', content: document.getElementById('promptBox').value + '\n' + textPayload }]
-      })
+      }),
+      signal
     });
   }catch(networkErr){
+    // ĐỢT 7C — mục III: request bị AbortController huỷ (do bấm Dừng) không phải lỗi mạng thật —
+    // đánh dấu riêng bằng err.aborted để executeDynamicTask KHÔNG tính vào retryCount/lỗi key.
+    if(networkErr && networkErr.name === 'AbortError'){
+      const err = new Error('Đã huỷ (Dừng)'); err.aborted = true; throw err;
+    }
     const err = new Error('Lỗi mạng: '+networkErr.message); err.status = 0; throw err;
   }
   if(!res.ok){
@@ -4182,7 +4631,17 @@ async function callModel(textPayload, keyIndex){
     err.bodyText = t;
     throw err; // throw back to executeDynamicTask to handle cooldown
   }
-  const data = await res.json();
+  let data;
+  try{
+    data = await res.json();
+  }catch(parseErr){
+    // Có thể bị abort ngay giữa lúc đang đọc body (hiếm, cửa sổ thời gian rất hẹp) — vẫn xử lý
+    // như AbortError bình thường, không để rơi xuống nhánh lỗi mạng/payload sai ngữ cảnh.
+    if(parseErr && parseErr.name === 'AbortError'){
+      const err = new Error('Đã huỷ (Dừng)'); err.aborted = true; throw err;
+    }
+    const err = new Error('Lỗi đọc phản hồi: '+parseErr.message); err.status = 0; throw err;
+  }
   const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
   if(!content){ const err=new Error('Empty result'); err.status=0; throw err; }
   meta.success++; renderKeys();
@@ -4228,6 +4687,11 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
     const c = chunkState[idx];
     if(c && c.status === 'done') return; // never re-request a finished chunk
 
+    // ĐỢT 7C — mục III: 1 AbortController riêng cho request này — đăng ký vào tập toàn cục để
+    // stopTranslate() huỷ được NGAY, gỡ lại trong finally để không rò rỉ tham chiếu.
+    const abortCtrl = new AbortController();
+    activeAbortControllers.add(abortCtrl);
+
     try {
         markChunkRunning(idx, keyIdx);
         const ctxPrefix = buildContextPrefix(idx);
@@ -4238,7 +4702,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         const payloadCore = ctxPrefix ? (ctxPrefix + '\n' + currentChunks[idx]) : currentChunks[idx];
         const payloadText = canonBlock ? (canonBlock + '\n' + payloadCore) : payloadCore;
 
-        let res = await callModel(payloadText, keyIdx);
+        let res = await callModel(payloadText, keyIdx, abortCtrl.signal);
 
         if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
         currentResults[idx] = res;
@@ -4249,10 +4713,18 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         return;
 
     } catch(err) {
-        if(state.keyMeta[keyIdx]) {
-            state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
-            state.keyMeta[keyIdx].errors++;
+        if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
+
+        // ĐỢT 7C — mục III: request bị HUỶ do bấm Dừng — KHÔNG phải lỗi mạng/key thật, nên
+        // KHÔNG tăng retryCount, KHÔNG tính vào key.errors, KHÔNG đưa lại hàng đợi (vòng lặp
+        // ngoài của runEngine đã dừng vì stopFlag). Trả chunk về 'waiting' (không phải DONE, không
+        // mất kết quả vì vốn dĩ chưa có kết quả) để lần "Bắt đầu dịch" sau tiếp tục đúng chỗ.
+        if(err && err.aborted){
+            if(c) markChunkWaiting(idx);
+            return;
         }
+
+        if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].errors++;
         const status = err.status;
         if(!c) return;
         c.retryCount = (c.retryCount || 0) + 1;
@@ -4284,7 +4756,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
             // not the chunk. Any other idle/eligible key can dispatch this chunk right away.
             delete chunkRetryAfter[idx];
             logLine('warn', idx, keyIdx, `Chunk ${idx+1}: Key C${keyIdx+1} bị Rate Limit (429). Key C${keyIdx+1} cooldown ${Math.round(backoff/1000)}s. Chunk ${idx+1} đưa lại hàng đợi để thử ngay bằng key khác (${c.retryCount}/${MAX_CHUNK_RETRIES}).`);
-            queueRef.push(idx); // back to global queue immediately; picked up by any other eligible key right away
+            queueRef.pushReady(idx); // ĐỢT 7A: back to READY queue immediately (O(1)); picked up by any other eligible key right away
             markChunkWaiting(idx);
             return; // slot released via caller's finally — retry goes through the scheduler, not a local loop
 
@@ -4302,7 +4774,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
                 return;
             }
             logLine('err', idx, keyIdx, `Chunk ${idx+1}: Key C${keyIdx+1} lỗi ${status}. Loại key khỏi vòng chọn, thử lại ${c.retryCount}/${MAX_CHUNK_RETRIES} bằng key khác.`);
-            queueRef.push(idx);
+            queueRef.pushReady(idx); // ĐỢT 7A: READY queue, O(1)
             markChunkWaiting(idx);
             return; // key selection for the retry happens next time the scheduler dispatches it
 
@@ -4333,11 +4805,115 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
             const backoff = Math.min(20000, 1500 * c.retryCount);
             chunkRetryAfter[idx] = Date.now() + backoff;
             logLine('warn', idx, keyIdx, `Chunk ${idx+1} lỗi mạng/server (${status||'?'}). Trả về hàng đợi, thử lại ${c.retryCount}/${MAX_CHUNK_RETRIES} sau ${Math.round(backoff/1000)}s...`);
-            queueRef.push(idx); // requeue — no sleeping while holding the slot
+            // ĐỢT 7A: đưa vào BACKOFF heap (theo đúng chunkRetryAfter[idx] vừa đặt ở trên) thay vì
+            // đẩy thẳng vào mảng phẳng rồi để vòng scheduler quét tuyến tính bỏ qua cho tới khi hết
+            // backoff — heap tự biết khi nào phần tử này sẵn sàng mà không cần quét toàn hàng đợi.
+            queueRef.pushBackoff(idx, chunkRetryAfter[idx]); // requeue — no sleeping while holding the slot
             markChunkWaiting(idx);
             return;
         }
+    } finally {
+        // ĐỢT 7C — mục III: luôn gỡ controller khỏi tập toàn cục dù thành công/lỗi/huỷ, tránh rò
+        // rỉ tham chiếu và tránh stopTranslate() sau này abort() nhầm 1 request đã xong từ lâu.
+        activeAbortControllers.delete(abortCtrl);
     }
+}
+
+/* ĐỢT 7A — P1 FIX 2: SCHEDULER QUEUE (mục IV/V)
+   ------------------------------------------------------------------
+   Thay cho mảng phẳng + quét tuyến tính (for i=0..queue.length tìm pickPos) + queue.splice(pickPos,1)
+   (O(n) MỖI lần dispatch, có thể suy biến O(n²) với hàng đợi lớn/nhiều lượt requeue), dùng:
+     - READY QUEUE: mảng + con trỏ head. pickNext() đọc ready[head++] — O(1) amortized, không splice
+       giữa mảng. pushReady() luôn append cuối mảng — O(1) amortized (giống Array.push cũ).
+     - BACKOFF QUEUE: min-heap nhị phân theo readyAt. Thay vì để phần tử đang backoff nằm lẫn trong
+       hàng đợi rồi mỗi tick quét tuyến tính bỏ qua nó cho tới khi hết backoff (đúng là cách cũ vẫn
+       làm), heap cho biết ngay phần tử nào đã hết backoff (promoteExpired) mà không cần quét toàn bộ.
+   Bất biến scheduler (mục V) giữ nguyên 100%: 1 chunk chỉ dispatch tối đa 1 lần tại 1 thời điểm (idx
+   chỉ tồn tại ở ĐÚNG 1 trong 3 nơi: ready (chưa dispatch) / dispatching (đang chạy) / backoff heap
+   (đang chờ) — không bao giờ ở 2 nơi cùng lúc); DONE không bao giờ quay lại hàng đợi (pickNext() vẫn
+   lọc theo chunkState.status==='done' y hệt code cũ); retry chỉ được đẩy lại đúng 1 lần cho mỗi lần
+   thất bại (executeDynamicTask gọi pushReady/pushBackoff đúng 1 lần mỗi nhánh lỗi, không đổi); stop
+   không tạo task mới (vòng lặp ngoài kiểm tra stopFlag y hệt code cũ). KHÔNG đổi MAX_CHUNK_RETRIES,
+   backoff semantics, 429/401/403 handling, key selection, hay parallel limit — chỉ đổi CẤU TRÚC DỮ
+   LIỆU dùng để lưu/lấy phần tử đang chờ dispatch. */
+function SFCreateDispatchQueue(initialIndices){
+    let ready = initialIndices.slice();
+    let head = 0;
+    const heap = []; // mảng biểu diễn min-heap nhị phân, phần tử {idx, readyAt}, sắp theo readyAt tăng dần
+    function heapPush(node){
+        heap.push(node);
+        let i = heap.length - 1;
+        while(i > 0){
+            const p = (i - 1) >> 1;
+            if(heap[p].readyAt <= heap[i].readyAt) break;
+            const tmp = heap[p]; heap[p] = heap[i]; heap[i] = tmp;
+            i = p;
+        }
+    }
+    function heapPop(){
+        const top = heap[0];
+        const last = heap.pop();
+        if(heap.length > 0){
+            heap[0] = last;
+            let i = 0;
+            while(true){
+                const l = i*2+1, r = i*2+2;
+                let smallest = i;
+                if(l < heap.length && heap[l].readyAt < heap[smallest].readyAt) smallest = l;
+                if(r < heap.length && heap[r].readyAt < heap[smallest].readyAt) smallest = r;
+                if(smallest === i) break;
+                const tmp = heap[smallest]; heap[smallest] = heap[i]; heap[i] = tmp;
+                i = smallest;
+            }
+        }
+        return top;
+    }
+    function compactReadyIfNeeded(){
+        // Chỉ "nén" lại mảng (cắt bỏ phần đầu đã dispatch) khi phần đã tiêu thụ đủ lớn — tránh
+        // slice() liên tục với hàng đợi nhỏ (không có lợi ích gì, chỉ tốn thêm việc).
+        if(head > 1024 && head * 2 > ready.length){
+            ready = ready.slice(head);
+            head = 0;
+        }
+    }
+    return {
+        pushReady(idx){ ready.push(idx); },
+        pushBackoff(idx, readyAt){ heapPush({ idx, readyAt }); },
+        // Chuyển toàn bộ phần tử BACKOFF đã hết hạn (readyAt <= now) sang READY — gọi trước mỗi lượt
+        // chọn task để chunk vừa hết backoff được thấy ngay ở lượt dispatch kế tiếp.
+        promoteExpired(now){
+            while(heap.length > 0 && heap[0].readyAt <= now){
+                const node = heapPop();
+                ready.push(node.idx);
+            }
+        },
+        // Lấy chunk kế tiếp sẵn sàng dispatch, bỏ qua các mục đang dispatching/đã done (an toàn
+        // thừa — về lý thuyết không nên xảy ra vì mỗi idx chỉ ở đúng 1 nơi tại 1 thời điểm).
+        pickNext(dispatchingSet, chunkStateRef){
+            while(head < ready.length){
+                const cIdx = ready[head];
+                head++;
+                if(dispatchingSet.has(cIdx)) continue;
+                if(chunkStateRef[cIdx] && chunkStateRef[cIdx].status === 'done') continue; // DONE never re-dispatched
+                compactReadyIfNeeded();
+                return cIdx;
+            }
+            compactReadyIfNeeded();
+            return null;
+        },
+        hasPending(){ return (ready.length - head) > 0 || heap.length > 0; },
+        readyRemainingCount(){ return ready.length - head; },
+        // Lấy TOÀN BỘ index còn lại (READY chưa dispatch + toàn bộ đang BACKOFF) và làm rỗng hàng
+        // đợi — dùng cho nhánh "hết key khả dụng, đánh dấu lỗi toàn bộ phần còn lại" (thay cho vòng
+        // queue.shift() cũ, vốn cũng O(n) nhưng chỉ chạy đúng 1 lần khi hết key nên không phải hotpath).
+        drainAllRemaining(){
+            const out = [];
+            for(let i=head; i<ready.length; i++) out.push(ready[i]);
+            for(const node of heap) out.push(node.idx);
+            ready.length = 0; head = 0; heap.length = 0;
+            return out;
+        }
+    };
 }
 
 async function runEngine(indices){
@@ -4350,42 +4926,42 @@ async function runEngine(indices){
     document.getElementById('progwrap').classList.add('show');
     showAllKeysWarning(false);
     
-    let queue = indices.filter(i => !chunkState[i] || chunkState[i].status !== 'done');
+    const initial = indices.filter(i => !chunkState[i] || chunkState[i].status !== 'done');
+    const queue = SFCreateDispatchQueue(initial);
     let activeRequests = 0; // GLOBAL concurrency counter — never exceeds parallelVal(), retries included
     let activePromises = new Set();
     const dispatching = new Set(); // guards against ever dispatching the same idx twice at once
 
-    logLine('info', null, null, `🚀 Khởi động Dynamic Window Scheduler. Hàng đợi: ${queue.length} chunk. Parallel: ${parallelVal()}`);
+    logLine('info', null, null, `🚀 Khởi động Dynamic Window Scheduler. Hàng đợi: ${queue.readyRemainingCount()} chunk. Parallel: ${parallelVal()}`);
 
-    while((queue.length > 0 || activeRequests > 0) && !stopFlag) {
+    while((queue.hasPending() || activeRequests > 0) && !stopFlag) {
         await waitWhilePaused();
         if(stopFlag) break;
 
-        while(queue.length > 0 && activeRequests < parallelVal() && !stopFlag && !pauseFlag) {
-            const now = Date.now();
-            // Find the first queued chunk that is (a) not already dispatching, (b) not a completed
-            // chunk that slipped back in, and (c) past its per-chunk retry backoff, if any.
-            let pickPos = -1;
-            for(let i=0; i<queue.length; i++){
-                const cIdx = queue[i];
-                if(dispatching.has(cIdx)) continue;
-                if(chunkState[cIdx] && chunkState[cIdx].status === 'done') continue; // DONE never re-dispatched
-                const readyAt = chunkRetryAfter[cIdx];
-                if(readyAt && readyAt > now) continue; // still backing off — leave in queue, try next
-                pickPos = i; break;
-            }
-            if(pickPos === -1) break; // nothing dispatchable right now (all backing off or done)
+        queue.promoteExpired(Date.now());
+
+        while(queue.hasPending() && activeRequests < parallelVal() && !stopFlag && !pauseFlag) {
+            queue.promoteExpired(Date.now());
+            // pickNext() = ĐÚNG NGỮ NGHĨA cũ: chunk đầu tiên (a) không đang dispatching, (b) chưa
+            // 'done', (c) đã qua backoff (BACKOFF heap chỉ promote khi readyAt<=now nên mọi phần tử
+            // còn trong READY tại đây đều đã sẵn sàng) — chỉ khác là lấy ra O(1) thay vì quét O(n).
+            const taskIdx = queue.pickNext(dispatching, chunkState);
+            if(taskIdx === null) break; // nothing dispatchable right now (all backing off or done)
 
             let keyIdx = pickAvailableKey();
             if(keyIdx === -1) {
+                // Chưa có key khả dụng NGAY — trả chunk vừa lấy về READY (cuối hàng đợi) rồi xử lý
+                // y hệt cũ; do inner loop luôn break ngay sau nhánh này (giống code cũ), chunk không
+                // bị round-trip nhiều lần trong cùng 1 tick.
+                queue.pushReady(taskIdx);
                 if(activeRequests === 0) {
                     if(!hasUsableKey()){
                         // No key can EVER serve again (all error/disabled) — this is not a
                         // temporary cooldown. Fail the remaining queue cleanly instead of
                         // sleeping forever waiting for a cooldown that will never end.
-                        logLine('err', null, null, `❌ Không còn API key khả dụng. Đánh dấu ${queue.length} chunk còn lại là lỗi và dừng.`);
-                        while(queue.length > 0){
-                            const remIdx = queue.shift();
+                        const remaining = queue.drainAllRemaining();
+                        logLine('err', null, null, `❌ Không còn API key khả dụng. Đánh dấu ${remaining.length} chunk còn lại là lỗi và dừng.`);
+                        for(const remIdx of remaining){
                             if(chunkState[remIdx] && chunkState[remIdx].status !== 'done'){
                                 currentResults[remIdx] = null;
                                 markChunkError(remIdx, "Không còn API key khả dụng.");
@@ -4404,7 +4980,6 @@ async function runEngine(indices){
                 break; // Break inner loop, wait for active requests to finish or cooldown
             }
 
-            let taskIdx = queue.splice(pickPos, 1)[0];
             dispatching.add(taskIdx);
             activeRequests++;
 
@@ -4419,7 +4994,7 @@ async function runEngine(indices){
 
         // Wait for a task to finish, OR a short timeout so per-chunk backoff windows and
         // per-chunk backoff windows get re-checked without a busy spin.
-        if(queue.length > 0 || activeRequests > 0) {
+        if(queue.hasPending() || activeRequests > 0) {
            await new Promise(r => { schedulerWakeup = r; setTimeout(r, 500); });
         }
     }
@@ -4448,16 +5023,14 @@ async function startTranslate(){
   if(!state.model){ alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
   
-  const offsets = splitChunksWithOffsets(text, chunkSizeVal());
+  let offsets = splitChunksWithOffsets(text, chunkSizeVal());
   // Bước 8 (Source Integrity): nếu partition/reconstruction không khớp 100% với văn bản gốc,
   // DỪNG NGAY — tuyệt đối không được bắt đầu dịch với chunk map có khả năng làm mất/lặp nội dung.
   if(offsets === null){
     alert('⚠️ Lỗi toàn vẹn chunk: dữ liệu chia chunk không khớp 100% với văn bản gốc. Đã DỪNG để tránh mất/lặp nội dung. Xem Console (F12) để biết chi tiết, hoặc báo lại đoạn văn bản này.');
     return;
   }
-  const chunks = offsets.map(o=>o.text);
-  currentChunks = chunks;
-  currentResults = new Array(chunks.length).fill(null);
+  currentResults = new Array(offsets.length).fill(null);
   
   document.getElementById('progLog').innerHTML=''; logEntries=[];
   document.getElementById('outputText').value='';
@@ -4465,14 +5038,29 @@ async function startTranslate(){
   try{ await sf_prepareFileForTranslation(text, offsets); }
   catch(e){ console.error('[SF Library] Lỗi chuẩn bị lưu thư viện:', e); }
 
-  buildChunkViewer(chunks);
-  
-  await runEngine(chunks.map((_,i)=>i));
+  // ĐỢT 7B — mục I: dùng sfChunkOffsets (global, đã được sf_prepareFileForTranslation() set ở
+  // trên — CHỈ start/end/stableId, KHÔNG có text) thay vì `offsets` cục bộ (vẫn còn field .text
+  // do chính Smart Chunking tạo ra — KHÔNG đụng tới pipeline đó). currentChunks giờ CHỈ slice()
+  // từ nguồn khi thực sự bị đọc (executeDynamicTask xây payload, buildCanonContext...), không
+  // giữ sẵn 1 bản copy full-text song song với window.__loadedSourceText nữa.
+  currentChunks = sf_makeLazyChunkTextView(sfChunkOffsets);
+  buildChunkViewer(sfChunkOffsets);
+
+  const indices = sfChunkOffsets.map((_,i)=>i);
+  offsets = null; // buông tham chiếu cục bộ còn giữ .text — không cần tới suốt phiên dịch (có thể rất dài với file lớn)
+  await runEngine(indices);
   await sf_onEngineFinished();
 }
 
 function stopTranslate(){
   stopFlag = true; pauseFlag = false;
+  // ĐỢT 7C — mục III: huỷ NGAY các request đang bay (thay vì để runEngine phải chờ chúng tự
+  // hoàn tất) — an toàn vì executeDynamicTask xử lý err.aborted RIÊNG (không đụng retryCount,
+  // không tính lỗi key, không đánh dấu sai DONE, không phá scheduler — xem mục III/executeDynamicTask).
+  // Bọc từng abort() trong try/catch để 1 controller lỗi không chặn việc huỷ các request còn lại.
+  for(const ctrl of activeAbortControllers){
+    try{ ctrl.abort(); }catch(e){ /* bỏ qua — đây chỉ là dọn dẹp tốt nhất có thể */ }
+  }
   logLine('warn', null, null, 'Đang gửi cờ Dừng...');
 }
 
@@ -4485,6 +5073,13 @@ function sfResetRuntimeSession(){
   if(running){
     if(!confirm('Đang có tiến trình dịch chạy. Dừng tiến trình và reset phiên hiện tại? (Dữ liệu đã lưu trong Thư viện/Cloud sẽ KHÔNG bị mất)')) return;
     stopFlag = true; pauseFlag = false;
+    // ĐỢT 7C — mục III: RESET xoá chunkState/currentResults NGAY bên dưới (không đợi runEngine's
+    // Promise.all như stopTranslate()) — nếu có request đang bay resolve SAU khi mảng đã bị xoá,
+    // nó sẽ ghi vào chunkState/currentResults MỚI (rỗng) bằng idx cũ, có thể tạo mảng sparse/lỗi
+    // tham chiếu. Huỷ các request đang bay trước khi xoá để loại bỏ hoàn toàn khả năng đó.
+    for(const ctrl of activeAbortControllers){
+      try{ ctrl.abort(); }catch(e){ /* bỏ qua — dọn dẹp tốt nhất có thể */ }
+    }
   }
   // Lớp RUNTIME — an toàn để xoá:
   currentChunks = [];
@@ -4508,7 +5103,9 @@ function sfResetRuntimeSession(){
   const startBtn = document.getElementById('startBtn'); if(startBtn) startBtn.disabled = false;
   const pauseBtn = document.getElementById('pauseBtn'); if(pauseBtn) pauseBtn.style.display = 'none';
   const stopBtn = document.getElementById('stopBtn'); if(stopBtn) stopBtn.style.display = 'none';
-  updateStats();
+  // ĐỢT 7A: reset không đổi nội dung sourceText, nên không cần re-chunk thật — preview nhanh
+  // là đủ để làm mới dashboard (chars/ước tính token).
+  sf_updateStatsPreview();
   updateProgressUI();
   logLine('info', null, null, '🔁 Đã reset phiên dịch (chỉ bộ nhớ tạm). Thư viện và Cloud giữ nguyên.');
   // Thư viện/resume banner đọc thẳng từ IndexedDB nên không hề bị ảnh hưởng bởi reset này.
@@ -4608,6 +5205,7 @@ const sfCloud = (function(){
   let user = null;         // Firebase user hiện tại (null = chưa đăng nhập)
   let syncState = 'idle';  // idle | syncing | error
   let pendingCount = 0;
+  let pendingCountLoaded = false; // ĐỢT 7B — mục III: đã nạp pendingCount THẬT từ IndexedDB (sfQ_count()) ít nhất 1 lần trong phiên chưa
   let cloudFilesCache = [];
   let cloudHistoryCache = [];
 
@@ -4622,8 +5220,29 @@ const sfCloud = (function(){
     else { el.textContent = '🔴 Mất mạng'; el.style.color = 'var(--red)'; }
   }
 
+  // ĐỢT 7B — mục III: CLOUD QUEUE
+  // ---------------------------------------------------------------------
+  // Trước đây updateStatusUI() gọi `await sfQ_all()).length` (đọc + deserialize TOÀN BỘ
+  // bảng cloudQueue) MỖI LẦN chỉ để lấy số lượng — và enqueue() (được gọi cho MỖI chunk
+  // dịch xong qua enqueueChunk) luôn kết thúc bằng updateStatusUI(). Với hàng đợi lớn
+  // (hàng nghìn item), đây là 1 full-table read lặp lại sau mỗi chunk chỉ để đếm.
+  // Fix: pendingCount là 1 bộ đếm RAM, tăng/giảm ngay tại enqueue()/flushQueue() (không cần
+  // đọc lại DB). sfQ_all()/sfQ_count() CHỈ được gọi ở các thời điểm thực sự cần: khởi động/
+  // khôi phục sau reload (ensurePendingCountLoaded ở init()), làm mới thủ công toàn bộ trạng
+  // thái (refreshPendingCount() ở syncNow()), và flushQueue() (đọc để XỬ LÝ, không phải để đếm).
+  async function refreshPendingCount(){
+    try{ pendingCount = await sfQ_count(); }catch(e){ console.error('[SF Cloud] refreshPendingCount lỗi:', e); }
+    pendingCountLoaded = true;
+    updateStatusUI();
+  }
+  function ensurePendingCountLoaded(){
+    if(pendingCountLoaded) return;
+    refreshPendingCount(); // fire-and-forget — updateStatusUI() sẽ được gọi lại khi xong
+  }
+
   function init(){
     updateNetworkOnlineUI();
+    ensurePendingCountLoaded(); // mục III: nạp pendingCount thật đúng 1 LẦN lúc khởi động (khôi phục sau reload)
     window.addEventListener('online', ()=>{ updateNetworkOnlineUI(); updateStatusUI(); flushQueue(); });
     window.addEventListener('offline', ()=>{ updateNetworkOnlineUI(); updateStatusUI(); });
 
@@ -4701,10 +5320,12 @@ const sfCloud = (function(){
   }
   function isSignedIn(){ return !!user; }
 
-  async function updateStatusUI(){
+  function updateStatusUI(){
     const pill = document.getElementById('cloudSyncPill');
     const netCloud = document.getElementById('netCloud');
-    if(available && user) pendingCount = (await sfQ_all()).length;
+    // ĐỢT 7B — mục III: KHÔNG còn đọc sfQ_all() ở đây — pendingCount được duy trì tăng/giảm
+    // ngay tại enqueue()/flushQueue() (xem bên dưới), nên hàm này giờ đồng bộ (không async/await)
+    // và không tạo bất kỳ request IndexedDB nào.
     let text, color;
     if(!available){ text='⚪ Local Mode'; color='var(--text-dim)'; }
     else if(!user){ text='⚪ Chưa đăng nhập'; color='var(--text-dim)'; }
@@ -4720,7 +5341,11 @@ const sfCloud = (function(){
   /* ---------- Sync queue (persist qua reload — mục VI/XV/XXI) ---------- */
   async function enqueue(type, payload){
     const item = { id: type+'_'+Date.now().toString(36)+'_'+Math.random().toString(36).slice(2,8), type, payload, createdAt: Date.now() };
-    await sfQ_put(item);
+    const ok = await sfQ_put(item);
+    // mục III: tăng đúng 1 lần cho MỖI item thật sự được ghi xuống hàng đợi. sfQ_put() tự
+    // nuốt lỗi nội bộ và trả về false nếu ghi thất bại — khi đó KHÔNG tăng, tránh đếm "ảo"
+    // 1 item chưa từng thực sự nằm trong cloudQueue (cũng tránh đếm trùng khi retry).
+    if(ok !== false) pendingCount++;
     updateStatusUI();
     flushQueue();
   }
@@ -4734,18 +5359,97 @@ const sfCloud = (function(){
   function enqueueDeleteFile(fileId){ if(!available) return; enqueue('delete_file', { fileId }); }
   function enqueueHistoryEvent(fileId, name, kind){ if(!available) return; enqueue('history', { fileId, name, kind, at: Date.now() }); }
 
+  // ĐỢT 7B — mục IV: CLOUD FLUSH
+  // ---------------------------------------------------------------------
+  // 'file'/'chunk'/'history' đều map thẳng 1-1 sang ĐÚNG 1 lần ghi Firestore .set() đơn giản,
+  // không có bước phụ nào khác (khác với 'source' — upload Storage, 'delete_file' — nhiều bước
+  // xoá, 'settings' — merge:false toàn bộ) — nên 3 loại này an toàn để gộp chung 1 Firestore
+  // batch, giảm số round-trip khi có nhiều item chờ (VD: nhiều chunk dịch xong gần như cùng lúc).
+  const SF_CLOUD_FLUSH_BATCH_SIZE = 25; // Firestore cho phép tới 500 write/batch — chủ động dùng số NHỎ hơn nhiều để 1 lỗi giữa chừng chỉ ảnh hưởng 1 nhóm nhỏ, dễ retry.
+  function sf_isBatchableQueueItem(item){
+    return !!item && (item.type === 'file' || item.type === 'chunk' || item.type === 'history');
+  }
+  function sf_queueItemDocRef(base, item){
+    if(item.type === 'file') return base.collection('files').doc(item.payload.id);
+    if(item.type === 'chunk') return base.collection('chunks').doc(item.payload.id);
+    // ĐỢT 7B hotfix: dùng lại item.id — ID ổn định được sinh đúng 1 lần lúc enqueue() (không đổi
+    // giữa các lần retry, vì cùng 1 record IndexedDB) — thay cho .doc() không tham số (tự sinh
+    // ID Firestore MỚI mỗi lần gọi). Nếu không: commit Firestore thành công nhưng sfQ_delete thất
+    // bại → lần flush sau ghi lại → ID mới → 2 record history cho cùng 1 sự kiện.
+    if(item.type === 'history') return base.collection('history').doc(item.id);
+    return null;
+  }
+
   async function flushQueue(){
     if(!available || !user || !navigator.onLine || syncState==='syncing') { updateStatusUI(); return; }
     syncState = 'syncing'; updateStatusUI();
+    // mục III: đây LÀ 1 trong các thời điểm "thực sự cần" đọc toàn bộ cloudQueue — không thể xử
+    // lý hàng đợi mà không đọc nó (khác với updateStatusUI() cũ, hàm này chỉ chạy khi THỰC SỰ
+    // đồng bộ, không chạy sau mỗi chunk chỉ để đếm).
     const items = await sfQ_all();
-    for(const item of items){
-      try{
-        await processQueueItem(item);
-        await sfQ_delete(item.id);
-      }catch(e){
-        console.error('[SF Cloud] Đồng bộ item lỗi, sẽ thử lại sau (không mất dữ liệu local):', item.type, e);
-        syncState = 'error'; updateStatusUI();
-        return; // dừng, phần còn lại vẫn nằm trong cloudQueue — thử lại ở flush kế tiếp
+    const uid = user.uid;
+    const base = db.collection('users').doc(uid);
+    let i = 0;
+    while(i < items.length){
+      const item = items[i];
+      if(sf_isBatchableQueueItem(item)){
+        // Gom tối đa SF_CLOUD_FLUSH_BATCH_SIZE item BATCHABLE liên tiếp thành 1 Firestore batch —
+        // 1 lần commit thay vì nhiều request tuần tự riêng lẻ.
+        const group = [];
+        while(i < items.length && group.length < SF_CLOUD_FLUSH_BATCH_SIZE && sf_isBatchableQueueItem(items[i])){
+          group.push(items[i]); i++;
+        }
+        try{
+          const batch = db.batch();
+          group.forEach(g=>{
+            const ref = sf_queueItemDocRef(base, g);
+            if(g.type === 'history') batch.set(ref, g.payload);
+            else batch.set(ref, g.payload, { merge:true });
+          });
+          // mục IV: KHÔNG xoá bất kỳ item nào khỏi cloudQueue trước khi ghi thành công.
+          await batch.commit();
+          for(const g of group){
+            // ĐỢT 7B hotfix: chỉ giảm pendingCount khi sfQ_delete THẬT SỰ xoá được record khỏi
+            // IndexedDB. Nếu xoá thất bại (Firestore đã commit rồi, chỉ local delete lỗi): giữ
+            // nguyên item trong hàng đợi + KHÔNG giảm đếm + chuyển syncState='error' + dừng vòng
+            // lặp — lần flush sau (retry) sẽ ghi lại CÙNG document ID (an toàn nhờ ID ổn định /
+            // merge:true ở trên) rồi thử xoá lại.
+            const deleted = await sfQ_delete(g.id);
+            if(deleted === true){
+              pendingCount = Math.max(0, pendingCount - 1);
+            } else {
+              console.error('[SF Cloud] sfQ_delete thất bại sau khi commit thành công, giữ item trong queue để retry:', g.id);
+              syncState = 'error'; updateStatusUI();
+              return;
+            }
+          }
+        }catch(e){
+          console.error('[SF Cloud] Đồng bộ theo batch lỗi, sẽ thử lại sau (không mất dữ liệu local):', e);
+          syncState = 'error'; updateStatusUI();
+          return; // dừng; cả nhóm (chưa item nào bị xoá) vẫn còn nguyên trong cloudQueue để thử lại ở lần flush kế tiếp
+        }
+      } else {
+        // Loại không gộp batch được (upload Storage 'source', xoá nhiều bước 'delete_file',
+        // 'settings' merge:false) — giữ NGUYÊN xử lý tuần tự từng item như code cũ, không đổi hành vi/giới hạn quota đang dùng.
+        try{
+          await processQueueItem(item);
+          // ĐỢT 7B hotfix: cùng nguyên tắc như nhánh batch — chỉ giảm pendingCount + tăng i (coi
+          // như xong) khi sfQ_delete trả về true. Xoá thất bại → giữ item, KHÔNG giảm đếm,
+          // chuyển syncState='error', dừng để lần flush sau retry đúng item này.
+          const deleted = await sfQ_delete(item.id);
+          if(deleted === true){
+            pendingCount = Math.max(0, pendingCount - 1);
+            i++;
+          } else {
+            console.error('[SF Cloud] sfQ_delete thất bại sau khi xử lý thành công, giữ item trong queue để retry:', item.type, item.id);
+            syncState = 'error'; updateStatusUI();
+            return;
+          }
+        }catch(e){
+          console.error('[SF Cloud] Đồng bộ item lỗi, sẽ thử lại sau (không mất dữ liệu local):', item.type, e);
+          syncState = 'error'; updateStatusUI();
+          return; // dừng, phần còn lại vẫn nằm trong cloudQueue — thử lại ở flush kế tiếp
+        }
       }
     }
     syncState = 'idle';
@@ -4792,7 +5496,7 @@ const sfCloud = (function(){
     }
   }
 
-  function syncNow(){ flushQueue(); refreshCloudLibrary(); refreshCloudHistory(); }
+  function syncNow(){ refreshPendingCount(); flushQueue(); refreshCloudLibrary(); refreshCloudHistory(); }
 
   /* ---------- Cloud Library / History (đọc để tải truyện về máy khác — mục V/VIII) ---------- */
   async function refreshCloudLibrary(){
@@ -4953,7 +5657,7 @@ function sfShowSecurityRules(){
 }
 
 /* KEEP ALIVE / INITIALIZE */
-updateStats();
+sf_updateStatsPreview();
 hydrateLibrary().catch(e=>console.error('[SF Library] Lỗi khởi tạo thư viện:', e));
 sfPromptLib_init().catch(e=>sf_recordRuntimeError('prompt-library-init', e && e.message ? e.message : String(e)));
 sfCanon_init().catch(e=>sf_recordRuntimeError('canon-pack-init', e && e.message ? e.message : String(e)));
