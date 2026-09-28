@@ -2505,8 +2505,8 @@ function sfPrompt_newId(prefix){ return (prefix||'p') + '_' + sfPrompt_now().toS
 function sfPromptLib_defaultRecords(){
   const now = sfPrompt_now();
   return [
-    { id:'base_default', name:'Prompt gốc (Hệ thống)', type:'base', content: SF_BASE_PROMPT_DEFAULT, enabled:true, createdAt:now, updatedAt:now, protected:true },
-    { id:'translation_default', name:'Prompt gốc (Dịch thuật)', type:'translation', content: SF_TRANSLATION_PROMPT_DEFAULT, enabled:true, createdAt:now, updatedAt:now, protected:true }
+    { id:'base_default', name:'18', type:'base', content: SF_BASE_PROMPT_DEFAULT, enabled:true, createdAt:now, updatedAt:now, protected:true },
+    { id:'translation_default', name:'sắc hiệp', type:'translation', content: SF_TRANSLATION_PROMPT_DEFAULT, enabled:true, createdAt:now, updatedAt:now, protected:true }
   ];
 }
 // Khởi tạo Thư viện Prompt: đọc từ IndexedDB; nếu trống (lần đầu chạy), tạo 2 prompt gốc mặc định.
