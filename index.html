@@ -835,6 +835,7 @@
             <div style="font-weight:600; font-size:13px; margin-bottom:4px;">🎨 Mẫu prompt theo thể loại</div>
             <div class="hint" style="margin-bottom:8px;">Bấm 1 thể loại → chỉ prompt đó được dùng để dịch (prompt gốc và mọi prompt khác tự tắt, không bị xoá). Nút sáng viền là prompt đang dùng. Bạn vẫn sửa nội dung ngay trong Thư viện.</div>
             <div id="sfTplBar" class="btn-row" style="gap:6px; flex-wrap:wrap;"></div>
+            <div style="margin-top:8px;"><button type="button" class="btn small" id="sfTplShowAll">👁 Hiện cả prompt đã tắt</button></div>
           </div>
           <div class="acc" id="acc-prompt-preview" style="margin-top:12px;">
             <div class="acc-head" onclick="toggleAcc('acc-prompt-preview')">
@@ -5962,6 +5963,27 @@ sfCloud.init();
       });
     }catch(e){}
   }
+  // ẨN các thẻ prompt đang TẮT trong Thư viện — chỉ thẻ đang bật được hiển thị.
+  // Chỉ đổi style hiển thị (display), không sửa/xoá dữ liệu, không đụng hàm render có sẵn.
+  let showAll = false;
+  function applyHide(){
+    try{
+      const list = document.getElementById('promptLibraryList'); if(!list) return;
+      list.querySelectorAll('.sf-prompt-card').forEach(card=>{
+        const on = !!card.querySelector('.switch.on');
+        card.style.display = (showAll || on) ? '' : 'none';
+      });
+      const btn = document.getElementById('sfTplShowAll');
+      if(btn) btn.textContent = showAll ? '🙈 Ẩn prompt đã tắt' : '👁 Hiện cả prompt đã tắt';
+    }catch(e){}
+  }
+  (function(){
+    const list = document.getElementById('promptLibraryList');
+    if(list) new MutationObserver(applyHide).observe(list, {childList:true});
+    const btn = document.getElementById('sfTplShowAll');
+    if(btn) btn.addEventListener('click', ()=>{ showAll = !showAll; applyHide(); });
+    applyHide();
+  })();
   renderBar();
   setInterval(refreshActive, 800);
 })();
