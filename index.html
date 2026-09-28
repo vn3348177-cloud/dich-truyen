@@ -833,7 +833,7 @@
           <!-- MẪU PROMPT THEO THỂ LOẠI (thêm mới, độc lập — không đụng code khác) -->
           <div id="sfTplBox" style="margin-top:12px; padding:10px 12px; border:1px dashed var(--panel-border); border-radius:10px;">
             <div style="font-weight:600; font-size:13px; margin-bottom:4px;">🎨 Mẫu prompt theo thể loại</div>
-            <div class="hint" style="margin-bottom:8px;">Bấm 1 thể loại để thêm vào Thư viện dưới dạng prompt tuỳ chỉnh (tự bật, các mẫu thể loại khác tự tắt). Sau đó bạn vẫn sửa/đổi tên/xoá như prompt thường.</div>
+            <div class="hint" style="margin-bottom:8px;">Bấm 1 thể loại → chỉ prompt đó được dùng để dịch (prompt gốc và mọi prompt khác tự tắt, không bị xoá). Nút sáng viền là prompt đang dùng. Bạn vẫn sửa nội dung ngay trong Thư viện.</div>
             <div id="sfTplBar" class="btn-row" style="gap:6px; flex-wrap:wrap;"></div>
           </div>
           <div class="acc" id="acc-prompt-preview" style="margin-top:12px;">
@@ -5919,17 +5919,20 @@ sfCloud.init();
       const g = GENRES.find(x=>x[0]===id); if(!g) return;
       const tplId = 'tpl_' + id;
       const existing = sfPromptLibrary.find(p=>p.tplId===tplId);
-      // Tắt các mẫu thể loại khác (chỉ những prompt do module này tạo ra — có tplId)
+      // CHẾ ĐỘ CHỌN 1: chỉ prompt được bấm được bật. Tắt TẤT CẢ prompt còn lại
+      // (prompt gốc Hệ thống, gốc Dịch thuật, tuỳ chỉnh, mẫu thể loại khác). Không xoá gì cả.
       const changed = [];
-      sfPromptLibrary.forEach(p=>{ if(p.tplId && p.tplId!==tplId && p.enabled){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); } });
+      sfPromptLibrary.forEach(p=>{
+        if(p.tplId!==tplId && p.enabled){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); }
+      });
       if(existing){
-        existing.enabled = true; existing.updatedAt = sfPrompt_now(); changed.push(existing);
+        if(!existing.enabled){ existing.enabled = true; existing.updatedAt = sfPrompt_now(); changed.push(existing); }
       } else {
         const rec = { id: sfPrompt_newId('tpl'), tplId, name: g[1]+' '+g[2], type:'custom', content: buildContent(g), enabled:true, createdAt: sfPrompt_now(), updatedAt: sfPrompt_now() };
         sfPromptLibrary.push(rec); changed.push(rec);
       }
       for(const r of changed){ await sfPromptDB_put(r); }
-      sfPromptLib_render(); sfPrompt_syncToBox();
+      sfPromptLib_render(); sfPrompt_syncToBox(); refreshActive();
     }catch(e){ console.error('sfTpl', e); alert('Không thêm được mẫu prompt: ' + (e && e.message ? e.message : e)); }
   }
   window.sfTpl_add = addTemplate;
@@ -5945,7 +5948,22 @@ sfCloud.init();
       bar.appendChild(b);
     });
   }
+  function refreshActive(){
+    try{
+      const bar = document.getElementById('sfTplBar'); if(!bar || typeof sfPromptLibrary==='undefined') return;
+      const onIds = new Set(sfPromptLibrary.filter(p=>p.enabled && p.tplId).map(p=>p.tplId));
+      // chỉ coi là "đang dùng" nếu đó là prompt duy nhất đang bật
+      const solo = sfPromptLibrary.filter(p=>p.enabled).length === 1;
+      Array.from(bar.children).forEach((b,i)=>{
+        const on = solo && onIds.has('tpl_'+GENRES[i][0]);
+        b.style.borderColor = on ? 'var(--accent)' : '';
+        b.style.background = on ? '#211c40' : '';
+        b.style.color = on ? 'var(--accent2)' : '';
+      });
+    }catch(e){}
+  }
   renderBar();
+  setInterval(refreshActive, 800);
 })();
 </script>
 </body>
