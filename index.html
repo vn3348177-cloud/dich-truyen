@@ -797,6 +797,18 @@
             <div class="statchip" id="canonStatusChip">Trạng thái: Chưa tạo</div>
             <div class="statchip" id="canonCountsChip">0 thực thể</div>
           </div>
+          <!-- ĐỢT 7D — AUTO CONTEXT ENGINE: chạy tự động khi dịch, KHÔNG cần thao tác.
+               Chỉ có 1 công tắc bật/tắt; mọi thứ còn lại (Canon/Relations/Speaker/Integrity) là Auto. -->
+          <div class="switchrow" style="margin-bottom:8px;">
+            <div class="switch on" id="ctxAutoSwitch" onclick="toggleContextAuto()"></div>
+            <span style="font-size:13px;">🧠 <b>Auto Context Engine</b> — tự phân tích Canon/quan hệ nhân vật/người nói, tự tạo Context Pack, tự kiểm tra &amp; sửa lỗi bản dịch khi cần</span>
+          </div>
+          <div class="statchips" style="margin-bottom:10px;">
+            <div class="statchip" id="ctxAutoChip">🧠 Context: Auto</div>
+            <div class="statchip" id="ctxRelationChip">Relations: 0</div>
+            <div class="statchip" id="ctxSpeakerChip">Speaker: —</div>
+            <div class="statchip" id="ctxIntegrityChip">Integrity: Auto</div>
+          </div>
           <div class="btn-row" style="margin-bottom:10px;">
             <button type="button" class="btn small" id="canonExtractBtn" onclick="sfCanon_scanFile()">🔍 Quét toàn bộ file</button>
             <button type="button" class="btn small" onclick="sfCanon_openModal()">📋 Xem Canon</button>
@@ -1168,6 +1180,9 @@ let state = {
 };
 let running = false;
 let stopFlag = false;
+// ĐỢT 7D — AUTO CONTEXT ENGINE: bật mặc định (one-click). Khi TẮT, mọi đường dịch quay lại
+// đúng 100% hành vi cũ (buildCanonContext + prompt hiện có), không thêm request nào.
+let sfContextAutoOn = true;
 // ĐỢT 7C — mục III: tập các AbortController của các request ĐANG BAY, để stopTranslate() có
 // thể huỷ ngay lập tức thay vì phải chờ chúng tự hoàn tất (tốn mạng/pin, nhất là trên mobile).
 let activeAbortControllers = new Set();
@@ -1273,7 +1288,7 @@ function sf_makeLazyChunkTextView(offsets){
 
 /* ---------- 1. IndexedDB: mở DB + tạo object store ---------- */
 const SF_DB_NAME = 'StoryForgeLibrary';
-const SF_DB_VERSION = 3; // v3 (Đợt 6): + 'prompts' (Prompt Library) + 'canonEntities' (Canon Pack). Không đụng store cũ.
+const SF_DB_VERSION = 4; // v3 (Đợt 6): + 'prompts' (Prompt Library) + 'canonEntities' (Canon Pack). v4 (Đợt 7D): + 'canonRelations' (Relation Graph) + 'contextState' (Auto Context State). Không đụng store cũ — chỉ THÊM store, tương thích ngược 100%.
 let __sfDbPromise = null;
 
 function openSFDatabase(){
@@ -1318,6 +1333,15 @@ function openSFDatabase(){
       // ĐỢT 6 — Canon Pack cache metadata (trạng thái quét gần nhất theo fileId+sourceHash).
       if(!db.objectStoreNames.contains('canonMeta')){
         db.createObjectStore('canonMeta', { keyPath:'fileId' });
+      }
+      // ĐỢT 7D — Relation Graph: mỗi quan hệ nhân vật (có hướng) là 1 record, gắn với fileId.
+      if(!db.objectStoreNames.contains('canonRelations')){
+        const cr = db.createObjectStore('canonRelations', { keyPath:'id' });
+        cr.createIndex('fileId', 'fileId', { unique:false });
+      }
+      // ĐỢT 7D — Auto Context State (speaker/listener/cảnh hiện tại theo file), 1 record/file.
+      if(!db.objectStoreNames.contains('contextState')){
+        db.createObjectStore('contextState', { keyPath:'fileId' });
       }
     };
     req.onsuccess = ()=> resolve(req.result);
@@ -1664,6 +1688,7 @@ function sf_collectConfig(){
     contextMode: ctxBtn ? ctxBtn.dataset.cm : 'hybrid',
     canonOn: !!(canonSwitch && canonSwitch.classList.contains('on')),
     canonInput: document.getElementById('canonInput')?.value || '',
+    contextAutoOn: (typeof sfContextAutoOn !== 'undefined') ? !!sfContextAutoOn : true, // ĐỢT 7D
     corsOn: typeof corsOn !== 'undefined' ? corsOn : false,
     corsProxyUrl: document.getElementById('corsProxyUrl')?.value || ''
   };
@@ -1683,6 +1708,13 @@ function sf_applyConfigToUI(cfg){
   const canonSwitch = document.getElementById('canonSwitch');
   if(canonSwitch){ canonSwitch.classList.toggle('on', !!cfg.canonOn); state.canonOn = !!cfg.canonOn; }
   if(document.getElementById('canonInput')) document.getElementById('canonInput').value = cfg.canonInput || '';
+  // ĐỢT 7D: khôi phục trạng thái Auto Context (field mới — config cũ không có thì giữ mặc định BẬT).
+  if(cfg.contextAutoOn != null && typeof sfContextAutoOn !== 'undefined'){
+    sfContextAutoOn = !!cfg.contextAutoOn;
+    const ctxSw = document.getElementById('ctxAutoSwitch');
+    if(ctxSw) ctxSw.classList.toggle('on', sfContextAutoOn);
+    if(typeof sfContext_renderChips === 'function') sfContext_renderChips();
+  }
 }
 // Hook đã được tham chiếu sẵn ở toggleCors() từ trước (typeof-guarded) — giờ triển khai thật.
 function saveLastSessionConfig(){
@@ -1945,6 +1977,9 @@ async function restoreFile(fileId){
   document.getElementById('resumeBanner').style.display = 'none';
   // ĐỢT 6 — mục IX: nạp lại Canon Pack gắn với ĐÚNG file vừa mở (không lẫn sang file khác).
   if(typeof sfCanon_ensureLoadedForCurrentFile === 'function') sfCanon_ensureLoadedForCurrentFile().catch(e=>sf_recordRuntimeError('canon-restore', e && e.message ? e.message : String(e)));
+  // ĐỢT 7D — mục XVI: nạp Relation Graph + Context State (hoặc rebuild từ các chunk DONE gần
+  // nhất) — Resume không mất Context, không dịch lại DONE, không bắt user quét lại Canon.
+  if(typeof sfContext_onFileRestored === 'function') sfContext_onFileRestored().catch(e=>sf_recordRuntimeError('context-restore', e && e.message ? e.message : String(e)));
   return fileRec;
 }
 
@@ -2032,6 +2067,14 @@ async function continueUnfinishedTranslation(fileId){
 
   const rec = await restoreFile(fileId);
   if(!rec) return;
+  // ĐỢT 7D: đảm bảo Context đã sẵn sàng cho phiên Resume (await để tránh race với runEngine)
+  // + tự quét Canon nếu file này chưa có Canon Pack nào (one-click, đúng mục XIV).
+  if(typeof sfContext_onFileRestored === 'function'){
+    try{ await sfContext_onFileRestored(); }catch(e){ sf_recordRuntimeError('context-resume', e && e.message ? e.message : String(e)); }
+  }
+  if(sf_isContextAutoOn()){
+    try{ await sfContext_ensureCanonAutoScan(); }catch(e){ sf_recordRuntimeError('context-autocanon-resume', e && e.message ? e.message : String(e)); }
+  }
   if(!state.model){ alert('Nhập model trước khi tiếp tục.'); return; }
   if(chunkState.length === 0){ alert('Truyện này chưa có chunk nào để tiếp tục.'); return; }
 
@@ -3089,7 +3132,7 @@ let sfCanonScanning = false;
 // dụng nguyên vẹn qua hàng nghìn chunk mà không filter+sort lại (mục VIII/Test F).
 let sfCanonConfirmedSortedCache = null;
 let sfCanonDirty = true;
-function sfCanon_markDirty(){ sfCanonDirty = true; }
+function sfCanon_markDirty(){ sfCanonDirty = true; if(typeof sfContext_onCanonChanged==='function') sfContext_onCanonChanged(); }
 
 async function sfCanon_init(){ /* không cần preload gì lúc khởi động — Canon gắn theo từng file, nạp lazy (mục IX) */ }
 
@@ -3359,7 +3402,7 @@ async function sfCanon_countOccurrencesForAllEntities(text, entityNameLists){
 }
 
 // QUÉT TOÀN BỘ FILE — điểm vào chính của nút "🔍 Quét toàn bộ file".
-async function sfCanon_scanFile(){
+async function sfCanon_scanFile(retryFailedOnly=false){
   if(sfCanonScanning){ alert('Đang quét Canon Pack, vui lòng đợi.'); return; }
   if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
   if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
@@ -3377,14 +3420,25 @@ async function sfCanon_scanFile(){
   const fileId = sfCurrentFileId;
   const sourceHash = sf_computeSourceHash(text);
   sfCanonScanning = true;
-  sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status:'scanning', scannedAt: Date.now(), warnings: 0 };
+  const priorMeta = (sfCanonMetaCurrent && sfCanonMetaCurrent.fileId === fileId && sfCanonMetaCurrent.sourceHash === sourceHash) ? sfCanonMetaCurrent : null;
+  const retryIndexes = priorMeta && Array.isArray(priorMeta.failedWindows) ? priorMeta.failedWindows.slice() : [];
+  const shouldRetryOnly = !!(retryFailedOnly && priorMeta && retryIndexes.length);
+  sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status:'scanning', scannedAt: Date.now(), warnings: 0, entityCount: sfCanonEntities.length, failedWindows: shouldRetryOnly ? retryIndexes.slice() : [] };
   sfCanon_renderPanel();
 
+  // [7D-FIX] FIX #1: bọc thân quét trong try/catch — nếu scan bị lỗi giữa chừng thì meta
+  // ghi status 'error' (để lần sau Auto Scan biết mà quét lại) thay vì kẹt cờ scanning mãi.
+  let warnings = 0;
+  let scanFailed = null;
+  let failedWindows = [];
+  let finalCount = sfCanonEntities.length;
+  try{
   const windows = sfCanon_splitScanWindows(text);
   const merged = new Map(); // key: category::normalizedName -> entity draft
-  let warnings = 0;
-
-  for(let w=0; w<windows.length; w++){
+  const scanTargets = shouldRetryOnly
+    ? retryIndexes.filter(i=> Number.isInteger(i) && i>=0 && i<windows.length)
+    : windows.map((_,i)=>i);
+  for(const w of scanTargets){
     try{
       const raw = await sfCanon_callExtract(windows[w].text);
       const items = sfCanon_safeParseEntities(raw);
@@ -3410,6 +3464,7 @@ async function sfCanon_scanFile(){
       }
     }catch(e){
       warnings++;
+      failedWindows.push(w);
       sf_recordRuntimeError('canon-scan-window-'+w, e && e.message ? e.message : String(e));
       // 1 cửa sổ lỗi KHÔNG được làm dừng toàn bộ quét (mục III) — tiếp tục cửa sổ kế tiếp.
     }
@@ -3430,10 +3485,13 @@ async function sfCanon_scanFile(){
     const prior = existingById.get(key);
     const { occurrences, firstSeen, lastSeen } = occResults[mi];
     if(prior){
+      // [7D-FIX] FIX #1/#4: entity đã Confirmed/Locked (người dùng đã khóa) — GIỮ NGUYÊN
+      // translation/confidence/status khi merge kết quả scan mới, Auto Scan không được ghi đè.
+      const userLocked = (prior.status === 'confirmed' || prior.status === 'locked');
       finalRecords.push(Object.assign({}, prior, {
         aliases: Array.from(new Set([...(prior.aliases||[]), ...draft.aliases])),
         translation: prior.translation || draft.translation,
-        confidence: draft.confidence,
+        confidence: userLocked ? prior.confidence : draft.confidence,
         occurrences, firstSeen, lastSeen,
         notes: draft.notes || prior.notes,
         updatedAt: now
@@ -3457,11 +3515,20 @@ async function sfCanon_scanFile(){
   await sfCanonDB_putMany(finalRecords);
   sfCanonEntities = finalRecords;
   sfCanon_markDirty(); // entity list vừa thay hoàn toàn -> cache confirmed/sort (mục VIII) phải rebuild
-  sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status: warnings>0 ? 'warning' : 'done', scannedAt: now, warnings };
+  // [7D-FIX] scan meta rõ ràng: sourceHash + status + scannedAt + entityCount (mục II.F).
+  sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status: warnings>0 ? 'warning' : 'done', scannedAt: now, warnings, entityCount: finalRecords.length, failedWindows: failedWindows.slice(), scanMode: shouldRetryOnly ? 'retry-failed' : 'full', totalWindows: windows.length, completedWindows: windows.length - failedWindows.length };
   await sfCanonDB_putMeta(sfCanonMetaCurrent);
+  finalCount = finalRecords.length;
+  }catch(scanErr){ // [7D-FIX] scan bị lỗi -> meta status 'error' để Auto Scan lần sau quét lại
+    scanFailed = scanErr;
+    sfCanonMetaCurrent = { fileId, sourceHash, canonVersion: 1, status: 'error', scannedAt: Date.now(), warnings: warnings, entityCount: sfCanonEntities.length, failedWindows: failedWindows.slice(), scanMode: shouldRetryOnly ? 'retry-failed' : 'full' };
+    try{ await sfCanonDB_putMeta(sfCanonMetaCurrent); }catch(_e){}
+    sf_recordRuntimeError('canon-scan', scanErr && scanErr.message ? scanErr.message : String(scanErr));
+    logLine('err', null, null, '⚠️ [7D-FIX][CANON] Quét Canon lỗi giữa chừng (' + (scanErr && scanErr.message ? scanErr.message : scanErr) + ') — meta ghi status=error, lần dịch sau sẽ tự quét lại.');
+  }
   sfCanonScanning = false;
   sfCanon_renderPanel();
-  logLine('ok', null, null, `📚 Canon Pack: quét xong ${windows.length} cửa sổ, ${finalRecords.length} thực thể (${warnings} cửa sổ lỗi).`);
+  if(!scanFailed) logLine('ok', null, null, `📚 Canon Pack: quét xong, ${finalCount} thực thể (${warnings} cửa sổ lỗi).`);
 }
 
 // "Đồng bộ Canon với bản dịch": KHÔNG gọi lại AI — chỉ tính lại occurrences/firstSeen/lastSeen
@@ -3494,6 +3561,10 @@ async function sfCanon_clearForFile(){
   sfCanonMetaCurrent = null;
   sfCanon_markDirty();
   sfCanon_renderPanel();
+  // ĐỢT 7D: Relation Graph suy ra từ Canon — xoá theo cho khỏi lệch knowledge base.
+  if(typeof sfRelDB_clearForFile==='function' && sfCurrentFileId){
+    try{ await sfRelDB_clearForFile(sfCurrentFileId); sfRelations = []; if(typeof sfContext_renderChips==='function') sfContext_renderChips(); }catch(e){}
+  }
 }
 
 function sfCanon_exportJson(){
@@ -3572,7 +3643,7 @@ function sfCanon_promptMerge(id){
 }
 
 /* ---------- Render UI ---------- */
-const SF_CANON_STATUS_LABEL = { scanning:'Đang phân tích', done:'Hoàn thành', warning:'Có cảnh báo', stale:'Nguồn đã đổi — nên quét lại', error:'Lỗi' };
+const SF_CANON_STATUS_LABEL = { scanning:'Đang phân tích', done:'Hoàn thành', warning:'Có cảnh báo', stale:'Nguồn đã đổi — nên quét lại', error:'Lỗi', locked:'Đã khóa' };
 function sfCanon_renderPanel(){
   try{
     const statusChip = document.getElementById('canonStatusChip');
@@ -3675,6 +3746,981 @@ function buildCanonContext(idx){
   return `[CANON — GIỮ NHẤT QUÁN TÊN RIÊNG/THUẬT NGỮ SAU]:\n${lines.join('\n')}\n[HẾT CANON]\n`;
 }
 /* ===== HẾT V-X. CANON PACK ===== */
+
+/* =====================================================================
+   ĐỢT 7D — AUTO CONTEXT ENGINE
+   ---------------------------------------------------------------------
+   Lớp MỚI nằm BÊN NGOÀI các hệ thống hiện có. KHÔNG thay đổi kiến trúc
+   Smart Chunking / Scheduler (READY queue + BACKOFF heap) / Key Pool /
+   RPM / 429 failover / Retry / AbortController / Resume / IndexedDB cũ /
+   Prompt Library / Canon Pack hiện tại.
+
+   Luồng: SOURCE → (Canon Pack đã có sẵn / tự quét nếu trống) → Relation Graph
+   (local, có hướng) → Speaker/Listener tracking (local heuristic) →
+   buildContextPackForChunk(idx) → 1 request dịch/chunk → Local Integrity Check
+   → (chỉ khi ANOMALY nghiêm trọng) tối đa 1 AI Repair → DONE.
+
+   Ngân sách request: bình thường 1 chunk ≈ 1 request dịch. Repair chỉ chạy
+   khi Integrity FAIL nghiêm trọng, tối đa SF_INTEGRITY_MAX_REPAIR_PER_CHUNK
+   lần/chunk. Không có reviewer request cho mọi chunk.
+
+   Đại từ/xưng hô (ta, ngươi, hắn, nàng, lão, lão bà, phu quân, sư phụ...)
+   KHÔNG bao giờ bị ép thành Canon cứng — chỉ đưa vào Context Pack dạng gợi ý
+   theo người nói/người nghe/quan hệ hiện tại, quyết định cuối theo CONTEXT.
+   ===================================================================== */
+function sf_isContextAutoOn(){ return !!sfContextAutoOn; }
+function toggleContextAuto(){
+  sfContextAutoOn = !sfContextAutoOn;
+  const sw = document.getElementById('ctxAutoSwitch'); if(sw) sw.classList.toggle('on', sfContextAutoOn);
+  if(typeof sfContext_renderChips==='function') sfContext_renderChips();
+  if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+}
+
+/* ---------- Hằng số & trạng thái runtime ---------- */
+const SF_CONTEXT_PACK_MAX_CHARS = 1600;   // trần phần NỘI DUNG động của Context Pack (chưa gồm khối quy tắc)
+// Dự trữ budget (ký tự) cho Context Pack khi tính effectiveInputBudget — gồm khối quy tắc cố định
+// + phần động tối đa + thẻ bao. Chỉ ÁP khi Auto Context đang bật; khi tắt giữ nguyên dự trữ Canon cũ.
+const SF_CONTEXT_PACK_RESERVE_CHARS = 2500;
+const SF_INTEGRITY_MAX_REPAIR_PER_CHUNK = 1; // mục XI: Repair TỐI ĐA 1 lần/chunk
+const SF_CONTEXT_CACHE_MAX = 400;            // trần số entry cache Context Pack (LRU đơn giản theo thứ tự chèn)
+
+// Quy tắc dịch cố định đi kèm Context Pack (mục VIII/IX/XXI/XXII — cô đọng để tiết kiệm token).
+const SF_CONTEXT_RULES_BLOCK = '[QUY TẮC DỊCH — BẮT BUỘC]: (1) Đọc hiểu TOÀN BỘ đoạn trước khi dịch; tự xác định người nói/người nghe từ ngữ cảnh (gợi ý bên dưới chỉ để tham khảo, không được áp máy móc). (2) Tên riêng/thuật ngữ trong mục CANON KHÓA là bắt buộc giữ đúng, không được tự ý đổi. (3) Đại từ/cách xưng hô (ta, ngươi, hắn, nàng, y, lão, lão bà, phu quân, sư phụ, sư huynh, sư tỷ, tiểu tử, đại nhân...) phải theo QUAN HỆ và NGỮ CẢNH từng câu — TUYỆT ĐỐI không gán một mẫu cố định cho cả truyện. (4) Giữ nguyên 100% thông tin: không thêm/bớt tình tiết hay nội tâm, không đổi hành động/số lượng/quan hệ/nguyên nhân-kết quả, không làm yếu chi tiết, không diễn giải thành nội dung khác nghĩa, không đổi số & tiêu đề chương (kể cả dạng "Chương 1089 (2)"), không tạo chương mới. (5) Dịch tự nhiên như bản dịch văn học tiếng Việt nhưng TRUNG THÀNH quan trọng hơn MƯỢT. (6) Chỉ output bản dịch — không giải thích, không markdown, không lời dẫn.';
+
+let sfRelations = [];              // SF_RELATION_GRAPH — cache RAM cho file đang mở, đồng bộ IndexedDB 'canonRelations'
+let sfRelationsPersistTimer = null;
+const SF_CONTEXT_CACHE = new Map(); // SF_CONTEXT_CACHE: key = fileId|chunkIndex|canonVersion|contextVersion -> {text, stats}
+let sfContext_canonVersion = 0;     // tăng mỗi khi Canon thực sự thay đổi (mọi điểm gọi sfCanon_markDirty)
+let sfContext_integrityStats = { checked:0, passed:0, repaired:0, failed:0, checkErrors:0 };
+let sfContext_stateSaveTimer = null;
+let sfContext_lastPackLogSig = '';  // chống spam log [Context] khi pack không đổi
+
+// SF_CONTEXT_STATE — theo dõi người nói/người nghe/cảnh (mục V). Persist vào store 'contextState'.
+function sfContext_newState(fileId){
+  return {
+    fileId: fileId || null,
+    lastSpeaker: null, lastListener: null,
+    activeCharacters: [],   // tối đa ~8 nhân vật hoạt động gần nhất
+    activeLocation: null, activeScene: null,
+    recentEntities: [],     // thuật ngữ/canon vừa xuất hiện (ring buffer nhỏ)
+    recentRelations: [],    // id các edge vừa chạm tới
+    recentTerms: [],
+    recentTranslationContext: '', // đuôi bản dịch gần nhất (tham khảo xưng hô)
+    lastDoneIdx: -1,        // prefix DONE liên tục đã được hấp thụ vào state
+    version: 0,             // contextVersion — tăng khi state đổi đáng kể (dùng trong cache key)
+    updatedAt: Date.now()
+  };
+}
+let SF_CONTEXT_STATE = sfContext_newState(null);
+
+// Canon thay đổi → tăng canonVersion (cache pack cũ tự "hết hạn" theo key, KHÔNG clear toàn bộ
+// cache mỗi chunk — chỉ invalidate đúng phần liên quan qua key mới) + hủy cache priority list.
+let sfContext_canonPriorityCache = null;
+function sfContext_onCanonChanged(){
+  sfContext_canonVersion++;
+  sfContext_canonPriorityCache = null;
+}
+
+/* ---------- Relation Graph: IndexedDB CRUD (mô phỏng đúng khuôn mẫu sfCanonDB_*) ---------- */
+async function sfRelDB_getAllForFile(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonRelations', 'readonly');
+    return await sf_reqToPromise(tx.objectStore('canonRelations').index('fileId').getAll(fileId)) || [];
+  }catch(e){ console.error('[SF Relations] getAll lỗi:', e); return []; }
+}
+async function sfRelDB_putMany(list){
+  if(!list || !list.length) return;
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonRelations', 'readwrite');
+    const store = tx.objectStore('canonRelations');
+    for(const r of list) store.put(r);
+    await sf_txDone(tx);
+  }catch(e){ console.error('[SF Relations] putMany lỗi:', e); }
+}
+async function sfRelDB_clearForFile(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('canonRelations', 'readwrite');
+    const store = tx.objectStore('canonRelations');
+    const keys = await sf_reqToPromise(store.index('fileId').getAllKeys(fileId));
+    for(const k of (keys||[])) store.delete(k);
+    await sf_txDone(tx);
+  }catch(e){ console.error('[SF Relations] clear lỗi:', e); }
+}
+async function sfContextStateDB_put(state){
+  if(!state || !state.fileId) return;
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('contextState', 'readwrite');
+    tx.objectStore('contextState').put(state);
+    await sf_txDone(tx);
+  }catch(e){ console.error('[SF Context] save state lỗi:', e); }
+}
+async function sfContextStateDB_get(fileId){
+  try{
+    const db = await openSFDatabase();
+    const tx = db.transaction('contextState', 'readonly');
+    return await sf_reqToPromise(tx.objectStore('contextState').get(fileId)) || null;
+  }catch(e){ return null; }
+}
+
+/* ---------- Canon priority list (cache — KHÔNG sort lại toàn bộ Canon mỗi chunk) ----------
+   [7D-FIX] FIX #4 — TÁCH 2 khái niệm:
+     (1) UI STATUS: pending / confirmed / locked / rejected — chỉ để hiển thị & quản trị.
+         KHÔNG tự đổi pending -> confirmed; UI vẫn thấy đúng trạng thái.
+     (2) USABILITY theo confidence: pending KHÔNG đồng nghĩa unusable — auto entity đủ tin
+         cậy vẫn được dùng ngay trong Context Pack, không cần user bấm Confirm.
+   Thứ tự ưu tiên: LOCKED > CONFIRMED > AUTO HIGH (>=0.90, kể cả pending) >
+   AUTO MEDIUM (0.70-0.89, soft — chỉ gợi ý) > LOW (<0.70 — không đưa vào hard context).
+   Locked/Confirmed luôn thắng khi trùng normalizedName với 1 entity pending. */
+const SF_CANON_HARD_AUTO_CONF = 0.90;
+const SF_CANON_SOFT_CONF = 0.70;
+function sfContext_getCanonPriority(){
+  if(sfContext_canonPriorityCache) return sfContext_canonPriorityCache;
+  const locked = sfCanonEntities.filter(e=> e && e.status==='locked').sort((a,b)=>(b.occurrences||0)-(a.occurrences||0));
+  const confirmed = (typeof sfCanon_getConfirmedSorted==='function') ? sfCanon_getConfirmedSorted() : [];
+  const lockedNames = new Set(locked.map(e=> e.normalizedName || sfCanon_normalize(e.sourceName)));
+  const confirmedNames = new Set(confirmed.map(e=> e.normalizedName || sfCanon_normalize(e.sourceName)));
+  const hardAuto = [], soft = [];
+  for(const e of sfCanonEntities){
+    if(!e || e.status==='rejected') continue;
+    if(e.status==='confirmed' || e.status==='locked') continue; // đã nằm trong tier trên
+    const norm = e.normalizedName || sfCanon_normalize(e.sourceName);
+    if(lockedNames.has(norm) || confirmedNames.has(norm)) continue; // locked/confirmed thắng — bỏ bản pending trùng tên
+    const conf = (typeof e.confidence==='number') ? e.confidence : 0.5;
+    if(conf >= SF_CANON_HARD_AUTO_CONF) hardAuto.push(e);      // pending + high confidence = usable ngay
+    else if(conf >= SF_CANON_SOFT_CONF) soft.push(e);          // pending + medium = soft gợi ý
+  }
+  hardAuto.sort((a,b)=> (b.occurrences||0)-(a.occurrences||0));
+  soft.sort((a,b)=> (b.occurrences||0)-(a.occurrences||0));
+  const wrap = (e, tier)=>({ e, tier, names: [e.sourceName, ...(e.aliases||[])].filter(Boolean) });
+  sfContext_canonPriorityCache = {
+    hard: locked.map(e=> wrap(e, 'locked')).concat(confirmed.map(e=> wrap(e, 'confirmed')), hardAuto.map(e=> wrap(e, 'hard-auto'))),
+    soft: soft.map(e=> wrap(e, 'soft'))
+  };
+  return sfContext_canonPriorityCache;
+}
+
+/* ---------- Phân tích LOCAL 1 chunk (không gọi AI — mục XIII) ---------- */
+const SF_SPEECH_VERB_RE = '(?:nói|đáp|hỏi|quát|la|thì thầm|thở dài|cười|trả lời|lên tiếng|kêu|gọi|hét|hừ|gật đầu|道|说|說|問|问|答|喝|喊|笑)';
+const SF_RELATION_LEXICON = [
+  { terms:['sư phụ','師父','师父'], label:'sư phụ', reverse:'đệ tử' },
+  { terms:['đệ tử','弟子'], label:'đệ tử', reverse:'sư phụ' },
+  { terms:['sư huynh','師兄','师兄'], label:'sư huynh', reverse:'sư đệ' },
+  { terms:['sư đệ','師弟','师弟'], label:'sư đệ', reverse:'sư huynh' },
+  { terms:['sư tỷ','師姐','师姐'], label:'sư tỷ', reverse:'sư muội' },
+  { terms:['sư muội','師妹','师妹'], label:'sư muội', reverse:'sư tỷ' },
+  { terms:['sư thúc','師叔','师叔'], label:'sư thúc', reverse:'sư điệt' },
+  { terms:['sư tôn','師尊','师尊'], label:'sư tôn', reverse:'đồ nhi' },
+  { terms:['phu quân','夫君'], label:'phu quân', reverse:'thê tử' },
+  { terms:['thê tử','妻子','nương tử','娘子'], label:'thê tử', reverse:'phu quân' },
+  { terms:['phụ thân','父親','父亲'], label:'phụ thân', reverse:'con' },
+  { terms:['mẫu thân','母親','母亲'], label:'mẫu thân', reverse:'con' },
+  { terms:['huynh trưởng','兄長','兄长'], label:'huynh', reverse:'đệ' },
+  { terms:['chủ tử','主子'], label:'chủ tử', reverse:'thuộc hạ' },
+  { terms:['đại nhân','大人'], label:'đại nhân', reverse:'kẻ hầu' },
+  { terms:['bằng hữu','朋友'], label:'bằng hữu', reverse:'bằng hữu' },
+  { terms:['địch thủ','對手','对手','kẻ địch'], label:'địch thủ', reverse:'địch thủ' }
+];
+function sfContext_escapeRe(s){ return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function sfContext_pushRecent(arr, item, max){
+  const i = arr.indexOf(item); if(i>=0) arr.splice(i,1);
+  arr.unshift(item); if(arr.length>max) arr.length = max;
+}
+// Trả về {characters:[{e,count}], locations:[], orgs:[], realms:[], terms:[], speaker, listener, relationHits:[]}
+// — thuần tính toán local trên text của CHÍNH chunk (không quét toàn file, không gọi AI).
+function sfContext_analyzeChunkLocal(text){
+  const res = { characters: [], locations: [], orgs: [], realms: [], terms: [], speaker: null, listener: null, relationHits: [] };
+  if(!text) return res;
+  const prio = sfContext_getCanonPriority();
+  for(const item of prio.hard.concat(prio.soft)){
+    const e = item.e;
+    let count = 0;
+    for(const nm of item.names){
+      if(!nm) continue;
+      let from = 0;
+      while(count < 60){ // cap — chỉ cần biết "có mặt" + tần suất tương đối, không cần số tuyệt đối
+        const p = text.indexOf(nm, from);
+        if(p === -1) break;
+        count++; from = p + nm.length;
+      }
+    }
+    if(count === 0) continue;
+    const cat = String(e.category||'TERM').toUpperCase();
+    if(cat === 'CHARACTER') res.characters.push({ e, count });
+    else if(cat==='LOCATION' || cat==='CITY' || cat==='COUNTRY') res.locations.push({ e, count });
+    else if(cat==='ORGANIZATION' || cat==='SECT') res.orgs.push({ e, count });
+    else if(cat==='REALM') res.realms.push({ e, count });
+    else res.terms.push({ e, count });
+  }
+  res.characters.sort((a,b)=> b.count - a.count);
+
+  // Speaker/listener heuristic: nhân vật (thuộc Canon) đứng ngay trước động từ nói —
+  // lấy khớp có vị trí MUỘN NHẤT trong chunk làm "người nói gần nhất".
+  let bestPos = -1, bestName = null;
+  const topChars = res.characters.slice(0, 10);
+  for(const c of topChars){
+    for(const nm of [c.e.sourceName, ...(c.e.aliases||[])]){
+      if(!nm || nm.length < 2) continue;
+      try{
+        const re = new RegExp(sfContext_escapeRe(nm) + '.{0,10}' + SF_SPEECH_VERB_RE, 'g');
+        let m, last = -1;
+        while((m = re.exec(text))){ last = m.index; if(re.lastIndex === m.index) re.lastIndex++; }
+        if(last > bestPos){ bestPos = last; bestName = c.e.sourceName; }
+      }catch(e){}
+    }
+  }
+  if(bestName) res.speaker = bestName;
+  // Listener: nhân vật khác xuất hiện gần người nói (trong ±80 ký tự quanh vị trí nói).
+  if(res.speaker){
+    const window = text.slice(Math.max(0, bestPos-40), Math.min(text.length, bestPos+120));
+    for(const c of topChars){
+      if(c.e.sourceName === res.speaker) continue;
+      if([c.e.sourceName, ...(c.e.aliases||[])].some(nm=> nm && nm.length>=2 && window.includes(nm))){ res.listener = c.e.sourceName; break; }
+    }
+    if(!res.listener){
+      const other = res.characters.find(c=> c.e.sourceName !== res.speaker);
+      if(other && res.characters.length <= 3) res.listener = other.e.sourceName; // cảnh 2-3 người: khả năng cao là người còn lại
+    }
+  }
+  // Relation hits: từ quan hệ (lexicon) xuất hiện kề 1 nhân vật Canon trong ±30 ký tự.
+  for(const entry of SF_RELATION_LEXICON){
+    for(const term of entry.terms){
+      let from = 0, hits = 0;
+      while(hits < 3){
+        const p = text.indexOf(term, from);
+        if(p === -1) break;
+        hits++; from = p + term.length;
+        const wStart = Math.max(0, p-30), wEnd = Math.min(text.length, p + term.length + 30);
+        const win = text.slice(wStart, wEnd);
+        // Chọn nhân vật GẦN từ quan hệ nhất (theo khoảng cách ký tự) — "A gọi B là sư phụ"
+        // thì người được gọi (target) là B, không phải nhân vật nào tình cờ đứng trước trong Canon.
+        let bestC = null, bestD = 1e9;
+        for(const c of topChars){
+          for(const nm of [c.e.sourceName, ...(c.e.aliases||[])]){
+            if(!nm || nm.length < 2) continue;
+            const cp = win.indexOf(nm);
+            if(cp === -1) continue;
+            const d = Math.abs((p - wStart) - cp);
+            if(d < bestD){ bestD = d; bestC = c; }
+          }
+        }
+        if(bestC) res.relationHits.push({ character: bestC.e.sourceName, label: entry.label, reverse: entry.reverse, evidence: win.trim().slice(0, 80) });
+      }
+    }
+  }
+  return res;
+}
+
+/* ---------- SF_RELATION_GRAPH: upsert CÓ HƯỚNG, không ghi đè mù (mục III/IV) ---------- */
+function sfRelations_newId(){ return 'rel_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
+function sfRelations_upsertEdge(sourceCharacter, targetCharacter, relation, reverseRelation, evidence, confidence){
+  if(!sourceCharacter || !targetCharacter || !relation) return null;
+  if(sourceCharacter === targetCharacter) return null;
+  const key = sourceCharacter + '→' + targetCharacter;
+  const now = Date.now();
+  let edge = sfRelations.find(r=> (r.sourceCharacter+'→'+r.targetCharacter) === key);
+  if(edge){
+    if(edge.relation !== relation){
+      // Mâu thuẫn với quan hệ đã lưu → KHÔNG ghi đè: giữ bản cũ, ghi alternate/notes (mục III).
+      const alt = 'Cũng thấy: "' + relation + '"';
+      if(!(edge.aliases||[]).includes(relation)) edge.aliases = (edge.aliases||[]).concat([relation]);
+      if(!edge.sourceEvidence || !edge.sourceEvidence.includes(relation)) edge.sourceEvidence = ((edge.sourceEvidence||'') + ' | ' + alt).slice(0, 300);
+      edge.updatedAt = now;
+    } else {
+      edge.occurrences = (edge.occurrences||1) + 1;
+      edge.confidence = Math.min(0.9, (edge.confidence||0.55) + 0.05);
+      if(evidence && !(edge.sourceEvidence||'').includes(evidence.slice(0,30))) edge.sourceEvidence = ((edge.sourceEvidence||'') + ' | ' + evidence).slice(0, 300);
+      edge.updatedAt = now;
+    }
+  } else {
+    edge = {
+      id: sfRelations_newId(), fileId: sfCurrentFileId,
+      sourceCharacter, targetCharacter, relation,
+      reverseRelation: reverseRelation || '',
+      sourceEvidence: (evidence||'').slice(0, 300),
+      confidence: Math.min(0.9, confidence || 0.55),
+      aliases: [], occurrences: 1, updatedAt: now
+    };
+    sfRelations.push(edge);
+  }
+  return edge;
+}
+async function sfRelations_ensureLoadedForCurrentFile(){
+  if(!sfCurrentFileId){ sfRelations = []; return; }
+  try{ sfRelations = await sfRelDB_getAllForFile(sfCurrentFileId); }
+  catch(e){ sfRelations = []; sf_recordRuntimeError('relations-load', e && e.message ? e.message : String(e)); }
+}
+function sfRelations_schedulePersist(){
+  if(!sfCurrentFileId) return;
+  if(sfRelationsPersistTimer) return;
+  sfRelationsPersistTimer = setTimeout(()=>{
+    sfRelationsPersistTimer = null;
+    sfRelDB_putMany(sfRelations.filter(r=> r.fileId === sfCurrentFileId));
+  }, 900);
+}
+// Suy quan hệ từ Canon hiện có (LOCAL — không gọi AI): entity category RELATION có tên/alias/
+// notes chứa ĐÚNG 2+ nhân vật Canon đã biết → tạo edge giữa 2 nhân vật đầu tiên tìm thấy.
+function sfRelations_rebuildFromCanon(){
+  if(!sfCanonEntities || !sfCanonEntities.length) return 0;
+  const chars = sfCanonEntities.filter(e=> e && String(e.category).toUpperCase()==='CHARACTER' && e.status!=='rejected');
+  if(!chars.length) return 0;
+  let added = 0;
+  const existingKeys = new Set(sfRelations.map(r=> r.sourceCharacter+'→'+r.targetCharacter));
+  for(const e of sfCanonEntities){
+    if(!e || String(e.category).toUpperCase() !== 'RELATION') continue;
+    const hay = [e.sourceName, ...(e.aliases||[]), e.notes||'', e.translation||''].join(' ');
+    const found = chars.filter(c=> hay.includes(c.sourceName));
+    if(found.length < 2) continue;
+    const key = found[0].sourceName+'→'+found[1].sourceName;
+    if(existingKeys.has(key)) continue;
+    existingKeys.add(key);
+    const edge = sfRelations_upsertEdge(found[0].sourceName, found[1].sourceName,
+      (e.translation || e.notes || 'có liên quan').slice(0, 60), '', 'Canon RELATION: ' + e.sourceName,
+      Math.min(0.75, (typeof e.confidence==='number' ? e.confidence : 0.5)));
+    if(edge) added++;
+  }
+  if(added > 0) sfRelations_schedulePersist();
+  return added;
+}
+// Cập nhật graph từ phân tích local của 1 chunk vừa DONE (incremental, không quét lại file).
+function sfRelations_updateFromAnalysis(analysis){
+  if(!analysis || !analysis.relationHits || !analysis.relationHits.length) return;
+  let touched = false;
+  for(const hit of analysis.relationHits){
+    // Chủ thể gọi: ưu tiên người nói hiện tại; nếu chính là character bị gọi thì bỏ qua.
+    let src = analysis.speaker;
+    if(!src || src === hit.character){
+      const other = analysis.characters.find(c=> c.e.sourceName !== hit.character);
+      src = other ? other.e.sourceName : null;
+    }
+    if(!src || src === hit.character) continue;
+    const edge = sfRelations_upsertEdge(src, hit.character, hit.label, hit.reverse, hit.evidence, 0.6);
+    if(edge){ touched = true; sfContext_pushRecent(SF_CONTEXT_STATE.recentRelations, edge.id, 8); }
+  }
+  if(touched) sfRelations_schedulePersist();
+}
+
+/* ---------- SF_CONTEXT_STATE: cập nhật sau mỗi chunk DONE, rebuild khi Resume ---------- */
+function sfContext_schedulePersistState(){
+  if(!SF_CONTEXT_STATE.fileId) return;
+  if(sfContext_stateSaveTimer) return;
+  sfContext_stateSaveTimer = setTimeout(()=>{
+    sfContext_stateSaveTimer = null;
+    SF_CONTEXT_STATE.updatedAt = Date.now();
+    sfContextStateDB_put(SF_CONTEXT_STATE);
+  }, 900);
+}
+// Hấp thụ 1 chunk DONE vào state (chỉ tính toán local trên text chunk đó).
+function sfContext_absorbChunk(idx){
+  const c = chunkState[idx]; if(!c) return;
+  const src = c.orig; if(!src) return;
+  let analysis = null;
+  try{ analysis = sfContext_analyzeChunkLocal(src); }catch(e){ sf_recordRuntimeError('context-analyze', e && e.message ? e.message : String(e)); return; }
+  const st = SF_CONTEXT_STATE;
+  for(const ch of analysis.characters.slice(0, 6)) sfContext_pushRecent(st.activeCharacters, ch.e.sourceName, 8);
+  if(analysis.locations.length) st.activeLocation = analysis.locations[0].e.sourceName;
+  if(analysis.orgs.length) st.activeScene = analysis.orgs[0].e.sourceName;
+  if(analysis.speaker){
+    if(st.lastSpeaker && st.lastSpeaker !== analysis.speaker && !st.lastListener) st.lastListener = st.lastSpeaker;
+    st.lastSpeaker = analysis.speaker;
+  }
+  if(analysis.listener) st.lastListener = analysis.listener;
+  for(const t of analysis.terms.slice(0, 5)) sfContext_pushRecent(st.recentTerms, t.e.sourceName, 10);
+  for(const en of analysis.realms.slice(0, 3)) sfContext_pushRecent(st.recentEntities, en.e.sourceName, 10);
+  if(c.trans) st.recentTranslationContext = String(c.trans).slice(-180);
+  sfRelations_updateFromAnalysis(analysis);
+  st.version++;
+}
+// Gọi sau khi chunk idx DONE (từ executeDynamicTask). Tiến lastDoneIdx qua prefix DONE liên tục.
+// [7D-FIX] FIX #2: hàm này CHỈ cập nhật RUNTIME KNOWLEDGE (Relation Graph persist + stats +
+// recentTranslationContext fallback) cho các LƯỢT DỊCH TƯƠNG LAI — nó KHÔNG còn ảnh hưởng
+// Context Pack của các chunk trong lượt hiện tại, vì pack lấy từ SF_CONTEXT_PLAN theo
+// source order và cache key không còn chứa state.version.
+function sfContext_onChunkDone(idx){
+  if(!sf_isContextAutoOn()) return;
+  const st = SF_CONTEXT_STATE;
+  if(!st.fileId) st.fileId = sfCurrentFileId;
+  let advanced = false;
+  while(st.lastDoneIdx + 1 < chunkState.length){
+    const nx = chunkState[st.lastDoneIdx + 1];
+    if(!nx || nx.status !== 'done') break;
+    st.lastDoneIdx++;
+    sfContext_absorbChunk(st.lastDoneIdx);
+    advanced = true;
+  }
+  if(advanced){ sfContext_schedulePersistState(); sfContext_renderChips(); }
+}
+// Resume (mục XVI): không có state đã lưu → dựng lại từ TỐI ĐA 3 chunk DONE gần nhất của prefix
+// DONE liên tục — KHÔNG quét lại toàn bộ file, KHÔNG bắt user chạy lại Canon.
+function sfContext_rebuildFromDoneChunks(){
+  SF_CONTEXT_STATE = sfContext_newState(sfCurrentFileId);
+  let last = -1;
+  for(let i=0; i<chunkState.length; i++){
+    if(chunkState[i] && chunkState[i].status === 'done') last = i; else break;
+  }
+  if(last < 0) return;
+  const from = Math.max(0, last - 2);
+  for(let i=from; i<=last; i++) sfContext_absorbChunk(i);
+  SF_CONTEXT_STATE.lastDoneIdx = last;
+  SF_CONTEXT_STATE.version++;
+}
+async function sfContext_loadPersistedState(){
+  if(!sfCurrentFileId) return false;
+  const saved = await sfContextStateDB_get(sfCurrentFileId);
+  if(saved && saved.fileId === sfCurrentFileId && typeof saved.lastDoneIdx === 'number'){
+    SF_CONTEXT_STATE = Object.assign(sfContext_newState(sfCurrentFileId), saved);
+    return true;
+  }
+  return false;
+}
+
+/* ---------- [7D-FIX] FIX #2 — SF_CONTEXT_PLAN: context theo SOURCE ORDER ----------
+   Lỗi cũ: Speaker/Listener/Scene/Relations trong Context Pack phụ thuộc SF_CONTEXT_STATE,
+   mà state này chỉ tiến khi chunk DONE theo THỨ TỰ HOÀN THÀNH request -> cùng 1 file, tốc độ
+   API/key khác nhau cho Context khác nhau (non-deterministic trong Global Parallel).
+   Giải pháp: dựng SF_CONTEXT_PLAN đi DỌC THEO THỨ TỰ NGUỒN (chunk 0..N, local-only, KHÔNG
+   gọi AI, KHÔNG chờ chunk trước dịch xong). Mỗi chunk lấy Speaker/Listener/Location/Scene/
+   Relations từ plan của chính nó -> dịch song song vẫn deterministic.
+   sfContext_onChunkDone() vẫn cập nhật runtime knowledge (Relation Graph persist, stats),
+   nhưng KHÔNG được đổi Context Pack đã quyết định — cache key của pack dùng planVersion
+   thay cho state.version. */
+let SF_CONTEXT_PLAN = null;                        // array theo chunkIndex
+let SF_CONTEXT_PLAN_META = { key: null, upto: -1, version: 0 };
+function sfContext_planKey(){
+  return (sfCurrentFileId || '-') + '|' + currentChunks.length + '|' + sfContext_canonVersion;
+}
+// Mở rộng plan theo THỨ TỰ NGUỒN tới chunk `uptoIdx` (lazy, local-only). Trả về plan entry
+// của chunk đó (hoặc null nếu không dựng được — caller fallback về hành vi cũ).
+function sfContext_ensurePlan(uptoIdx){
+  if(!sf_isContextAutoOn() || !currentChunks || !currentChunks.length) return null;
+  const key = sfContext_planKey();
+  if(!SF_CONTEXT_PLAN || SF_CONTEXT_PLAN_META.key !== key){
+    SF_CONTEXT_PLAN = new Array(currentChunks.length).fill(null);
+    SF_CONTEXT_PLAN_META = { key: key, upto: -1, version: SF_CONTEXT_PLAN_META.version + 1 };
+    console.debug('[7D-FIX][CONTEXT] plan built for ' + currentChunks.length + ' chunks (source order).');
+  }
+  if(uptoIdx <= SF_CONTEXT_PLAN_META.upto) return SF_CONTEXT_PLAN[uptoIdx];
+  // Rolling state chỉ lan truyền THEO THỨ TỰ NGUỒN — tuyệt đối không dùng completion order.
+  let roll = (SF_CONTEXT_PLAN_META.upto >= 0 && SF_CONTEXT_PLAN[SF_CONTEXT_PLAN_META.upto])
+    ? SF_CONTEXT_PLAN[SF_CONTEXT_PLAN_META.upto]._roll
+    : { lastSpeaker: null, lastListener: null, activeLocation: null, activeScene: null, activeCharacters: [] };
+  for(let i = SF_CONTEXT_PLAN_META.upto + 1; i <= uptoIdx && i < currentChunks.length; i++){
+    let analysis = null;
+    try{ analysis = sfContext_analyzeChunkLocal(currentChunks[i] || ''); }
+    catch(e){ sf_recordRuntimeError('context-plan-analyze', e && e.message ? e.message : String(e)); }
+    const entry = {
+      chunkIndex: i,
+      previousChunkIndex: i > 0 ? i - 1 : -1,
+      speaker: (analysis && analysis.speaker) || roll.lastSpeaker,
+      listener: (analysis && analysis.listener) || roll.lastListener,
+      location: (analysis && analysis.locations[0] && analysis.locations[0].e.sourceName) || roll.activeLocation,
+      scene: (analysis && analysis.orgs[0] && analysis.orgs[0].e.sourceName) || roll.activeScene,
+      activeCharacters: roll.activeCharacters.slice(0, 8),
+      relevantCharacters: analysis ? analysis.characters.slice(0, 6).map(c=> c.e.sourceName) : [],
+      relevantRelations: [],
+      realms: analysis ? analysis.realms.slice(0, 3).map(x=> x.e.sourceName) : [],
+      prevSourceTail: i > 0 ? String(currentChunks[i - 1] || '').replace(/\s+/g, ' ').slice(-180) : ''
+    };
+    // Snapshot Relation Graph NGAY TẠI thời điểm dựng plan (deterministic trong 1 lượt dịch;
+    // quan hệ học được trong lượt này chỉ áp dụng cho các lượt tương lai qua DB persist).
+    try{
+      const activeNames = new Set(entry.relevantCharacters.concat(entry.activeCharacters));
+      for(const r of sfRelations){
+        if(!(activeNames.has(r.sourceCharacter) || activeNames.has(r.targetCharacter))) continue;
+        if((r.confidence || 0) < 0.5) continue;
+        entry.relevantRelations.push(`${r.sourceCharacter} → ${r.targetCharacter}: ${r.targetCharacter} là ${r.relation} của ${r.sourceCharacter}${r.reverseRelation ? ` (ngược lại: ${r.sourceCharacter} là ${r.reverseRelation} của ${r.targetCharacter})` : ''}`);
+        if(entry.relevantRelations.length >= 8) break;
+      }
+    }catch(e){}
+    // Cập nhật rolling state cho chunk SAU — hoàn toàn theo source order.
+    if(analysis){
+      for(const ch of analysis.characters.slice(0, 6)) sfContext_pushRecent(roll.activeCharacters, ch.e.sourceName, 8);
+      if(analysis.speaker){
+        if(roll.lastSpeaker && roll.lastSpeaker !== analysis.speaker && !roll.lastListener) roll.lastListener = roll.lastSpeaker;
+        roll.lastSpeaker = analysis.speaker;
+      }
+      if(analysis.listener) roll.lastListener = analysis.listener;
+      if(analysis.locations.length) roll.activeLocation = analysis.locations[0].e.sourceName;
+      if(analysis.orgs.length) roll.activeScene = analysis.orgs[0].e.sourceName;
+    }
+    entry._roll = { lastSpeaker: roll.lastSpeaker, lastListener: roll.lastListener, activeLocation: roll.activeLocation, activeScene: roll.activeScene, activeCharacters: roll.activeCharacters.slice() };
+    SF_CONTEXT_PLAN[i] = entry;
+    SF_CONTEXT_PLAN_META.upto = i;
+  }
+  return SF_CONTEXT_PLAN[uptoIdx] || null;
+}
+
+/* ---------- Context Pack cho 1 chunk (mục VI/VII/XV) ---------- */
+function sfContext_cacheGet(key){ return SF_CONTEXT_CACHE.get(key) || null; }
+function sfContext_cacheSet(key, val){
+  if(SF_CONTEXT_CACHE.size >= SF_CONTEXT_CACHE_MAX){
+    // LRU đơn giản: xoá ~25% entry CŨ NHẤT (Map giữ thứ tự chèn) — không clear toàn bộ.
+    const del = Math.max(1, Math.floor(SF_CONTEXT_CACHE_MAX/4));
+    let i = 0;
+    for(const k of SF_CONTEXT_CACHE.keys()){ SF_CONTEXT_CACHE.delete(k); if(++i >= del) break; }
+  }
+  SF_CONTEXT_CACHE.set(key, val);
+}
+// Cắt Context Pack về đúng budget. Ưu tiên giữ (mục VI): HARD CANON → Speaker/Listener →
+// Relation → Active Scene → Recent Context → Soft Context (bỏ Soft trước khi thiếu token).
+function sf_trimContextPackToBudget(sections){
+  // sections: [{key, priority(0=cao nhất), text}] — text đã gồm header dòng của section.
+  let total = sections.reduce((s,x)=> s + x.text.length, 0);
+  if(total <= SF_CONTEXT_PACK_MAX_CHARS) return sections;
+  const byLowPrio = sections.slice().sort((a,b)=> b.priority - a.priority);
+  const dropKeys = new Set();
+  for(const s of byLowPrio){
+    if(total <= SF_CONTEXT_PACK_MAX_CHARS) break;
+    if(s.priority >= 3){ dropKeys.add(s.key); total -= s.text.length; } // bỏ hẳn section ưu tiên thấp
+  }
+  let kept = sections.filter(s=> !dropKeys.has(s.key));
+  total = kept.reduce((s,x)=> s + x.text.length, 0);
+  if(total > SF_CONTEXT_PACK_MAX_CHARS){
+    // Vẫn quá: cắt bớt dòng cuối của section dài nhất (thường là HARD CANON — bỏ entity ít liên quan nhất).
+    kept = kept.map(s=>{
+      if(total <= SF_CONTEXT_PACK_MAX_CHARS) return s;
+      const lines = s.text.split('\n');
+      while(lines.length > 2 && total > SF_CONTEXT_PACK_MAX_CHARS){
+        const rm = lines.splice(lines.length-2, 1)[0]; // bỏ dòng ngay trước dòng đóng section
+        total -= rm.length + 1;
+      }
+      return { key: s.key, priority: s.priority, text: lines.join('\n') };
+    });
+  }
+  return kept;
+}
+function buildContextPackForChunk(idx){
+  const empty = { text:'', stats:{ chars:0, locations:0, relations:0, hardCanon:0, softCanon:0 } };
+  if(!sf_isContextAutoOn()) return empty;
+  const chunkText = currentChunks[idx];
+  if(!chunkText) return empty;
+
+  // [7D-FIX] FIX #2: cache key gồm fileId + chunkIndex + canonVersion + PLAN version —
+  // KHÔNG dùng SF_CONTEXT_STATE.version nữa (state tiến theo completion order -> non-deterministic).
+  const cacheKey = (sfCurrentFileId||'-') + '|' + idx + '|' + sfContext_canonVersion + '|p' + SF_CONTEXT_PLAN_META.version;
+  const cached = sfContext_cacheGet(cacheKey);
+  if(cached) return cached;
+
+  let analysis;
+  try{ analysis = sfContext_analyzeChunkLocal(chunkText); }
+  catch(e){ sf_recordRuntimeError('context-pack-analyze', e && e.message ? e.message : String(e)); return empty; }
+
+  // [7D-FIX] FIX #2: lấy Speaker/Listener/Scene/Relations từ SF_CONTEXT_PLAN (source order).
+  const planEntry = sfContext_ensurePlan(idx);
+
+  const st = SF_CONTEXT_STATE;
+  const sections = [];
+  const stats = { chars: analysis.characters.length, locations: analysis.locations.length, relations: 0, hardCanon: 0, softCanon: 0 };
+
+  // 1) HARD CANON (priority 0): manual pairs (luôn tin cậy) + entity confirmed/high-confidence
+  //    CÓ MẶT trong chunk. Không nhét toàn bộ Canon Pack.
+  {
+    const lines = [];
+    if(typeof sfCanon_parseManualPairs==='function'){
+      for(const pair of sfCanon_parseManualPairs()){
+        if(chunkText.includes(pair.source)) lines.push(`${pair.source} → ${pair.translation}`);
+      }
+    }
+    const hardSet = new Set(sfContext_getCanonPriority().hard.map(h=> h.e));
+    const presentHard = analysis.characters.concat(analysis.locations, analysis.orgs, analysis.realms, analysis.terms)
+      .filter(x=> hardSet.has(x.e)); // chỉ entity thuộc tier HARD (confirmed / confidence >= 0.90)
+    const seen = new Set(lines.map(l=> l));
+    for(const x of presentHard){
+      const e = x.e;
+      const line = `${e.sourceName}${e.aliases&&e.aliases.length?' ('+e.aliases.slice(0,3).join('/')+')':''} [${e.category}] → ${e.translation||'(giữ nguyên tên gốc)'}`;
+      if(seen.has(line)) continue;
+      seen.add(line); lines.push(line);
+      if(lines.length >= 28) break; // trần cứng số dòng canon/pack
+    }
+    if(lines.length){ stats.hardCanon = lines.length; sections.push({ key:'hard', priority:0, text:'[CANON KHÓA — BẮT BUỘC GIỮ ĐÚNG]:\n' + lines.join('\n') }); }
+  }
+
+  // 2) Speaker/Listener (priority 1) — [7D-FIX] lấy từ CONTEXT PLAN (source order),
+  //    KHÔNG phụ thuộc chunk nào DONE trước. Fallback state cũ chỉ khi plan khả dụng.
+  {
+    const spk = (planEntry && planEntry.speaker) || analysis.speaker || st.lastSpeaker;
+    const lis = (planEntry && planEntry.listener) || analysis.listener || st.lastListener;
+    if(spk || lis){
+      sections.push({ key:'speaker', priority:1, text:`[NGƯỜI NÓI/NGHE GẦN NHẤT]: người nói ≈ ${spk||'?'} · người nghe ≈ ${lis||'?'} (suy luận — hãy đối chiếu ngữ cảnh trước khi dùng)` });
+    }
+  }
+
+  // 3) Relations liên quan đến nhân vật đang có mặt/hoạt động (priority 2) —
+  //    [7D-FIX] dùng snapshot quan hệ trong CONTEXT PLAN (deterministic trong 1 lượt dịch).
+  {
+    let relLines;
+    if(planEntry){
+      relLines = planEntry.relevantRelations;
+    } else {
+      const activeNames = new Set(analysis.characters.map(c=> c.e.sourceName).concat(st.activeCharacters||[]));
+      relLines = [];
+      for(const r of sfRelations){
+        if(!(activeNames.has(r.sourceCharacter) || activeNames.has(r.targetCharacter))) continue;
+        if((r.confidence||0) < 0.5) continue;
+        relLines.push(`${r.sourceCharacter} → ${r.targetCharacter}: ${r.targetCharacter} là ${r.relation} của ${r.sourceCharacter}${r.reverseRelation?` (ngược lại: ${r.sourceCharacter} là ${r.reverseRelation} của ${r.targetCharacter})`:''}`);
+        if(relLines.length >= 8) break;
+      }
+    }
+    if(relLines.length){ stats.relations = relLines.length; sections.push({ key:'relations', priority:2, text:'[QUAN HỆ NHÂN VẬT — có hướng]:\n' + relLines.join('\n') }); }
+  }
+
+  // 4) Active Scene (priority 3) — [7D-FIX] location/scene từ CONTEXT PLAN (source order).
+  {
+    const sceneBits = [];
+    const loc = (analysis.locations[0] && analysis.locations[0].e.sourceName) || (planEntry && planEntry.location) || st.activeLocation;
+    const org = (analysis.orgs[0] && analysis.orgs[0].e.sourceName) || (planEntry && planEntry.scene) || st.activeScene;
+    if(loc) sceneBits.push('địa điểm: ' + loc);
+    if(org) sceneBits.push('tổ chức/cảnh: ' + org);
+    if(analysis.realms.length) sceneBits.push('cảnh giới: ' + analysis.realms.slice(0,3).map(x=> x.e.sourceName).join(', '));
+    if(sceneBits.length) sections.push({ key:'scene', priority:3, text:'[BỐI CẢNH HIỆN TẠI]: ' + sceneBits.join(' · ') });
+  }
+
+  // 5) Recent context ngắn (priority 4) — [7D-FIX] dùng ĐUÔI NGUYÊN BẢN chunk NGAY TRƯỚC
+  //    theo source order (luôn có sẵn, deterministic) thay cho đuôi bản dịch phụ thuộc
+  //    completion order. Đuôi bản dịch runtime chỉ còn là fallback khi không có plan.
+  if(planEntry && planEntry.prevSourceTail){
+    sections.push({ key:'recent', priority:4, text:'[ĐUÔI ĐOẠN NGUYÊN BẢN NGAY TRƯỚC — tham khảo mạch hội thoại/xưng hô]: "' + planEntry.prevSourceTail.replace(/\n+/g,' ') + '"' });
+  } else if(st.recentTranslationContext){
+    sections.push({ key:'recent', priority:4, text:'[ĐUÔI BẢN DỊCH TRƯỚC — chỉ để đối chiếu xưng hô]: "' + st.recentTranslationContext.replace(/\n+/g,' ') + '"' });
+  }
+
+  // 6) Soft Context (priority 5 — BỎ ĐẦU TIÊN khi thiếu token): entity confidence 0.70-0.89
+  //    có mặt trong chunk — chỉ là GỢI Ý, không ép dịch cố định (mục III).
+  {
+    const prio = sfContext_getCanonPriority();
+    const lines = [];
+    for(const item of prio.soft){
+      if(!item.names.some(nm=> nm && chunkText.includes(nm))) continue;
+      lines.push(`${item.e.sourceName} [${item.e.category}] ≈ ${item.e.translation||'?'} (gợi ý, chưa khóa)`);
+      if(lines.length >= 8) break;
+    }
+    if(lines.length){ stats.softCanon = lines.length; sections.push({ key:'soft', priority:5, text:'[CANON GỢI Ý — KHÔNG ÉP CỨNG]:\n' + lines.join('\n') }); }
+  }
+
+  const kept = sf_trimContextPackToBudget(sections);
+  if(!kept.length){
+    const out = { text:'', stats };
+    sfContext_cacheSet(cacheKey, out);
+    return out;
+  }
+  const text = '[AUTO CONTEXT — THAM KHẢO KHI DỊCH]\n' + SF_CONTEXT_RULES_BLOCK + '\n' +
+    kept.map(s=> s.text).join('\n') + '\n[HẾT AUTO CONTEXT]\n';
+  const out = { text, stats };
+  sfContext_cacheSet(cacheKey, out);
+  // Log gọn — chỉ khi "chữ ký" pack đổi (không spam log mỗi chunk).
+  const sig = stats.chars + '|' + stats.locations + '|' + stats.relations + '|' + stats.hardCanon;
+  if(sig !== sfContext_lastPackLogSig){
+    sfContext_lastPackLogSig = sig;
+    logLine('info', null, null, `🧠 [Context] Chunk ${idx+1}: ${stats.chars} nhân vật, ${stats.locations} địa điểm, ${stats.relations} quan hệ, ${stats.hardCanon} canon khóa.`);
+  }
+  return out;
+}
+
+/* ---------- LOCAL INTEGRITY CHECK (mục X — không gọi AI) ---------- */
+const SF_REFUSAL_RE = /(tôi (rất tiếc|không thể)|xin lỗi[,.]|i'?m sorry|i cannot|i can'?t|cannot (assist|fulfill)|không thể (hỗ trợ|thực hiện|đáp ứng))/i;
+const SF_META_PREFIX_RE = /^\s*(here is|here'?s|dưới đây là|đây là bản dịch|bản dịch (như sau|của)|translation:)/i;
+const SF_TERMINAL_PUNCT = /[.!?…。！？\"'\u201d\u2019\u300d\u300f)）\]】…—-]$/;
+function sfIntegrity_checkChunk(idx, sourceText, translation){
+  const issues = [];
+  const push = (code, detail)=> issues.push({ code, detail: detail||'' });
+  const src = (sourceText||'').trim();
+  const dst = (translation||'').trim();
+
+  if(!dst){ push('EMPTY_OUTPUT', 'Output rỗng'); return { pass:false, issues }; }
+
+  // Output ngắn bất thường so với source (không yêu cầu bằng số câu/chữ — chỉ bắt ANOMALY).
+  if(src.length >= 300 && dst.length < src.length * 0.25) push('TOO_SHORT', `output ${dst.length} ký tự << source ${src.length}`);
+  if(src.length >= 1500 && dst.length < 300) push('TOO_SHORT_ABS', `output ${dst.length} ký tự, source ${src.length}`);
+
+  // Mất header chương (dùng lại đúng bộ so khớp mục 1A — giữ nguyên numbering "1089 (2)").
+  try{
+    const missing = sf_findMissingHeaders(sourceText, translation);
+    if(missing && missing.length) push('MISSING_HEADER', missing.join('; '));
+  }catch(e){}
+
+  // Mất số (chương/năm/số lượng nhiều chữ số): chỉ báo khi thiếu RÕ RỆT (>=2 số và >1/3 tổng số
+  // khác biệt) — tránh false positive khi model đổi cách viết số nhỏ.
+  {
+    const srcNums = new Set((src.match(/\d{2,}/g) || []));
+    if(srcNums.size >= 2){
+      let miss = 0; const missList = [];
+      for(const n of srcNums){ if(!dst.includes(n)){ miss++; if(missList.length<4) missList.push(n); } }
+      if(miss >= 2 && miss / srcNums.size > 0.34) push('MISSING_NUMBERS', missList.join(', ') + ` (${miss}/${srcNums.size})`);
+    }
+  }
+
+  // Mất entity HARD CANON (tên/thuật ngữ đã khóa): tên có trong source (>=2 lần, hoặc entity
+  // đã confirmed) nhưng bản dịch thiếu cả translation lẫn tên gốc.
+  {
+    const prio = sfContext_getCanonPriority();
+    let missingCanon = 0; const names = [];
+    for(const item of prio.hard){
+      const e = item.e;
+      const occ = src.split(e.sourceName).length - 1;
+      if(occ === 0) continue;
+      const trans = (e.translation||'').trim();
+      const inDst = (trans && trans.length >= 2 && dst.includes(trans)) || dst.includes(e.sourceName);
+      if(inDst) continue;
+      const confirmed = e.status === 'confirmed';
+      if(occ >= 2 || confirmed){
+        missingCanon++; if(names.length < 5) names.push(e.sourceName);
+      }
+      if(missingCanon >= 6) break;
+    }
+    if(missingCanon >= 2 || (missingCanon >= 1 && names.length && prio.hard.some(h=> h.e.status==='confirmed' && names.includes(h.e.sourceName) && (src.split(h.e.sourceName).length-1) >= 2))){
+      push('MISSING_CANON', names.join(', '));
+    }
+  }
+
+  // Mất cấu trúc đoạn (source nhiều đoạn nhưng output dính cục bất thường).
+  {
+    const srcParas = src.split(/\n[ \t]*\n/).filter(p=> p.trim()).length;
+    if(srcParas >= 6){
+      const dstParas = dst.split(/\n[ \t]*\n/).filter(p=> p.trim()).length;
+      if(dstParas < Math.max(2, Math.floor(srcParas * 0.4))) push('PARAGRAPH_LOSS', `${dstParas}/${srcParas} đoạn`);
+    }
+  }
+
+  // Bị cắt giữa chừng: source kết thúc gọn (có dấu kết câu) nhưng output thì không + ngắn hơn hẳn.
+  if(SF_TERMINAL_PUNCT.test(src) && !SF_TERMINAL_PUNCT.test(dst) && dst.length < src.length * 0.85){
+    push('TRUNCATED', 'output không kết thúc bằng dấu kết câu dù source kết thúc gọn');
+  }
+
+  // Model từ chối / trả lời ngoài nhiệm vụ / markdown fence.
+  if(SF_REFUSAL_RE.test(dst.slice(0, 300))) push('REFUSAL', 'có dấu hiệu model từ chối dịch');
+  if(SF_META_PREFIX_RE.test(dst.slice(0, 120))) push('META_PREFIX', 'output mở đầu bằng lời dẫn ngoài bản dịch');
+  if(dst.includes('```')) push('MARKDOWN_FENCE', 'output chứa code fence');
+
+  return { pass: issues.length === 0, issues };
+}
+
+/* ---------- AI REPAIR — CHỈ KHI INTEGRITY FAIL NGHIÊM TRỌNG (mục XI) ---------- */
+// Gọi model THÔ (không nối promptBox — repair đã tự mang đủ chỉ thị), dùng lại key pool +
+// AbortController của chính task dịch (bấm Dừng vẫn huỷ được ngay).
+async function sfContext_callRawModel(userContent, keyIndex, signal){
+  ensureKeyMeta();
+  const key = state.keys[keyIndex]; const meta = state.keyMeta[keyIndex];
+  if(!key || !meta){ const err = new Error('Key không khả dụng cho request phụ'); err.status = 0; throw err; }
+  recordKeyCall(keyIndex);
+  meta.requests++; meta.lastUsed = Date.now();
+  renderKeys();
+  let res;
+  try{
+    res = await fetch(wrapUrl(chatUrl()), {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key },
+      body: JSON.stringify({ model: state.model, messages: [{ role:'user', content: userContent }] }),
+      signal
+    });
+  }catch(networkErr){
+    if(networkErr && networkErr.name === 'AbortError'){ const err = new Error('Đã huỷ (Dừng)'); err.aborted = true; throw err; }
+    const err = new Error('Lỗi mạng: '+networkErr.message); err.status = 0; throw err;
+  }
+  if(!res.ok){
+    const t = await res.text().catch(()=>'');
+    const err = new Error('HTTP ' + res.status); err.status = res.status;
+    err.retryAfter = parseFloat(res.headers.get('retry-after')) || null;
+    err.bodyText = t;
+    throw err;
+  }
+  const data = await res.json();
+  const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
+  if(!content){ const err=new Error('Empty result'); err.status=0; throw err; }
+  meta.success++; renderKeys();
+  return content.trim();
+}
+async function sfRepair_runOnce(idx, sourceText, badTranslation, issues, packText, keyIdx, signal){
+  const issueList = issues.map(i=> '- ' + i.code + (i.detail?': '+i.detail:'')).join('\n');
+  const payload =
+`[NHIỆM VỤ SỬA BẢN DỊCH — KHÔNG DỊCH LẠI TỪ ĐẦU]
+Bản dịch tiếng Việt bên dưới có lỗi đã được phát hiện tự động. Hãy CHỈ SỬA các lỗi được liệt kê:
+- Không viết lại phần đang đúng.
+- Không thêm thông tin, không bỏ thông tin.
+- Không thay đổi tên riêng/thuật ngữ đang đúng.
+- Không giải thích — output TOÀN BỘ bản dịch đã sửa, nguyên văn phần không lỗi.
+
+[LỖI ĐÃ PHÁT HIỆN]:
+${issueList}
+
+${packText ? packText + '\n' : ''}[NGUỒN GỐC]:
+${sourceText}
+
+[BẢN DỊCH ĐANG LỖI]:
+${badTranslation}`;
+  const repaired = await sfContext_callRawModel(payload, keyIdx, signal);
+  // Sanity: bản sửa không được ngắn bất thường so với bản lỗi (tránh repair làm mất nội dung).
+  if(!repaired || repaired.trim().length < Math.min(120, badTranslation.trim().length * 0.5)) return null;
+  return repaired;
+}
+// Trả về bản dịch cuối cùng (gốc nếu PASS, hoặc bản đã repair nếu repair PASS). Ném lỗi
+// err.integrityFail khi vẫn FAIL sau repair — executeDynamicTask đưa vào retry/error hiện có
+// (KHÔNG vòng lặp vô hạn: repair tối đa SF_INTEGRITY_MAX_REPAIR_PER_CHUNK lần/chunk).
+async function sfContext_verifyAndRepair(idx, res, packText, keyIdx, signal){
+  let check;
+  try{ check = sfIntegrity_checkChunk(idx, currentChunks[idx] || '', res); }
+  catch(e){
+    // [7D-FIX] FIX #3: checker bị exception -> trạng thái riêng CHECK_ERROR. KHÔNG được
+    // "return res" (tức giả lập PASS -> DONE), cũng KHÔNG gọi AI Repair mù (chưa có bằng
+    // chứng lỗi nội dung). Ném lỗi integrityCheckError để executeDynamicTask đưa chunk vào
+    // cơ chế retry hiện có — chunk chỉ DONE khi checker chạy THÀNH CÔNG và pass === true.
+    sfContext_integrityStats.checkErrors++;
+    sf_recordRuntimeError('integrity-check', e && e.message ? e.message : String(e));
+    logLine('err', idx, keyIdx, `🧪 [7D-FIX][INTEGRITY] Chunk ${idx+1}: CHECK_ERROR — checker exception (${e && e.message ? e.message : e}); không coi là PASS, không Repair mù, chunk sẽ được check lại.`);
+    console.debug('[7D-FIX][INTEGRITY] repair skipped because checker failed');
+    const err = new Error('Integrity CHECK_ERROR: ' + (e && e.message ? e.message : String(e)));
+    err.status = 0; err.integrityCheckError = true;
+    throw err;
+  }
+  sfContext_integrityStats.checked++;
+  if(check.pass){ sfContext_integrityStats.passed++; return res; }
+
+  const codes = check.issues.map(i=> i.code).join(', ');
+  logLine('warn', idx, keyIdx, `🧪 [Integrity] Chunk ${idx+1}: anomaly — ${codes}.`);
+  const c = chunkState[idx];
+  if(c && (c.integrityRepairCount||0) < SF_INTEGRITY_MAX_REPAIR_PER_CHUNK){
+    c.integrityRepairCount = (c.integrityRepairCount||0) + 1;
+    logLine('info', idx, keyIdx, `🛠 [Repair] Chunk ${idx+1}: tự sửa (tối đa ${SF_INTEGRITY_MAX_REPAIR_PER_CHUNK} lần/chunk)...`);
+    let repaired = null;
+    try{
+      repaired = await sfRepair_runOnce(idx, currentChunks[idx] || '', res, check.issues, packText, keyIdx, signal);
+    }catch(e){
+      if(e && e.aborted) throw e; // tôn trọng Dừng — để executeDynamicTask xử lý đúng nhánh aborted
+      sf_recordRuntimeError('integrity-repair-chunk-'+idx, e && e.message ? e.message : String(e));
+    }
+    if(repaired){
+      let recheck;
+      try{ recheck = sfIntegrity_checkChunk(idx, currentChunks[idx] || '', repaired); }
+      catch(e){
+        // [7D-FIX] FIX #3: recheck cũng có thể CHECK_ERROR — không coi là PASS, không repair tiếp.
+        sfContext_integrityStats.checkErrors++;
+        sf_recordRuntimeError('integrity-recheck', e && e.message ? e.message : String(e));
+        logLine('err', idx, keyIdx, `🧪 [7D-FIX][INTEGRITY] Chunk ${idx+1}: CHECK_ERROR khi kiểm lại bản repair — không coi là PASS.`);
+        recheck = { pass:false, status:'CHECK_ERROR', issues: check.issues };
+      }
+      if(recheck.pass){
+        sfContext_integrityStats.repaired++;
+        sfContext_renderChips();
+        logLine('ok', idx, keyIdx, `🛠 [Repair] Chunk ${idx+1}: PASS sau khi sửa.`);
+        return repaired;
+      }
+    }
+  }
+  sfContext_integrityStats.failed++;
+  sfContext_renderChips();
+  const err = new Error('Integrity FAIL' + (c && (c.integrityRepairCount||0) >= SF_INTEGRITY_MAX_REPAIR_PER_CHUNK ? ' sau Repair' : '') + ': ' + codes);
+  err.status = 0; err.integrityFail = true;
+  throw err;
+}
+
+/* ---------- Chuẩn bị / reset / resume hooks ---------- */
+function sfContext_resetRuntime(){
+  SF_CONTEXT_CACHE.clear();
+  SF_CONTEXT_STATE = sfContext_newState(sfCurrentFileId);
+  SF_CONTEXT_STATE.version = 0;
+  // [7D-FIX] FIX #2: reset Context Plan — sẽ dựng lại lazy theo source order ở lượt dịch mới.
+  SF_CONTEXT_PLAN = null;
+  SF_CONTEXT_PLAN_META = { key: null, upto: -1, version: SF_CONTEXT_PLAN_META.version + 1 };
+  sfContext_integrityStats = { checked:0, passed:0, repaired:0, failed:0, checkErrors:0 };
+  sfContext_lastPackLogSig = '';
+}
+// Auto Canon (mục XIV + [7D-FIX] FIX #1): quyết định quét dựa trên SOURCE HASH + SCAN META
+// + TRẠNG THÁI SCAN — TUYỆT ĐỐI không còn logic "sfCanonEntities.length > 0 thì bỏ qua".
+// Chỉ skip khi: sourceHash hiện tại === sourceHash đã scan AND scan status === 'done'.
+// Scan mới MERGE vào Canon hiện có (sfCanon_scanFile đã merge + giữ entity Confirmed/Locked).
+async function sfContext_ensureCanonAutoScan(){
+  if(typeof sfCanon_scanFile !== 'function') return;
+  // Nạp Canon + meta của ĐÚNG file hiện tại (tránh xét nhầm cache của file khác).
+  if(typeof sfCanon_ensureLoadedForCurrentFile === 'function'){
+    try{ await sfCanon_ensureLoadedForCurrentFile(); }catch(e){}
+  }
+  const text = (typeof sf_getFullSourceText === 'function') ? sf_getFullSourceText() : '';
+  const curHash = text ? sf_computeSourceHash(text)
+                       : ((sfCurrentFileMeta && sfCurrentFileMeta.sourceHash) || null);
+  let meta = sfCanonMetaCurrent;
+  if(!meta && sfCurrentFileId && typeof sfCanonDB_getMeta === 'function'){
+    try{ meta = await sfCanonDB_getMeta(sfCurrentFileId); }catch(e){}
+  }
+  if(sfCanonScanning){
+    console.debug('[7D-FIX][CANON] scan đang chạy — bỏ qua yêu cầu trùng.');
+    return;
+  }
+  const sameSource = !!(meta && curHash && meta.sourceHash === curHash);
+  const scanDone = !!(sameSource && meta.status === 'done');
+  if(scanDone){
+    console.debug('[7D-FIX2][CANON] reuse completed scan (sourceHash khớp, status=done, ' + (meta.entityCount != null ? meta.entityCount : '?') + ' entities).');
+    return;
+  }
+  const failedWindows = sameSource && Array.isArray(meta.failedWindows) ? meta.failedWindows.filter(i=>Number.isInteger(i) && i>=0) : [];
+  const retryOnly = !!(sameSource && meta.status === 'warning' && failedWindows.length);
+  if(sameSource && meta.status === 'warning' && !failedWindows.length){
+    sfCanonMetaCurrent = Object.assign({}, meta, { status:'done' });
+    try{ await sfCanonDB_putMeta(sfCanonMetaCurrent); }catch(e){}
+    console.debug('[7D-FIX2][CANON] warning không có failedWindows -> reuse, không quét lại.');
+    return;
+  }
+  const reason = !meta ? 'chưa có scan meta'
+    : (!curHash || meta.sourceHash !== curHash) ? 'sourceHash changed -> rescan'
+    : retryOnly ? ('retry ' + failedWindows.length + ' failed window(s)')
+    : ('scan trước chưa hoàn tất (status=' + meta.status + ') -> scan lại/tiếp tục');
+  // Không đủ điều kiện gọi API (proxy/key/model/text) thì bỏ qua lặng lẽ — không alert khi auto.
+  if(!text || !text.trim() || !state.proxyOn || !state.keys.length || !state.model || !document.getElementById('baseUrl').value.trim()){
+    console.debug('[7D-FIX][CANON] ' + reason + ' nhưng thiếu proxy/key/model/text — hoãn auto scan.');
+    return;
+  }
+  logLine('info', null, null, '🧠 [7D-FIX2][CANON] ' + reason + (retryOnly ? ' — chỉ quét lại window thất bại' : ' — Auto Scan (merge vào Canon hiện có, giữ nguyên entity Confirmed/Locked)...'));
+  try{
+    await sfCanon_scanFile(retryOnly);
+    const ok = sfCanonMetaCurrent && curHash && sfCanonMetaCurrent.sourceHash === curHash && sfCanonMetaCurrent.status === 'done';
+    if(!ok){
+      logLine('warn', null, null, '⚠️ [7D-FIX][CANON] Auto Canon chưa hoàn tất (status=' + (sfCanonMetaCurrent ? sfCanonMetaCurrent.status : 'null') + ') — sẽ thử lại ở lần sau, tiếp tục dịch với Canon hiện có.');
+    }
+  }catch(e){
+    sf_recordRuntimeError('context-autocanon', e && e.message ? e.message : String(e));
+    logLine('warn', null, null, '⚠️ [Context] Auto Canon thất bại — tiếp tục dịch với Context còn lại (không chặn tiến trình).');
+  }
+}
+async function sfContext_prepareForNewTranslation(){
+  sfContext_resetRuntime();
+  // Nạp Canon của ĐÚNG file hiện tại trước (prepare có thể đang giữ cache của file trước đó).
+  try{ if(typeof sfCanon_ensureLoadedForCurrentFile==='function') await sfCanon_ensureLoadedForCurrentFile(); }catch(e){}
+  await sfRelations_ensureLoadedForCurrentFile();
+  await sfContext_ensureCanonAutoScan();
+  if(sfRelations.length === 0 && sfCanonEntities.length > 0){
+    const n = sfRelations_rebuildFromCanon();
+    if(n > 0) logLine('info', null, null, `🧠 [Context] Relation Graph: suy ra ${n} quan hệ từ Canon (local).`);
+  }
+  sfContext_renderChips();
+}
+// Mở/khôi phục 1 truyện (mục XVI): nạp Relation Graph + Context State đã lưu; không có thì
+// rebuild từ các chunk DONE gần nhất. Không bắt user chạy lại Canon.
+async function sfContext_onFileRestored(){
+  if(!sf_isContextAutoOn()) return;
+  try{ if(typeof sfCanon_ensureLoadedForCurrentFile==='function') await sfCanon_ensureLoadedForCurrentFile(); }catch(e){}
+  await sfRelations_ensureLoadedForCurrentFile();
+  if(sfRelations.length === 0 && sfCanonEntities.length > 0) sfRelations_rebuildFromCanon();
+  const loaded = await sfContext_loadPersistedState();
+  if(!loaded) sfContext_rebuildFromDoneChunks();
+  sfContext_renderChips();
+}
+function sfContext_renderChips(){
+  try{
+    const autoChip = document.getElementById('ctxAutoChip');
+    if(autoChip) autoChip.textContent = sfContextAutoOn ? '🧠 Context: Auto' : '🧠 Context: Tắt';
+    const relChip = document.getElementById('ctxRelationChip');
+    if(relChip) relChip.textContent = 'Relations: ' + (sfRelations ? sfRelations.length : 0);
+    const spkChip = document.getElementById('ctxSpeakerChip');
+    if(spkChip) spkChip.textContent = 'Speaker: ' + (SF_CONTEXT_STATE && SF_CONTEXT_STATE.lastSpeaker ? SF_CONTEXT_STATE.lastSpeaker : '—');
+    const intChip = document.getElementById('ctxIntegrityChip');
+    if(intChip){
+      const s = sfContext_integrityStats;
+      intChip.textContent = (s && s.checked > 0) ? `Integrity: ${s.passed}✓ ${s.repaired}🛠 ${s.failed}✗` : 'Integrity: Auto';
+    }
+  }catch(e){}
+}
+/* ===== HẾT ĐỢT 7D: AUTO CONTEXT ENGINE ===== */
 
 // ---- 4) Preset "Kích thước chunk" — chỉ đổi giá trị ô #chunkSize đã có sẵn
 // (input này vẫn được đọc bình thường bởi chunkSizeVal()/splitChunksWithOffsets()
@@ -4180,8 +5226,14 @@ function sf_computeEffectiveInputBudget(cfg){
   // buildCanonContext() tự kẹp trần ở SF_CANON_CONTEXT_MAX_CHARS ký tự — dùng ĐÚNG trần đó
   // (ước lượng qua estimateTokensLocal trên 1 chuỗi giả có độ dài bằng trần) làm mức DỰ TRỮ
   // TỐI ĐA, để công thức luôn kẹp trần input đủ chặt bất kể chunk cụ thể dùng bao nhiêu entity.
-  const canonContextReserveTokens = (typeof state !== 'undefined' && state.canonOn && typeof SF_CANON_CONTEXT_MAX_CHARS === 'number')
-    ? estimateTokensLocal('x'.repeat(SF_CANON_CONTEXT_MAX_CHARS)) : 0;
+  // ĐỢT 7D: khi Auto Context đang bật, Context Pack (quy tắc + canon quan hệ + speaker...) chiếm
+  // chỗ trong mọi request dịch — dự trữ đúng trần của nó (SF_CONTEXT_PACK_RESERVE_CHARS) thay cho
+  // trần Canon cũ. Khi Auto Context TẮT: giữ nguyên 100% công thức cũ (chỉ trừ khi canonOn).
+  const sfCtxAutoOn = (typeof sf_isContextAutoOn === 'function') ? sf_isContextAutoOn() : false;
+  const canonReserveChars = sfCtxAutoOn
+    ? SF_CONTEXT_PACK_RESERVE_CHARS
+    : ((typeof state !== 'undefined' && state.canonOn && typeof SF_CANON_CONTEXT_MAX_CHARS === 'number') ? SF_CANON_CONTEXT_MAX_CHARS : 0);
+  const canonContextReserveTokens = canonReserveChars > 0 ? estimateTokensLocal('x'.repeat(canonReserveChars)) : 0;
 
   const rawInputBudget = contextLimitTokens - promptTokens - contextPrefixReserveTokens
                           - canonContextReserveTokens - reservedOutputTokens - otherOverheadTokens;
@@ -4864,17 +5916,40 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         // ĐỢT 6 — mục VIII: chèn Canon Context (nếu bật) TRƯỚC context prefix + chunk nguồn.
         // buildCanonContext() tự giới hạn số entity/độ dài, chỉ lấy entity liên quan đến CHÍNH
         // chunk này — không nhét toàn bộ Canon Pack vào mọi request.
-        const canonBlock = (typeof buildCanonContext === 'function') ? (buildCanonContext(idx) || '') : '';
+        // ĐỢT 7D: khi Auto Context đang BẬT, dùng buildContextPackForChunk() (Auto Canon theo
+        // confidence + Relation Graph + Speaker/Listener + cảnh hiện tại, đã trim theo budget)
+        // THAY CHO Canon-thuần. Khi TẮT: giữ nguyên 100% đường cũ (buildCanonContext).
+        let canonBlock = '';
+        let ctxPackText = '';
+        if(sf_isContextAutoOn()){
+            const pack = buildContextPackForChunk(idx);
+            ctxPackText = (pack && pack.text) || '';
+            canonBlock = ctxPackText;
+        } else {
+            canonBlock = (typeof buildCanonContext === 'function') ? (buildCanonContext(idx) || '') : '';
+        }
         const payloadCore = ctxPrefix ? (ctxPrefix + '\n' + currentChunks[idx]) : currentChunks[idx];
         const payloadText = canonBlock ? (canonBlock + '\n' + payloadCore) : payloadCore;
 
         let res = await callModel(payloadText, keyIdx, abortCtrl.signal);
+
+        // ĐỢT 7D — mục X/XI: LOCAL INTEGRITY CHECK trước (không tốn request); chỉ khi phát
+        // hiện ANOMALY nghiêm trọng mới gọi AI Repair (tối đa 1 lần/chunk). PASS → dùng ngay.
+        if(sf_isContextAutoOn()){
+            res = await sfContext_verifyAndRepair(idx, res, ctxPackText, keyIdx, abortCtrl.signal);
+        }
 
         if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
         currentResults[idx] = res;
         markChunkDone(idx, res);
         delete chunkRetryAfter[idx];
         sf_onAdaptiveChunkSuccess(); // ĐỢT 3/4: tính vào chuỗi thành công cho Adaptive Budget
+        // ĐỢT 7D — mục VII: chunk DONE xong → hấp thụ vào Context State (speaker/listener/
+        // cảnh/quan hệ) để chunk sau hưởng context mới nhất. Local-only, không tốn request.
+        if(sf_isContextAutoOn()){
+            try{ sfContext_onChunkDone(idx); }
+            catch(ctxErr){ sf_recordRuntimeError('context-state', ctxErr && ctxErr.message ? ctxErr.message : String(ctxErr)); }
+        }
         logLine('ok', idx, keyIdx, `Chunk ${idx+1}/${currentChunks.length} ✓ Thành công`);
         return;
 
@@ -4959,18 +6034,28 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
             return;
 
         } else {
-            // 500/502/503/504, network error, timeout, or empty result — transient, retryable
+            // 500/502/503/504, network error, timeout, empty result — hoặc (ĐỢT 7D) integrity
+            // fail sau repair — đều là transient, retryable qua BACKOFF heap như cũ.
             if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].retries++;
+            // [7D-FIX] FIX #3: CHECK_ERROR đi theo đúng đường retry transient này — chunk
+            // KHÔNG bao giờ DONE khi checker exception, chỉ được thử check lại ở lượt sau.
             if(c.retryCount >= MAX_CHUNK_RETRIES){
                 currentResults[idx] = null;
-                markChunkError(idx, "Thất bại sau nhiều lần thử mạng/server.");
-                logLine('err', idx, keyIdx, `Chunk ${idx+1} lỗi: Thất bại vĩnh viễn sau ${c.retryCount} lần thử.`);
+                markChunkError(idx, err && err.integrityFail ? ("Integrity FAIL: " + err.message)
+                    : (err && err.integrityCheckError ? ("Integrity CHECK_ERROR: " + err.message) : "Thất bại sau nhiều lần thử mạng/server."));
+                logLine('err', idx, keyIdx, (err && (err.integrityFail || err.integrityCheckError))
+                    ? `Chunk ${idx+1} lỗi: ${err.message} — đã vượt quá ${MAX_CHUNK_RETRIES} lần thử. Đánh dấu lỗi.`
+                    : `Chunk ${idx+1} lỗi: Thất bại vĩnh viễn sau ${c.retryCount} lần thử.`);
                 delete chunkRetryAfter[idx];
                 return;
             }
             const backoff = Math.min(20000, 1500 * c.retryCount);
             chunkRetryAfter[idx] = Date.now() + backoff;
-            logLine('warn', idx, keyIdx, `Chunk ${idx+1} lỗi mạng/server (${status||'?'}). Trả về hàng đợi, thử lại ${c.retryCount}/${MAX_CHUNK_RETRIES} sau ${Math.round(backoff/1000)}s...`);
+            logLine('warn', idx, keyIdx, err && err.integrityFail
+                ? `Chunk ${idx+1}: ${err.message}. Trả về hàng đợi, dịch lại ${c.retryCount}/${MAX_CHUNK_RETRIES} sau ${Math.round(backoff/1000)}s...`
+                : (err && err.integrityCheckError
+                    ? `Chunk ${idx+1}: [7D-FIX][INTEGRITY] CHECK_ERROR — checker lỗi, KHÔNG coi là PASS. Trả về hàng đợi, check lại ${c.retryCount}/${MAX_CHUNK_RETRIES} sau ${Math.round(backoff/1000)}s...`
+                    : `Chunk ${idx+1} lỗi mạng/server (${status||'?'}). Trả về hàng đợi, thử lại ${c.retryCount}/${MAX_CHUNK_RETRIES} sau ${Math.round(backoff/1000)}s...`));
             // ĐỢT 7A: đưa vào BACKOFF heap (theo đúng chunkRetryAfter[idx] vừa đặt ở trên) thay vì
             // đẩy thẳng vào mảng phẳng rồi để vòng scheduler quét tuyến tính bỏ qua cho tới khi hết
             // backoff — heap tự biết khi nào phần tử này sẵn sàng mà không cần quét toàn hàng đợi.
@@ -5204,6 +6289,14 @@ async function startTranslate(){
   try{ await sf_prepareFileForTranslation(text, offsets); }
   catch(e){ console.error('[SF Library] Lỗi chuẩn bị lưu thư viện:', e); }
 
+  // ĐỢT 7D — AUTO CONTEXT: chuẩn bị knowledge base TRƯỚC khi scheduler chạy (Canon tự quét
+  // nếu trống, Relation Graph, Context State mới cho phiên). Lỗi ở bước này KHÔNG được chặn
+  // việc dịch — chỉ ghi log và tiếp tục với context còn lại.
+  if(sf_isContextAutoOn()){
+    try{ await sfContext_prepareForNewTranslation(); }
+    catch(e){ sf_recordRuntimeError('context-prepare', e && e.message ? e.message : String(e)); }
+  }
+
   // ĐỢT 7B — mục I: dùng sfChunkOffsets (global, đã được sf_prepareFileForTranslation() set ở
   // trên — CHỈ start/end/stableId, KHÔNG có text) thay vì `offsets` cục bộ (vẫn còn field .text
   // do chính Smart Chunking tạo ra — KHÔNG đụng tới pipeline đó). currentChunks giờ CHỈ slice()
@@ -5269,6 +6362,9 @@ function sfResetRuntimeSession(){
   const startBtn = document.getElementById('startBtn'); if(startBtn) startBtn.disabled = false;
   const pauseBtn = document.getElementById('pauseBtn'); if(pauseBtn) pauseBtn.style.display = 'none';
   const stopBtn = document.getElementById('stopBtn'); if(stopBtn) stopBtn.style.display = 'none';
+  // ĐỢT 7D: reset lớp Context RUNTIME (cache pack, context state, thống kê integrity) —
+  // KHÔNG đụng Canon/Relation Graph đã lưu trong IndexedDB.
+  if(typeof sfContext_resetRuntime === 'function'){ try{ sfContext_resetRuntime(); sfContext_renderChips(); }catch(e){} }
   // ĐỢT 7A: reset không đổi nội dung sourceText, nên không cần re-chunk thật — preview nhanh
   // là đủ để làm mới dashboard (chars/ước tính token).
   sf_updateStatsPreview();
