@@ -1112,21 +1112,10 @@ function sf_recordRuntimeError(kind, message, extra){
   }catch(e){ /* logging chính nó không được phép ném lỗi tiếp */ }
   sf_showErrorToast(kind, message);
 }
+// [7E-FIX] Đã XOÁ hoàn toàn thông báo lỗi nổi trên màn hình. Lỗi chỉ được ghi vào
+// console + __sfErrorLog (xem sf_recordRuntimeError), không hiển thị gì lên giao diện.
 function sf_showErrorToast(kind, message){
-  try{
-    let el = document.getElementById('sfRuntimeErrorToast');
-    if(!el){
-      el = document.createElement('div');
-      el.id = 'sfRuntimeErrorToast';
-      el.style.cssText = 'position:fixed; left:50%; bottom:18px; transform:translateX(-50%); z-index:99999; max-width:min(92vw,520px); background:#3a1d24; border:1px solid #ef5b5b; color:#ffd9d9; padding:10px 14px; border-radius:10px; font-size:12.5px; font-family:inherit; box-shadow:0 6px 24px #0008; display:none;';
-      document.body && document.body.appendChild(el);
-    }
-    if(!el) return;
-    el.textContent = '⚠️ Đã xảy ra lỗi (' + kind + '): ' + String(message||'').slice(0,180) + ' — Ứng dụng vẫn tiếp tục chạy.';
-    el.style.display = 'block';
-    if(__sfErrorToastTimer) clearTimeout(__sfErrorToastTimer);
-    __sfErrorToastTimer = setTimeout(()=>{ if(el) el.style.display='none'; }, 6000);
-  }catch(e){ /* không để việc hiển thị lỗi tự nó gây thêm lỗi */ }
+  try{ const old = document.getElementById('sfRuntimeErrorToast'); if(old) old.remove(); }catch(e){}
 }
 window.addEventListener('error', function(ev){
   // Lỗi tải resource (ảnh/script 404,...) có ev.error===null và target!==window — bỏ qua,
@@ -3215,11 +3204,16 @@ VĂN BẢN:
 // chunkState của bản dịch (mục I.2 — không đổi kiến trúc Scheduler đang hoạt động).
 async function sfCanon_callExtract(windowText){
   let keyIdx = pickAvailableKey();
-  if(keyIdx === -1){
-    await new Promise(r=>setTimeout(r, Math.min(5000, getNearestCooldownMs())));
+  // [7E-FIX] Chờ key rảnh tối đa ~90s (key đang bận dịch/cooldown) thay vì chỉ chờ 1 lần rồi báo lỗi.
+  const __waitStart = Date.now();
+  while(keyIdx === -1 && Date.now() - __waitStart < 90000){
+    if(typeof stopFlag !== 'undefined' && stopFlag) break;
+    let w = Number(getNearestCooldownMs());
+    if(!isFinite(w) || w < 500) w = 1000;
+    await new Promise(r=>setTimeout(r, Math.min(5000, w)));
     keyIdx = pickAvailableKey();
-    if(keyIdx === -1) throw new Error('Không có API key khả dụng để quét Canon Pack.');
   }
+  if(keyIdx === -1) throw new Error('Không có API key khả dụng để quét Canon Pack.');
   ensureKeyMeta();
   const key = state.keys[keyIdx];
   const meta = state.keyMeta[keyIdx];
@@ -3341,9 +3335,17 @@ function sfCanon__finalizeOccurrenceMap(rawPositions){
 // Quét 1 lượt toàn văn bản bằng automaton multi-pattern, trả về Map<pattern,{occ,first,last}> đã
 // lọc "không chồng lấn" riêng cho từng pattern. Async + nhường control định kỳ (mục VII).
 async function sfCanon_scanAllOccurrencesAsync(text, patterns){
-  const rawPositions = new Map();
-  for(const p of patterns) rawPositions.set(p, []);
-  if(!text || !patterns.length) return sfCanon__finalizeOccurrenceMap(rawPositions);
+  // [7E-FIX] KHÔNG lưu mảng vị trí thô của từng pattern (đại từ/alias ngắn khớp hàng trăm nghìn
+  // lần trên file lớn -> phình RAM -> tab Chrome mobile bị kill "Ôi, hỏng!"). Thay vào đó cập nhật
+  // trực tiếp occ/first/last + nextAllowed (luật không chồng lấn) ngay khi khớp — kết quả y hệt.
+  const statMap = new Map();
+  for(const p of patterns) statMap.set(p, { occ:0, first:null, last:null, nextAllowed:0 });
+  const finishStats = ()=>{
+    const out = new Map();
+    for(const [p, st] of statMap) out.set(p, { occ: st.occ, first: st.first, last: st.last });
+    return out;
+  };
+  if(!text || !patterns.length) return finishStats();
 
   const root = sfCanon_buildAhoCorasick(patterns);
   let node = root;
@@ -3354,7 +3356,15 @@ async function sfCanon_scanAllOccurrencesAsync(text, patterns){
     while(node !== root && !node.children[ch]) node = node.fail;
     node = node.children[ch] || root;
     if(node.output.length){
-      for(const p of node.output) rawPositions.get(p).push(i - p.length + 1);
+      for(const p of node.output){
+        const st = statMap.get(p);
+        const start = i - p.length + 1;
+        if(start < st.nextAllowed) continue; // chồng lấn với occurrence vừa đếm của CHÍNH pattern này
+        st.occ++;
+        if(st.first === null) st.first = start;
+        st.last = start;
+        st.nextAllowed = start + p.length;
+      }
     }
     sinceYield++;
     if(sinceYield >= SF_CANON_SCAN_YIELD_EVERY_CHARS){
@@ -3362,7 +3372,7 @@ async function sfCanon_scanAllOccurrencesAsync(text, patterns){
       await new Promise(r=> setTimeout(r, 0)); // nhường control cho main thread (UI vẫn phản hồi)
     }
   }
-  return sfCanon__finalizeOccurrenceMap(rawPositions);
+  return finishStats();
 }
 // Điểm vào dùng chung cho scanFile()/resync(): nhận mảng "danh sách tên/alias" (1 phần tử/entity,
 // ĐÚNG thứ tự entity truyền vào), trả về mảng {occurrences,firstSeen,lastSeen} cùng thứ tự đó.
