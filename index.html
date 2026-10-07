@@ -540,7 +540,7 @@
         <div class="btn-row" style="margin-top:0;">
           <button class="btn primary small" onclick="document.getElementById('queueFileInput').click()">＋ Thêm file vào hàng đợi</button>
           <button class="btn small danger" onclick="clearEntireFileLibrary()">🗑️ Dọn dẹp toàn bộ thư viện</button>
-          <input type="file" id="queueFileInput" accept=".txt" multiple style="display:none;">
+          <input type="file" id="queueFileInput" accept=".txt,.md,.markdown,.html,.htm,.xhtml,.epub,.docx,.odt,.rtf,.pdf,.srt,.vtt" multiple style="display:none;">
         </div>
         <div class="hint" style="margin:8px 0;">Mỗi file thêm vào sẽ tự động được cắt chunk và xếp hàng. Khi file đang dịch xong, file tiếp theo trong hàng đợi sẽ tự động chạy tiếp.</div>
         <div id="queueBody" class="hint">Hàng đợi trống.</div>
@@ -855,12 +855,12 @@
       <h2>📄 Tải lên file truyện</h2>
       <div class="dropzone" id="dropzone" style="position:relative;">
         <div class="emoji">📁</div>
-        <div class="t1">Kéo thả file .txt vào đây</div>
-        <div class="t2">hoặc chạm để chọn file</div>
+        <div class="t1">Kéo thả file vào đây</div>
+        <div class="t2">TXT · EPUB · DOCX · MD · HTML · PDF · ODT · RTF · SRT — hoặc chạm để chọn file</div>
         <div class="btn-row" style="justify-content:center;">
           <span class="btn small" style="pointer-events:none;">📂 Chọn tệp...</span>
         </div>
-        <input type="file" id="fileInput" accept=".txt,text/plain"
+        <input type="file" id="fileInput" accept=".txt,.md,.markdown,.html,.htm,.xhtml,.epub,.docx,.odt,.rtf,.pdf,.srt,.vtt,.json,.csv,text/plain"
           style="position:absolute; inset:0; width:100%; height:100%; opacity:0; cursor:pointer; -webkit-appearance:none;">
       </div>
     </div>
@@ -2955,6 +2955,161 @@ function toggleModelGridVisible(){
   btn.textContent = willShow ? '🙈 Ẩn models' : '👁️ Hiện models';
 }
 
+/* =====================================================================
+   ĐỌC NHIỀU ĐỊNH DẠNG FILE — TXT · MD · HTML · EPUB · DOCX · ODT · RTF · PDF · SRT/VTT · JSON/CSV
+   Không cần thư viện ngoài (trừ PDF: tải pdf.js từ cdnjs khi cần). Giải nén ZIP bằng
+   DecompressionStream có sẵn của trình duyệt. Trả về văn bản thuần, mỗi đoạn cách nhau 1 dòng trống.
+   ===================================================================== */
+const SF_ACCEPT_EXT = '.txt,.md,.markdown,.html,.htm,.xhtml,.epub,.docx,.odt,.rtf,.pdf,.srt,.vtt,.json,.csv,text/plain';
+function sf_ext(name){ const m=/\.([a-z0-9]+)$/i.exec(name||''); return m?m[1].toLowerCase():''; }
+
+async function sf_zipEntries(buf){
+  const dv=new DataView(buf), u8=new Uint8Array(buf);
+  let eocd=-1;
+  for(let i=u8.length-22;i>=Math.max(0,u8.length-65557);i--){ if(dv.getUint32(i,true)===0x06054b50){ eocd=i; break; } }
+  if(eocd<0) throw new Error('Không phải file ZIP hợp lệ (EPUB/DOCX/ODT).');
+  const count=dv.getUint16(eocd+10,true); let ptr=dv.getUint32(eocd+16,true);
+  const td=new TextDecoder('utf-8'), map={};
+  for(let n=0;n<count;n++){
+    if(dv.getUint32(ptr,true)!==0x02014b50) break;
+    const method=dv.getUint16(ptr+10,true), csize=dv.getUint32(ptr+20,true);
+    const nlen=dv.getUint16(ptr+28,true), elen=dv.getUint16(ptr+30,true), clen=dv.getUint16(ptr+32,true);
+    const lho=dv.getUint32(ptr+42,true);
+    const name=td.decode(u8.subarray(ptr+46,ptr+46+nlen));
+    map[name]={method,csize,lho};
+    ptr+=46+nlen+elen+clen;
+  }
+  async function read(name){
+    const e=map[name]; if(!e) return null;
+    const ln=dv.getUint16(e.lho+26,true), le=dv.getUint16(e.lho+28,true);
+    const start=e.lho+30+ln+le; const data=u8.subarray(start,start+e.csize);
+    if(e.method===0) return data;
+    if(e.method!==8) throw new Error('ZIP dùng phương thức nén không hỗ trợ.');
+    const ds=new DecompressionStream('deflate-raw');
+    const out=new Blob([data]).stream().pipeThrough(ds);
+    return new Uint8Array(await new Response(out).arrayBuffer());
+  }
+  return { names:Object.keys(map), read, text: async n=>{ const d=await read(n); return d?td.decode(d):null; } };
+}
+
+function sf_htmlToText(html){
+  const doc=new DOMParser().parseFromString(html,'text/html');
+  doc.querySelectorAll('script,style,noscript,head').forEach(n=>n.remove());
+  doc.querySelectorAll('br').forEach(n=>n.replaceWith('\n'));
+  const blocks='p,div,h1,h2,h3,h4,h5,h6,li,tr,blockquote,section,article,pre';
+  doc.querySelectorAll(blocks).forEach(n=>{ n.appendChild(doc.createTextNode('\n\n')); });
+  return (doc.body?doc.body.textContent:'').replace(/\r/g,'').replace(/[ \t\u00a0]+\n/g,'\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+
+async function sf_readEpub(buf){
+  const z=await sf_zipEntries(buf);
+  const container=await z.text('META-INF/container.xml');
+  let opfPath=null;
+  if(container){ const m=/full-path="([^"]+)"/.exec(container); if(m) opfPath=m[1]; }
+  if(!opfPath) opfPath=z.names.find(n=>/\.opf$/i.test(n));
+  const opf=await z.text(opfPath); if(!opf) throw new Error('EPUB thiếu file .opf');
+  const base=opfPath.includes('/')?opfPath.slice(0,opfPath.lastIndexOf('/')+1):'';
+  const x=new DOMParser().parseFromString(opf,'application/xml');
+  const manifest={}; x.querySelectorAll('manifest > item').forEach(i=>{ manifest[i.getAttribute('id')]=i.getAttribute('href'); });
+  const order=[...x.querySelectorAll('spine > itemref')].map(i=>manifest[i.getAttribute('idref')]).filter(Boolean);
+  const parts=[];
+  for(const href of order){
+    const clean=decodeURIComponent(href.split('#')[0]);
+    const html=await z.text(base+clean); if(!html) continue;
+    const t=sf_htmlToText(html); if(t) parts.push(t);
+  }
+  if(!parts.length) throw new Error('EPUB không có nội dung đọc được.');
+  return parts.join('\n\n');
+}
+
+async function sf_readDocx(buf){
+  const z=await sf_zipEntries(buf);
+  const xml=await z.text('word/document.xml'); if(!xml) throw new Error('DOCX thiếu word/document.xml');
+  const d=new DOMParser().parseFromString(xml,'application/xml');
+  const paras=[];
+  d.querySelectorAll('p').forEach(p=>{
+    let t='';
+    p.querySelectorAll('t,tab,br').forEach(n=>{ const ln=n.localName; t += ln==='t' ? n.textContent : (ln==='tab' ? '\t' : '\n'); });
+    paras.push(t);
+  });
+  return paras.join('\n\n').replace(/\n{3,}/g,'\n\n').trim();
+}
+
+async function sf_readOdt(buf){
+  const z=await sf_zipEntries(buf);
+  const xml=await z.text('content.xml'); if(!xml) throw new Error('ODT thiếu content.xml');
+  const d=new DOMParser().parseFromString(xml,'application/xml');
+  const out=[]; d.querySelectorAll('p,h').forEach(n=>out.push(n.textContent));
+  return out.join('\n\n').trim();
+}
+
+function sf_readRtf(raw){
+  let s=raw.replace(/\\par[d]?/g,'\n').replace(/\\line/g,'\n').replace(/\\tab/g,'\t');
+  s=s.replace(/\\'([0-9a-f]{2})/gi,(_,h)=>String.fromCharCode(parseInt(h,16)));
+  s=s.replace(/\\u(-?\d+)\??/g,(_,n)=>{ n=parseInt(n,10); if(n<0) n+=65536; return String.fromCharCode(n); });
+  s=s.replace(/\{\\\*[^{}]*\}/g,'').replace(/\\[a-z]+-?\d* ?/gi,'').replace(/[{}]/g,'');
+  return s.replace(/\n{3,}/g,'\n\n').trim();
+}
+
+let sfPdfJsPromise=null;
+function sf_loadPdfJs(){
+  if(window.pdfjsLib) return Promise.resolve(window.pdfjsLib);
+  if(sfPdfJsPromise) return sfPdfJsPromise;
+  sfPdfJsPromise=new Promise((res,rej)=>{
+    const sc=document.createElement('script');
+    sc.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    sc.onload=()=>{ window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'; res(window.pdfjsLib); };
+    sc.onerror=()=>{ sfPdfJsPromise=null; rej(new Error('Không tải được pdf.js (cần mạng để đọc PDF).')); };
+    document.head.appendChild(sc);
+  });
+  return sfPdfJsPromise;
+}
+async function sf_readPdf(buf){
+  const lib=await sf_loadPdfJs();
+  const pdf=await lib.getDocument({data:new Uint8Array(buf)}).promise;
+  const pages=[];
+  for(let i=1;i<=pdf.numPages;i++){
+    const tc=await (await pdf.getPage(i)).getTextContent();
+    let line='', lastY=null, out=[];
+    tc.items.forEach(it=>{
+      const y=it.transform[5];
+      if(lastY!==null && Math.abs(y-lastY)>2){ out.push(line); line=''; }
+      line+=it.str; lastY=y;
+    });
+    if(line) out.push(line);
+    pages.push(out.join('\n'));
+  }
+  const text=pages.join('\n\n').trim();
+  if(!text) throw new Error('PDF không có lớp chữ (có thể là bản scan/ảnh) — cần OCR trước.');
+  return text;
+}
+
+function sf_decodeText(buf){
+  const u8=new Uint8Array(buf);
+  if(u8[0]===0xFF&&u8[1]===0xFE) return new TextDecoder('utf-16le').decode(u8);
+  if(u8[0]===0xFE&&u8[1]===0xFF) return new TextDecoder('utf-16be').decode(u8);
+  return new TextDecoder('utf-8').decode(u8).replace(/^\uFEFF/,'');
+}
+
+// Đọc BẤT KỲ định dạng được hỗ trợ -> văn bản thuần
+async function sf_readAnyFile(f){
+  const ext=sf_ext(f.name);
+  const buf=await f.arrayBuffer();
+  switch(ext){
+    case 'epub': return sf_readEpub(buf);
+    case 'docx': return sf_readDocx(buf);
+    case 'odt':  return sf_readOdt(buf);
+    case 'pdf':  return sf_readPdf(buf);
+    case 'html': case 'htm': case 'xhtml': return sf_htmlToText(sf_decodeText(buf));
+    case 'rtf':  return sf_readRtf(sf_decodeText(buf));
+    case 'srt': case 'vtt':
+      return sf_decodeText(buf).replace(/^WEBVTT.*$/m,'').replace(/^\d+\s*$/gm,'')
+        .replace(/^\d{1,2}:\d{2}[:.,\d]*\s*-->.*$/gm,'').replace(/<[^>]+>/g,'').replace(/\n{3,}/g,'\n\n').trim();
+    case 'doc': throw new Error('File .doc cũ chưa hỗ trợ — hãy lưu lại thành .docx.');
+    default: return sf_decodeText(buf); // txt, md, markdown, json, csv, không đuôi...
+  }
+}
+
 /* UPLOAD */
 // ĐỢT 7C — mục I: kiểm tra file.size TRƯỚC readAsText(). Chỉ CẢNH BÁO theo ngưỡng tăng dần,
 // KHÔNG tự ý cấm/cắt file lớn — >100MB mới cần xác nhận (confirm) trước khi đọc toàn bộ.
@@ -2974,20 +3129,16 @@ function readFile(f){
   } else if(size > SF_FILE_WARN_20MB){
     logLine('warn', null, null, `Lưu ý: file khá lớn (~${mb}MB), xử lý có thể chậm hơn bình thường.`);
   }
-  const r=new FileReader();
-  r.onload=()=>{
-    sf_setSourceText(r.result);
+  sf_readAnyFile(f).then(text=>{
+    if(!text || !text.trim()){ sf_recordRuntimeError('file-read','File rỗng hoặc không đọc được chữ nào',{ name:f.name, size:f.size }); return; }
+    sf_setSourceText(text);
     updateStats();
     sfLastUploadName = f.name || sfLastUploadName;
-    sf_onSourceLoaded(r.result, f.name).catch(e=>console.error('[SF Library] readFile autosave lỗi:', e));
-  };
-  // ĐỢT 7C — mục V: đọc file thất bại (hỏng/bị rút thiết bị/permission thu hồi giữa chừng...)
-  // trước đây không có xử lý gì — trang sẽ "im lặng" không phản hồi. Giờ báo rõ qua toast lỗi
-  // dùng chung (sf_recordRuntimeError), không nuốt lỗi, không làm sập các phần khác của trang.
-  r.onerror=()=>{
-    sf_recordRuntimeError('file-read', (r.error && r.error.message) || 'Đọc file thất bại không rõ lý do', { name: f.name, size: f.size });
-  };
-  r.readAsText(f,'UTF-8');
+    sf_onSourceLoaded(text, f.name).catch(e=>console.error('[SF Library] readFile autosave lỗi:', e));
+    logLine('ok', null, null, `📥 Đã đọc ${f.name} (${(sf_ext(f.name)||'txt').toUpperCase()}) — ${text.length.toLocaleString()} ký tự.`);
+  }).catch(err=>{
+    sf_recordRuntimeError('file-read', (err && err.message) || 'Đọc file thất bại không rõ lý do', { name: f.name, size: f.size });
+  });
 }
 document.getElementById('fileInput').addEventListener('change', e=>{ if(e.target.files[0]) readFile(e.target.files[0]); });
 
