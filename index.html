@@ -424,24 +424,7 @@
       <div class="logo">SF</div>
       <div class="name">StoryForge</div>
     </div>
-    <div class="navitem disabled"><span class="ic">📊</span> Dashboard</div>
-    <div class="sidebar-hint">Tạo một truyện để sử dụng các mục này.</div>
-    <div class="navitem disabled"><span class="ic">📖</span> Sổ tay truyện</div>
-    <div class="navitem disabled"><span class="ic">📝</span> Sự thật</div>
-    <div class="navitem disabled"><span class="ic">🗺️</span> Bảng dàn ý</div>
-    <div class="navitem disabled"><span class="ic">👥</span> Nhân vật</div>
-    <div class="navitem disabled"><span class="ic">🌐</span> Thế giới</div>
-    <div class="navitem disabled"><span class="ic">✏️</span> Viết truyện</div>
-    <div class="navitem disabled"><span class="ic">✨</span> Prompt truyện</div>
-    <div class="navitem disabled"><span class="ic">✨</span> Prompt Doctor</div>
-    <div class="navitem disabled"><span class="ic">🧪</span> Lab Lite</div>
-    <div class="navitem disabled"><span class="ic">💬</span> Chat tự do</div>
     <div class="navitem active"><span class="ic">🈯</span> Dịch truyện</div>
-    <div class="navitem disabled"><span class="ic">✨</span> Prompt tổng quát</div>
-    <div class="navitem disabled"><span class="ic">👑</span> Tài khoản &amp; VIP</div>
-    <div class="navitem disabled"><span class="ic">☁️</span> Cloud Sync</div>
-    <div class="navitem disabled"><span class="ic">⚙️</span> Cài đặt</div>
-    <div class="navitem disabled"><span class="ic">🎨</span> Giao diện</div>
   </div>
 
   <!-- MAIN -->
@@ -481,7 +464,6 @@
       <div class="btn-row">
         <button class="btn small" onclick="toggleCloudLibraryPanel()">☁ Thư viện Cloud</button>
         <button class="btn small" onclick="toggleCloudHistoryPanel()">🕘 Lịch sử dịch</button>
-        <button class="btn small" onclick="sfShowSecurityRules()">🔒 Xem Security Rules cần cấu hình</button>
       </div>
       <div class="histpanel" id="cloudLibraryPanel">
         <div class="hint" style="margin-bottom:8px;">Các truyện đang có trên Cloud (tài khoản Google hiện tại). Truyện đã tải về máy sẽ hiện luôn trong 📚 Thư viện bên dưới.</div>
@@ -587,6 +569,7 @@
             <button class="btn small" onclick="sfGem.exportCfg(false)">⬆️ Xuất cấu hình (không key)</button>
             <button class="btn small" onclick="sfGem.exportCfg(true)">⬆️ Xuất kèm key</button>
             <button class="btn small" onclick="sfGem.importCfg()">⬇️ Nhập cấu hình</button>
+            <button class="btn small" onclick="sfCloud.backupNow()">☁ Lưu / cập nhật Cloud</button>
           </div>
           <div class="keysummary" id="gemSummary">Chưa có key nào.</div>
           <div class="allkeys-warning" id="gemWarn" style="display:none;"><span>⚠️ Tất cả key Gemini đang chờ giới hạn hoặc lỗi. Hàng đợi sẽ tự chạy tiếp khi có key khả dụng.</span></div>
@@ -675,11 +658,14 @@
             <div style="margin-top:12px; border-top:1px solid var(--panel-border); padding-top:12px;">
               <div class="switchrow" style="margin-bottom:6px;">
                 <div class="switch" id="cloudBackupSwitch" onclick="sfCloud.toggleKeyBackup()"></div>
-                <span style="font-size:13px;">☁ Backup các bộ kết nối (kèm API key) lên Cloud — <b>mã hoá phía trình duyệt</b></span>
+                <span style="font-size:13px;">☁ Tự động lưu bộ kết nối + Gemini key lên Cloud — <b>mã hoá đầu-cuối, mật khẩu chỉ hỏi 1 lần/thiết bị</b></span>
               </div>
-              <div class="hint">Cần đăng nhập Google. Key được mã hoá bằng Web Crypto (AES-GCM) với mật khẩu riêng do bạn đặt trước khi upload — StoryForge/Cloud không bao giờ thấy hoặc lưu key ở dạng plaintext, và cũng không lưu mật khẩu đó ở đâu cả.</div>
+              <div class="hint">Cần đăng nhập Google + <b>Mật khẩu Cloud</b> do bạn đặt. Key được mã hoá bằng AES-256-GCM ngay trong trình duyệt trước khi upload: Firebase, chủ website hay kẻ chiếm được tài khoản Google/Firebase chỉ thấy dữ liệu đã mã hoá. Mật khẩu không được gửi/lưu ở đâu cả (tuỳ chọn nhớ trên thiết bị này dưới dạng khoá không xuất được). <b>Quên mật khẩu = không khôi phục được.</b></div>
               <div class="btn-row">
+                <button class="btn small primary" onclick="sfCloud.backupNow()">☁ Lưu / cập nhật lên Cloud</button>
                 <button class="btn small" onclick="sfCloud.restoreKeyBackup()">⬇ Khôi phục bộ kết nối từ Cloud</button>
+                <button class="btn small" onclick="sfCloud.forgetDeviceKey()">🔑 Quên mật khẩu trên máy này</button>
+                <button class="btn small" style="border-color:#7a2a35;color:#ff8a96;" onclick="sfCloud.deleteBackup()">🗑 Xoá backup key trên Cloud</button>
               </div>
             </div>
           </div>
@@ -2929,10 +2915,10 @@ function showAllKeysWarning(show){ const el = document.getElementById('allKeysWa
 
 const PROFILES_KEY = 'sf_proxy_profiles_v1';
 function loadProfiles(){ try{ return JSON.parse(localStorage.getItem(PROFILES_KEY) || '[]'); }catch(e){ return []; } }
-function saveProfilesToStorage(list){ try{ localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); }catch(e){} }
+function saveProfilesToStorage(list){ try{ localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); }catch(e){} try{ sfCloud.autoBackup(); }catch(e){} }
 function markProfileDirty(){ if(state.currentProfile) state.profileDirty = true; renderProfileStatus(); }
 function renderProfileStatus(){ const el = document.getElementById('profileStatus'); if(!state.currentProfile){ el.textContent = 'Chưa lưu'; } else { el.textContent = state.profileDirty ? 'Có thay đổi' : 'Đang dùng: '+state.currentProfile; } }
-function renderProfiles(){ const chipsEl = document.getElementById('profileChips'); chipsEl.innerHTML=''; loadProfiles().forEach(p=>{ const chip = document.createElement('div'); chip.className = 'profilechip' + (p.name===state.currentProfile ? ' sel' : ''); chip.innerHTML = `<span onclick="loadProfile('${encodeURIComponent(p.name)}')">🧩 ${p.name}</span><span class="x" onclick="deleteProfile('${encodeURIComponent(p.name)}')">✕</span>`; chipsEl.appendChild(chip); }); renderProfileStatus(); }
+function renderProfiles(){ const chipsEl = document.getElementById('profileChips'); chipsEl.innerHTML=''; loadProfiles().forEach(p=>{ const chip = document.createElement('div'); chip.className = 'profilechip' + (p.name===state.currentProfile ? ' sel' : ''); chip.innerHTML = `<span onclick="loadProfile('${encodeURIComponent(p.name)}')">🧩 ${sf_escapeHtml(p.name)}</span><span class="x" onclick="deleteProfile('${encodeURIComponent(p.name)}')">✕</span>`; chipsEl.appendChild(chip); }); renderProfileStatus(); }
 function currentProfileData(name){ return { name, baseUrl: document.getElementById('baseUrl').value.trim(), model: state.model, keys: state.keys.slice() }; }
 function saveProfileAsNew(){ const name = document.getElementById('profileName').value.trim(); if(!name) return; const profiles = loadProfiles().filter(p=>p.name!==name); profiles.push(currentProfileData(name)); saveProfilesToStorage(profiles); state.currentProfile = name; state.profileDirty = false; renderProfiles(); }
 function updateCurrentProfile(){ if(!state.currentProfile) return; const profiles = loadProfiles().filter(p=>p.name!==state.currentProfile); profiles.push(currentProfileData(state.currentProfile)); saveProfilesToStorage(profiles); state.profileDirty = false; renderProfiles(); }
@@ -5835,9 +5821,9 @@ const sfCloud = (function(){
       const fid = item.payload.fileId;
       await base.collection('files').doc(fid).delete();
       const snap = await base.collection('chunks').where('fileId','==',fid).get();
-      const batch = db.batch();
-      snap.forEach(d=> batch.delete(d.ref));
-      if(snap.size) await batch.commit();
+      for(let i=0; i<snap.docs.length; i+=450){ // batch Firestore tối đa 500 thao tác
+        const batch = db.batch(); snap.docs.slice(i, i+450).forEach(d=> batch.delete(d.ref)); await batch.commit();
+      }
       try{ await storage.ref('users/'+uid+'/files/'+fid+'/source.txt').delete(); }catch(e){}
     } else if(item.type === 'history'){
       await base.collection('history').add(item.payload);
@@ -5877,7 +5863,8 @@ const sfCloud = (function(){
     if(!available){ body.textContent = 'Cloud chưa được cấu hình.'; return; }
     if(!user){ body.textContent = 'Đăng nhập Google để xem thư viện Cloud.'; return; }
     if(!cloudFilesCache.length){ body.textContent = 'Chưa có truyện nào trên Cloud của tài khoản này.'; return; }
-    body.innerHTML = cloudFilesCache.map(f=>{
+    const head = `<div class="btn-row" style="margin:0 0 8px;"><button class="btn small" style="border-color:#7a2a35;color:#ff8a96;" onclick="sfCloud.deleteAllCloudFiles()">🗑 Xoá hết trên Cloud (${cloudFilesCache.length})</button></div>`;
+    body.innerHTML = head + cloudFilesCache.map(f=>{
       const localExists = libraryFiles.some(lf=> lf.id === f.id);
       const upd = f.updatedAt ? new Date(f.updatedAt).toLocaleString('vi-VN') : '—';
       return `<div class="histrow" style="flex-direction:column; align-items:stretch; gap:6px;">
@@ -5888,6 +5875,7 @@ const sfCloud = (function(){
         <div class="t" style="font-size:11.5px;">📦 ${f.totalChunks||0} chunk · ✅ ${f.translatedChunks||0} · 🕒 ${upd}</div>
         <div class="btn-row" style="margin-top:0;">
           <button class="btn small primary" onclick="sfCloud.downloadFile('${sf_escapeHtml(f.id)}')">⬇ Tải về máy${localExists?' (cập nhật)':''}</button>
+          <button class="btn small" style="border-color:#7a2a35;color:#ff8a96;" onclick="sfCloud.deleteCloudFile('${sf_escapeHtml(f.id)}')">🗑 Xoá</button>
         </div>
       </div>`;
     }).join('');
@@ -5939,65 +5927,164 @@ const sfCloud = (function(){
   /* ---------- Backup API key / bộ kết nối lên Cloud, mã hoá phía client (mục X) ---------- */
   function toB64(buf){ return btoa(String.fromCharCode(...new Uint8Array(buf))); }
   function fromB64(b64){ return Uint8Array.from(atob(b64), c=>c.charCodeAt(0)); }
-  async function deriveKey(passphrase, saltB64){
+  async function deriveKey(passphrase, saltB64, iter){ iter = iter || 150000;
     const enc = new TextEncoder();
     const salt = saltB64 ? fromB64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
     const baseKey = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
     const key = await crypto.subtle.deriveKey(
-      { name:'PBKDF2', salt, iterations:150000, hash:'SHA-256' },
+      { name:'PBKDF2', salt, iterations:iter, hash:'SHA-256' },
       baseKey, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']
     );
     return { key, saltB64: saltB64 || toB64(salt) };
+  }
+  /* ---------- Backup bộ kết nối + Gemini key lên Cloud — MÃ HOÁ ĐẦU-CUỐI (zero-knowledge) ----------
+     Key được mã hoá ngay trong trình duyệt bằng AES-256-GCM, khoá dẫn xuất từ mật khẩu Cloud (PBKDF2-SHA256, 600.000 vòng).
+     Firebase/chủ website/hacker chiếm được tài khoản Google hay Firebase Console chỉ thấy ciphertext.
+     Mật khẩu hỏi 1 lần mỗi thiết bị; nếu chọn "nhớ", chỉ lưu CryptoKey KHÔNG xuất được (non-extractable) trong IndexedDB. */
+  const AB_KEY = 'sf_cloud_autobackup_v1', ITER_NEW = 600000;
+  let restoringBackup = false, abTimer = null, sessionKey = null;
+  const autoOn = ()=>{ try{ return localStorage.getItem(AB_KEY)==='1'; }catch(e){ return false; } };
+  try{ if(autoOn()){ const sw=document.getElementById('cloudBackupSwitch'); if(sw) sw.classList.add('on'); } }catch(e){}
+  const settingsRef = ()=> db.collection('users').doc(user.uid).collection('settings').doc('profiles');
+  function ckOpen(){ return new Promise((res,rej)=>{ const r=indexedDB.open('sf_cloudkey_v1',1); r.onupgradeneeded=()=>r.result.createObjectStore('k'); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+  async function ckGet(uid){ try{ const d0=await ckOpen(); return await new Promise(res=>{ const q=d0.transaction('k').objectStore('k').get(uid); q.onsuccess=()=>res(q.result||null); q.onerror=()=>res(null); }); }catch(e){ return null; } }
+  async function ckSet(uid,v){ try{ const d0=await ckOpen(); await new Promise((res,rej)=>{ const t=d0.transaction('k','readwrite'); t.objectStore('k').put(v,uid); t.oncomplete=res; t.onerror=()=>rej(t.error); }); return true; }catch(e){ return false; } }
+  async function ckDel(uid){ try{ const d0=await ckOpen(); await new Promise(res=>{ const t=d0.transaction('k','readwrite'); t.objectStore('k').delete(uid); t.oncomplete=res; t.onerror=res; }); }catch(e){} }
+  async function encryptObj(key, obj){
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const ct = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, new TextEncoder().encode(JSON.stringify(obj)));
+    return { iv: toB64(iv), ciphertext: toB64(ct) };
+  }
+  async function decryptObj(key, doc){
+    const p = await crypto.subtle.decrypt({ name:'AES-GCM', iv: fromB64(doc.iv) }, key, fromB64(doc.ciphertext));
+    return JSON.parse(new TextDecoder().decode(p));
+  }
+  // Lấy khoá mã hoá. interactive=false (tự động lưu) thì KHÔNG bao giờ hiện hộp hỏi mật khẩu.
+  async function getBackupKey(interactive, cur){
+    if(sessionKey && sessionKey.uid===user.uid && (!cur||!cur.salt||cur.salt===sessionKey.saltB64)) return sessionKey;
+    const saved = await ckGet(user.uid);
+    if(saved && (!cur||!cur.salt||cur.salt===saved.saltB64)){ sessionKey = { uid:user.uid, key:saved.key, saltB64:saved.saltB64, iter:saved.iter }; return sessionKey; }
+    if(!interactive) return null;
+    let d, iter;
+    if(cur && cur.ciphertext){
+      const pw = prompt('Nhập MẬT KHẨU CLOUD của bạn để mở khoá backup (quên mật khẩu = không khôi phục được; khi đó dùng nút "Xoá backup key trên Cloud" rồi đặt lại):');
+      if(!pw) return null;
+      iter = cur.iter || 150000; d = await deriveKey(pw, cur.salt, iter);
+      try{ await decryptObj(d.key, cur); }catch(e){ alert('Sai mật khẩu Cloud.'); return null; }
+    } else {
+      const pw = prompt('Đặt MẬT KHẨU CLOUD (tối thiểu 10 ký tự). Key được mã hoá bằng mật khẩu này TRƯỚC khi lên Cloud; không ai (kể cả chủ website) đọc được, và KHÔNG khôi phục được nếu bạn quên:');
+      if(!pw) return null;
+      if(pw.length < 10){ alert('Mật khẩu cần tối thiểu 10 ký tự.'); return null; }
+      if(prompt('Nhập lại mật khẩu để xác nhận:') !== pw){ alert('Hai lần nhập không khớp.'); return null; }
+      iter = ITER_NEW; d = await deriveKey(pw, null, iter);
+    }
+    sessionKey = { uid:user.uid, key:d.key, saltB64:d.saltB64, iter };
+    if(confirm('Nhớ mật khẩu trên thiết bị này để lần sau không phải nhập lại?\n(Chỉ chọn OK trên máy cá nhân, không phải máy dùng chung.)')) await ckSet(user.uid, { key:d.key, saltB64:d.saltB64, iter });
+    return sessionKey;
+  }
+  async function backupNow(silent){
+    if(!available || !user){ if(!silent) alert('Đăng nhập Google trước khi lưu lên Cloud.'); return; }
+    try{
+      const snap = await settingsRef().get(); const cur = snap.exists ? snap.data() : null;
+      const bk = await getBackupKey(!silent, cur);
+      if(!bk){ if(!silent) alert('Đã huỷ — chưa lưu gì lên Cloud.'); return; }
+      let profiles = loadProfiles();
+      let gemini = (window.sfGem && sfGem.cloudExport) ? sfGem.cloudExport() : null;
+      // Chống ghi đè bằng dữ liệu rỗng: phần nào rỗng thì giữ lại phần đang có trên Cloud (giải mã bằng khoá hiện tại)
+      if(cur && cur.ciphertext && cur.salt===bk.saltB64 && (!profiles.length || !gemini || !gemini.keys.length)){
+        try{ const old = await decryptObj(bk.key, cur);
+          if(!profiles.length) profiles = old.profiles || [];
+          if((!gemini || !gemini.keys.length) && old.gemini) gemini = old.gemini; }catch(e){}
+      }
+      const enc = await encryptObj(bk.key, { profiles, gemini });
+      // Chỉ ciphertext + iv + salt được đưa vào hàng đợi/Firestore — KHÔNG BAO GIỜ plaintext.
+      await enqueue('settings', { v:3, alg:'AES-256-GCM', kdf:'PBKDF2-SHA256', iter:bk.iter, salt:bk.saltB64, iv:enc.iv, ciphertext:enc.ciphertext, updatedAt:Date.now() });
+      if(!silent) alert('Đã lưu (mã hoá) lên Cloud: ' + profiles.length + ' bộ kết nối + ' + ((gemini&&gemini.keys.length)||0) + ' Gemini key.');
+    }catch(e){ console.error('[SF Cloud] backupNow lỗi:', e && e.name); if(!silent) alert('Lưu Cloud thất bại: ' + e.message); }
+  }
+  function autoBackup(){
+    if(restoringBackup || !autoOn() || !available || !user) return;
+    clearTimeout(abTimer); abTimer = setTimeout(()=> backupNow(true), 4000);
   }
   async function toggleKeyBackup(){
     const sw = document.getElementById('cloudBackupSwitch');
     if(!sw) return;
     if(!available || !user){ alert('Đăng nhập Google trước khi bật Backup Cloud.'); return; }
-    const turningOn = !sw.classList.contains('on');
-    if(!turningOn){ sw.classList.remove('on'); return; } // chỉ tắt hiển thị công tắc, KHÔNG xoá backup đã có trên Cloud
-    const passphrase = prompt('Đặt một mật khẩu để mã hoá API key trước khi upload Cloud.\nStoryForge KHÔNG lưu mật khẩu này ở đâu — nếu quên, sẽ không khôi phục được backup.');
-    if(!passphrase) return;
-    sw.classList.add('on');
-    await backupProfilesNow(passphrase);
-  }
-  async function backupProfilesNow(passphrase){
-    try{
-      const profiles = loadProfiles(); // chỉ đọc từ localStorage hiện có — không đổi cơ chế Profile cũ
-      const { key, saltB64 } = await deriveKey(passphrase, null);
-      const iv = crypto.getRandomValues(new Uint8Array(12));
-      const enc = new TextEncoder();
-      const ciphertext = await crypto.subtle.encrypt({ name:'AES-GCM', iv }, key, enc.encode(JSON.stringify(profiles)));
-      // KHÔNG BAO GIỜ ghi plaintext key lên Firestore — chỉ ciphertext + iv + salt.
-      await enqueue('settings', { ciphertext: toB64(ciphertext), iv: toB64(iv), salt: saltB64, updatedAt: Date.now() });
-      alert('Đã đưa backup (đã mã hoá) vào hàng đợi đồng bộ Cloud.');
-    }catch(e){ console.error('[SF Cloud] Mã hoá/backup profiles lỗi:', e); alert('Backup thất bại: ' + e.message); }
+    if(sw.classList.contains('on')){ sw.classList.remove('on'); try{ localStorage.setItem(AB_KEY,'0'); }catch(e){} return; } // chỉ tắt tự động lưu, KHÔNG xoá backup trên Cloud
+    sw.classList.add('on'); try{ localStorage.setItem(AB_KEY,'1'); }catch(e){}
+    await backupNow(false);
+    if(!sessionKey || sessionKey.uid!==user.uid){ sw.classList.remove('on'); try{ localStorage.setItem(AB_KEY,'0'); }catch(e){} }
   }
   async function restoreKeyBackup(){
     if(!available || !user){ alert('Đăng nhập Google trước.'); return; }
     try{
-      const doc = await db.collection('users').doc(user.uid).collection('settings').doc('profiles').get();
-      if(!doc.exists){ alert('Chưa có backup nào trên Cloud cho tài khoản này.'); return; }
-      const data = doc.data();
-      const passphrase = prompt('Nhập mật khẩu đã dùng khi backup để giải mã:');
-      if(!passphrase) return;
-      const { key } = await deriveKey(passphrase, data.salt);
-      const plain = await crypto.subtle.decrypt({ name:'AES-GCM', iv: fromB64(data.iv) }, key, fromB64(data.ciphertext));
-      const profiles = JSON.parse(new TextDecoder().decode(plain));
-      const existing = loadProfiles();
-      const merged = existing.filter(p=> !profiles.some(np=> np.name===p.name)).concat(profiles);
-      saveProfilesToStorage(merged);
-      if(typeof renderProfiles === 'function') renderProfiles();
-      alert('Đã khôi phục ' + profiles.length + ' bộ kết nối từ Cloud vào trình duyệt này.');
-    }catch(e){
-      console.error('[SF Cloud] restoreKeyBackup lỗi:', e);
-      alert('Giải mã thất bại — sai mật khẩu hoặc dữ liệu backup lỗi.');
+      const snap = await settingsRef().get();
+      if(!snap.exists){ alert('Chưa có backup nào trên Cloud cho tài khoản này.'); return; }
+      const data = snap.data(); let profiles = [], gem = null;
+      if(data.ciphertext){
+        const bk = await getBackupKey(true, data); if(!bk) return;
+        const p = await decryptObj(bk.key, data);
+        if(Array.isArray(p)) profiles = p; else { profiles = p.profiles || []; gem = p.gemini || null; } // bản cũ: mảng profiles
+      } else { profiles = data.profiles || []; gem = data.gemini || null; } // backup không mã hoá (bản thử trước) — lần lưu kế tiếp sẽ thay bằng bản mã hoá
+      restoringBackup = true; let nGem = 0;
+      try{
+        const merged = loadProfiles().filter(x=> !profiles.some(np=> np.name===x.name)).concat(profiles);
+        saveProfilesToStorage(merged);
+        if(typeof renderProfiles === 'function') renderProfiles();
+        if(gem && window.sfGem && sfGem.cloudImport) nGem = sfGem.cloudImport(gem);
+      } finally { restoringBackup = false; }
+      alert('Đã khôi phục ' + profiles.length + ' bộ kết nối' + (gem ? ' và thêm ' + nGem + ' Gemini key mới' : '') + ' từ Cloud.');
+    }catch(e){ console.error('[SF Cloud] restoreKeyBackup lỗi:', e && e.name); alert('Khôi phục thất bại: ' + e.message); }
+  }
+  async function forgetDeviceKey(){
+    if(!user){ alert('Đăng nhập Google trước.'); return; }
+    sessionKey = null; await ckDel(user.uid);
+    try{ localStorage.setItem(AB_KEY,'0'); const sw=document.getElementById('cloudBackupSwitch'); if(sw) sw.classList.remove('on'); }catch(e){}
+    alert('Đã xoá mật khẩu/khoá Cloud khỏi thiết bị này và tắt tự động lưu. Lần sau sẽ phải nhập lại mật khẩu.');
+  }
+  async function deleteBackup(){
+    if(!available || !user){ alert('Đăng nhập Google trước.'); return; }
+    if(!confirm('Xoá TOÀN BỘ backup key trên Cloud của tài khoản này? (Không đụng tới key trên máy này và không đụng tới thư viện truyện.) Dùng khi quên mật khẩu Cloud hoặc muốn xoá hẳn key khỏi Cloud.')) return;
+    try{ await settingsRef().delete(); await forgetDeviceKey(); }catch(e){ alert('Xoá thất bại: ' + e.message); }
+  }
+
+  /* ---------- Xoá truyện trên Cloud (chỉ Cloud; bản trong thư viện máy giữ nguyên) ---------- */
+  async function deleteFileOnCloud(fid){
+    const base = db.collection('users').doc(user.uid);
+    const snap = await base.collection('chunks').where('fileId','==',fid).get();
+    for(let i=0; i<snap.docs.length; i+=450){ // Firestore giới hạn 500 thao tác/batch
+      const b = db.batch(); snap.docs.slice(i, i+450).forEach(d=> b.delete(d.ref)); await b.commit();
     }
+    try{ await storage.ref('users/'+user.uid+'/files/'+fid+'/source.txt').delete(); }catch(e){}
+    await base.collection('files').doc(fid).delete(); // xoá doc file CUỐI CÙNG: nếu lỗi giữa chừng vẫn thấy truyện để xoá lại
+  }
+  async function deleteCloudFile(fid){
+    if(!available || !user) return;
+    const f = cloudFilesCache.find(x=> x.id===fid);
+    if(!confirm('Xoá "' + (f ? f.name : fid) + '" khỏi Cloud?\nChỉ xoá bản trên Cloud; bản trong thư viện trên máy này được giữ nguyên.')) return;
+    const body = document.getElementById('cloudLibraryBody'); if(body) body.textContent = 'Đang xoá…';
+    try{ await deleteFileOnCloud(fid); }catch(e){ console.error(e); alert('Xoá thất bại: ' + e.message); }
+    await refreshCloudLibrary();
+  }
+  async function deleteAllCloudFiles(){
+    if(!available || !user || !cloudFilesCache.length) return;
+    const list = cloudFilesCache.slice(), n = list.length;
+    if(!confirm('Xoá TẤT CẢ ' + n + ' truyện trên Cloud của tài khoản này?\nChỉ xoá Cloud; bản trong thư viện máy này giữ nguyên.')) return;
+    const t = prompt('Gõ XOA để xác nhận xoá toàn bộ ' + n + ' truyện trên Cloud:');
+    if(!t || t.trim().toUpperCase()!=='XOA') return;
+    const body = document.getElementById('cloudLibraryBody'); let ok=0, fail=0;
+    for(const f of list){
+      if(body) body.textContent = 'Đang xoá ' + (ok+fail+1) + '/' + n + '…';
+      try{ await deleteFileOnCloud(f.id); ok++; }catch(e){ console.error(e); fail++; }
+    }
+    alert('Đã xoá ' + ok + '/' + n + ' truyện trên Cloud.' + (fail ? ' ' + fail + ' truyện lỗi — thử lại.' : ''));
+    await refreshCloudLibrary();
   }
 
   return {
     init, signIn, signOut, isSignedIn, syncNow,
     enqueueFileMeta, enqueueChunk, enqueueSourceText, enqueueDeleteFile, enqueueHistoryEvent,
-    uploadChunkManifest, downloadFile, toggleKeyBackup, restoreKeyBackup,
+    uploadChunkManifest, downloadFile, toggleKeyBackup, restoreKeyBackup, backupNow, autoBackup, forgetDeviceKey, deleteBackup, deleteCloudFile, deleteAllCloudFiles,
     refreshCloudLibrary, refreshCloudHistory
   };
 })();
@@ -6257,7 +6344,7 @@ function load(){ try{ const d=JSON.parse(localStorage.getItem(LS)||'null'); if(!
 function sync(){
   G.keys.forEach((k,i)=>{ const m=G.meta[i]; if(!k.enabled) m.status='disabled'; else if(m.status==='disabled') m.status='idle'; });
   if(G.active){ state.keys=G.keys.map(k=>k.key); state.keyMeta=G.meta; }
-  save();
+  save(); try{ sfCloud.autoBackup(); }catch(e){}
 }
 function log(msg){ G.log.unshift(new Date().toLocaleTimeString()+' · '+redact(msg)); if(G.log.length>80) G.log.length=80;
   const el=$('gemLog'); if(el) el.innerHTML=G.log.map(esc).join('<br>'); }
@@ -6312,7 +6399,7 @@ async function gemCall(payload,keyIndex,signal,fullPrompt){
   const cand=data.candidates&&data.candidates[0];
   const text=((cand&&cand.content&&cand.content.parts)||[]).filter(p=>!p.thought).map(p=>p.text||'').join('');
   if(!text){ const why=(data.promptFeedback&&data.promptFeedback.blockReason)||(cand&&cand.finishReason)||'EMPTY';
-    const er=new Error('Gemini không trả nội dung ('+why+')'); er.status=0; meta.lastError=er.message; log('C'+(keyIndex+1)+': '+er.message+(/SAFETY|BLOCK|PROHIB/i.test(why)?' — thử bật “Nới lỏng bộ lọc an toàn”.':'')); throw er; }
+    const er=new Error('Gemini không trả nội dung ('+why+')'); er.status=0; meta.lastError=er.message; log('C'+(keyIndex+1)+': '+er.message+(/PROHIB/i.test(why)?' — đây là bộ lọc cố định của Google, công tắc “Nới lỏng bộ lọc an toàn” KHÔNG tắt được loại này.':(/SAFETY|BLOCK/i.test(why)?' — thử bật “Nới lỏng bộ lọc an toàn”.':''))); throw er; }
   if(cand&&cand.finishReason==='MAX_TOKENS') log('C'+(keyIndex+1)+': ⚠ bản dịch có thể bị cắt (MAX_TOKENS). Tăng/bỏ giới hạn token đầu ra.');
   meta.success++; meta.lastError=''; if(meta.status==='unknown') meta.status='idle';
   renderKeys(); return text.trim();
@@ -6457,7 +6544,9 @@ setInterval(()=>{
   document.querySelectorAll('.gem-st').forEach(el=>{ const i=+el.dataset.i; if(G.meta[i]&&G.meta[i].status==='ratelimited') el.textContent=statusText(i,now); });
 },1000);
 
-window.sfGem={toggleProvider,setModel,fetchModels,testConnection,testAll,test,addOne,addBulk,toggleBulk,remove,toggleKey,toggleSafety,exportCfg,importCfg,_classify:classify};
+function cloudExport(){ return {model:G.model,keys:G.keys.map(k=>({name:k.name,enabled:k.enabled,key:k.key}))}; }
+function cloudImport(d){ if(!d) return 0; if(d.model&&!G.keys.length){ setModel(d.model); $('gemModel').value=G.model; } return addKeys((d.keys||[]).map(k=>k&&k.key).filter(Boolean)); }
+window.sfGem={cloudExport,cloudImport,toggleProvider,setModel,fetchModels,testConnection,testAll,test,addOne,addBulk,toggleBulk,remove,toggleKey,toggleSafety,exportCfg,importCfg,_classify:classify};
 load(); $('gemModel').value=G.model; sync(); render();
 let prov='proxy'; try{ prov=localStorage.getItem(LSP)||'proxy'; }catch(e){}
 if(prov==='gemini') activate(true); else{ refreshStatus(); }
