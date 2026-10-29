@@ -556,16 +556,63 @@
         ⚡ Đang sử dụng: <b id="statusLine">chưa cấu hình proxy</b>
       </div>
 
-      <!-- Gemini Direct (chưa hỗ trợ) -->
+      <!-- Gemini Direct (API chính thức + Key Pool) -->
       <div class="acc" id="acc-gemini">
         <div class="acc-head" onclick="toggleAcc('acc-gemini')">
           <span class="ic">✨</span><span class="title">Gemini Direct</span>
-          <span class="acc-badge off">Chưa bật</span>
-          <span class="acc-summary">0 key · gemini-2.5-flash</span>
+          <span class="acc-badge off" id="gemBadge">Tắt</span>
+          <span class="acc-summary" id="gemSummaryLine">0 key · gemini-2.5-flash</span>
           <span class="acc-chevron">▾</span>
         </div>
         <div class="acc-body">
-          <div class="locked-note">Provider này chưa được kích hoạt trong bản dịch hiện tại. Dùng <b>Custom Proxy</b> bên dưới để trỏ tới Gemini (trực tiếp hoặc qua endpoint tương thích OpenAI).</div>
+          <div class="switchrow">
+            <div class="switch" id="gemSwitch" onclick="sfGem.toggleProvider()"></div>
+            <span style="font-size:13px;">Dùng Gemini Direct để dịch (thay cho Custom Proxy)</span>
+          </div>
+          <div class="hint" style="margin-bottom:12px;">
+            Gọi thẳng <code>generativelanguage.googleapis.com</code> (Gemini API chính thức). Key gửi qua header <code>x-goog-api-key</code>, <b>chỉ tới Google</b>. Pool key này <b>tách riêng</b> với Custom Proxy. Lấy key tại <a href="https://aistudio.google.com/app/api-keys" target="_blank" rel="noopener" style="color:var(--accent2)">aistudio.google.com/app/api-keys</a>.
+          </div>
+          <label>Model Gemini</label>
+          <input type="text" id="gemModel" placeholder="vd: gemini-2.5-flash — bấm “Lấy models” để xem danh sách thật" oninput="sfGem.setModel(this.value)">
+          <div class="btn-row">
+            <button class="btn small" onclick="sfGem.fetchModels()">📥 Lấy models</button>
+            <button class="btn small" onclick="sfGem.testConnection()">🔌 Kiểm tra kết nối</button>
+          </div>
+          <div class="hint" id="gemConnStatus"></div>
+          <div class="modelgrid" id="gemModelGrid"></div>
+
+          <label style="margin-top:16px;">🔑 Gemini Key Pool <span style="color:var(--text-dim);font-weight:400;" id="gemCount">(0 key)</span></label>
+          <div class="keymgr-toolbar">
+            <button class="btn small" onclick="sfGem.testAll()">🔍 Kiểm tra tất cả Key</button>
+            <button class="btn small" onclick="sfGem.exportCfg(false)">⬆️ Xuất cấu hình (không key)</button>
+            <button class="btn small" onclick="sfGem.exportCfg(true)">⬆️ Xuất kèm key</button>
+            <button class="btn small" onclick="sfGem.importCfg()">⬇️ Nhập cấu hình</button>
+          </div>
+          <div class="keysummary" id="gemSummary">Chưa có key nào.</div>
+          <div class="allkeys-warning" id="gemWarn" style="display:none;"><span>⚠️ Tất cả key Gemini đang chờ giới hạn hoặc lỗi. Hàng đợi sẽ tự chạy tiếp khi có key khả dụng.</span></div>
+          <div class="keycards" id="gemKeyList"></div>
+          <div class="addkey">
+            <input type="text" id="gemNewName" placeholder="Tên (tuỳ chọn)" style="max-width:150px;">
+            <input type="password" id="gemNewKey" placeholder="AIza..." style="flex:1;" autocomplete="off">
+            <button class="btn primary small" onclick="sfGem.addOne()">＋ Thêm key</button>
+          </div>
+          <div class="btn-row"><button class="btn small" onclick="sfGem.toggleBulk()">⬇️ Nhập nhiều (mỗi dòng 1 key)</button></div>
+          <div id="gemBulkBox" style="display:none;margin-top:8px;">
+            <textarea id="gemBulkInput" rows="5" placeholder="Dán danh sách key, mỗi key một dòng..." style="width:100%;"></textarea>
+            <div class="btn-row" style="margin-top:6px;">
+              <button class="btn primary small" onclick="sfGem.addBulk()">✔ Thêm các key này</button>
+              <button class="btn small" onclick="sfGem.toggleBulk(false)">Huỷ</button>
+            </div>
+          </div>
+          <div class="switchrow" style="margin-top:12px;">
+            <div class="switch" id="gemSafetySwitch" onclick="sfGem.toggleSafety()"></div>
+            <span style="font-size:13px;">Nới lỏng bộ lọc an toàn (BLOCK_NONE) — dùng khi truyện bị chặn nhầm</span>
+          </div>
+          <label style="margin-top:12px;">📜 Nhật ký luân phiên key</label>
+          <div class="hint" id="gemLog" style="max-height:160px;overflow:auto;font-family:monospace;font-size:11.5px;">Chưa có sự kiện.</div>
+          <div class="hint" style="margin-top:10px;">
+            ⚠️ Key được lưu <b>dạng chữ thường trong localStorage của trình duyệt này</b> (ai dùng được máy/trình duyệt này, hoặc script chạy trên trang này, đều đọc được). Chỉ dùng cho máy cá nhân. Nếu key bị lộ, hãy xoá/thu hồi ngay tại trang quản lý key của Google AI Studio. Đổi key <b>không đảm bảo</b> có thêm hạn mức: Google có thể giới hạn theo project/model.
+          </div>
         </div>
       </div>
 
@@ -2026,8 +2073,8 @@ async function sf_runHeaderRepairPass(){
 // một phiên RESUME: chunk map đã lưu (kèm mọi chunk DONE) luôn là SOURCE OF TRUTH tuyệt đối.
 async function continueUnfinishedTranslation(fileId){
   if(running){ alert('Đang có một tiến trình dịch chạy. Vui lòng dừng trước khi tiếp tục truyện khác.'); return; }
-  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
   if(state.keys.length === 0){ alert('Thêm API key.'); return; }
 
   const rec = await restoreFile(fileId);
@@ -3512,8 +3559,8 @@ async function sfCanon_countOccurrencesForAllEntities(text, entityNameLists){
 // QUÉT TOÀN BỘ FILE — điểm vào chính của nút "🔍 Quét toàn bộ file".
 async function sfCanon_scanFile(){
   if(sfCanonScanning){ alert('Đang quét Canon Pack, vui lòng đợi.'); return; }
-  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
   if(state.keys.length===0){ alert('Thêm API key.'); return; }
   if(!state.model){ alert('Nhập model.'); return; }
   const text = sf_getFullSourceText();
@@ -5334,8 +5381,8 @@ async function runEngine(indices){
 
 async function startTranslate(){
   if(running) return;
-  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
   if(state.keys.length===0){ alert('Thêm API key.'); return; }
   if(!state.model){ alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
@@ -5444,8 +5491,8 @@ async function retryFailedChunks(){
 async function sfRetryChunkForHeader(idx){
   if(running){ alert('Đang có tiến trình dịch chạy. Vui lòng đợi hoặc dừng trước khi dịch lại chunk này.'); return; }
   const c = chunkState[idx]; if(!c) return;
-  if(!state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
   if(state.keys.length===0){ alert('Thêm API key.'); return; }
   if(!state.model){ alert('Nhập model.'); return; }
   c.retryCount = 0;
@@ -6183,6 +6230,240 @@ sfCloud.init();
   setInterval(refreshActive, 800);
 })();
 </script>
+<script>
+/* =====================================================================
+   GEMINI DIRECT + KEY POOL — module bổ sung (không sửa scheduler hiện có).
+   Cách tích hợp: khi bật Gemini Direct, pool key Gemini được "cắm" vào state.keys/state.keyMeta
+   (pool Custom Proxy được cất riêng và khôi phục khi tắt) nên scheduler/queue/retry/lưu chunk cũ
+   chạy nguyên vẹn. callModel() được bọc: provider=gemini → gọi Gemini API chính thức.
+   ===================================================================== */
+(function(){
+'use strict';
+const LS='sf_gemini_pool_v1', LSP='sf_provider_v1', API='https://generativelanguage.googleapis.com/v1beta/';
+const G={keys:[],meta:[],model:'gemini-2.5-flash',relaxSafety:false,active:false,log:[]};
+let stash=null;
+const $=id=>document.getElementById(id);
+const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const redact=t=>String(t||'').replace(/AIza[0-9A-Za-z_\-]{16,}/g,'AIza••••');
+const mask=k=>k.length>10?k.slice(0,4)+'••••••'+k.slice(-4):'••••';
+const newId=()=>'gk_'+Math.random().toString(36).slice(2,8);
+
+/* ---------- lưu / nạp ---------- */
+function save(){ try{ localStorage.setItem(LS, JSON.stringify({model:G.model,relaxSafety:G.relaxSafety,keys:G.keys,
+  meta:G.meta.map(m=>({status:(m.status==='active'||m.status==='testing')?'idle':m.status,requests:m.requests,success:m.success,errors:m.errors,retries:m.retries,c429:m.c429,c401:m.c401,lastUsed:m.lastUsed,rateLimitUntil:m.rateLimitUntil,lastError:m.lastError||''}))})); }catch(e){} }
+function load(){ try{ const d=JSON.parse(localStorage.getItem(LS)||'null'); if(!d) return;
+  G.model=d.model||G.model; G.relaxSafety=!!d.relaxSafety; G.keys=Array.isArray(d.keys)?d.keys:[];
+  G.meta=G.keys.map((_,i)=>Object.assign(newKeyMeta(),{status:'unknown'},(d.meta&&d.meta[i])||{})); }catch(e){} }
+function sync(){
+  G.keys.forEach((k,i)=>{ const m=G.meta[i]; if(!k.enabled) m.status='disabled'; else if(m.status==='disabled') m.status='idle'; });
+  if(G.active){ state.keys=G.keys.map(k=>k.key); state.keyMeta=G.meta; }
+  save();
+}
+function log(msg){ G.log.unshift(new Date().toLocaleTimeString()+' · '+redact(msg)); if(G.log.length>80) G.log.length=80;
+  const el=$('gemLog'); if(el) el.innerHTML=G.log.map(esc).join('<br>'); }
+
+/* ---------- phân loại lỗi Gemini ---------- */
+function secsToPacificMidnight(){ // tài liệu Gemini: hạn mức theo ngày (RPD) reset lúc nửa đêm giờ Thái Bình Dương
+  try{ const p=new Intl.DateTimeFormat('en-US',{timeZone:'America/Los_Angeles',hour:'numeric',minute:'numeric',second:'numeric',hourCycle:'h23'}).formatToParts(new Date());
+    const g=t=>parseInt(p.find(x=>x.type===t).value,10); return 86400-(g('hour')*3600+g('minute')*60+g('second'))+5; }catch(e){ return 86400; } }
+function classify(status,text,hdr){
+  let j=null; try{ j=JSON.parse(text).error; }catch(e){}
+  const det=(j&&j.details)||[]; let delay=null, quota='';
+  det.forEach(d=>{ const t=d['@type']||'';
+    if(/RetryInfo$/.test(t)&&d.retryDelay){ const s=parseFloat(d.retryDelay); if(isFinite(s)) delay=s; }
+    if(/QuotaFailure$/.test(t)) (d.violations||[]).forEach(v=>{ quota+=' '+(v.quotaId||'')+' '+(v.quotaMetric||''); }); });
+  const hint=(delay!=null?delay:hdr)||null; const o={status,retryAfter:null,vi:'',kind:''};
+  if(status===400 && /API_KEY_INVALID|API key not valid/i.test(text)){ o.status=401; o.vi='API key không hợp lệ.'; }
+  else if(status===429){
+    o.kind=/perday/i.test(quota)?'RPD':/token/i.test(quota)?'TPM':/perminute/i.test(quota)?'RPM':'?';
+    if(o.kind==='RPD'){ o.retryAfter=Math.max(hint||0,secsToPacificMidnight()); o.vi='Hết hạn mức theo NGÀY (RPD). Key tạm nghỉ đến khi reset (nửa đêm giờ Thái Bình Dương, theo tài liệu Google).'; }
+    else if(o.kind==='TPM'){ o.retryAfter=hint||60; o.vi='Vượt giới hạn token/phút (TPM).'; }
+    else if(o.kind==='RPM'){ o.retryAfter=hint||60; o.vi='Vượt giới hạn request/phút (RPM).'; }
+    else { o.retryAfter=hint||60; o.vi='Bị giới hạn (429) nhưng API không nói rõ loại hạn mức; chờ '+(hint?'theo phản hồi API':'60 giây (mặc định thận trọng)')+'.'; }
+  }
+  else if(status===400){ o.vi=/FAILED_PRECONDITION|billing|location is not supported/i.test(text)?'Gemini API chưa dùng được với tài khoản/khu vực này (có thể cần bật billing).':'Request không hợp lệ: '+redact((j&&j.message)||'').slice(0,180); }
+  else if(status===401){ o.vi='Xác thực thất bại — kiểm tra lại API key.'; }
+  else if(status===403){ o.vi=/SERVICE_DISABLED|has not been used|billing/i.test(text)?'Bị từ chối: Generative Language API chưa bật hoặc project chưa đủ điều kiện/billing.':'Key không có quyền truy cập hoặc bị chặn (403).'; }
+  else if(status===404){ o.vi='Model “'+G.model+'” không tồn tại hoặc không hỗ trợ generateContent. Bấm “Lấy models”.'; }
+  else if(status>=500){ o.vi='Máy chủ Gemini lỗi tạm thời ('+status+').'; }
+  else o.vi='Lỗi HTTP '+status+'.';
+  return o;
+}
+const abortErr=()=>{ const e=new Error('Đã huỷ (Dừng)'); e.aborted=true; return e; };
+const hdrs=k=>({'Content-Type':'application/json','x-goog-api-key':k});
+
+/* ---------- gọi generateContent (thay callModel khi provider=gemini) ---------- */
+async function gemCall(payload,keyIndex,signal,fullPrompt){
+  ensureKeyMeta(); const key=G.keys[keyIndex].key, meta=G.meta[keyIndex];
+  recordKeyCall(keyIndex); meta.requests++; meta.lastUsed=Date.now(); renderKeys();
+  const body={contents:[{role:'user',parts:[{text:fullPrompt!=null?fullPrompt:($('promptBox').value+'\n'+payload)}]}]};
+  const cap=parseInt(($('maxTokensCap')||{}).value)||0; if(cap>0) body.generationConfig={maxOutputTokens:cap};
+  if(G.relaxSafety) body.safetySettings=['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({category:'HARM_CATEGORY_'+c,threshold:'BLOCK_NONE'}));
+  let res;
+  try{ res=await fetch(API+'models/'+encodeURIComponent(G.model)+':generateContent',{method:'POST',headers:hdrs(key),body:JSON.stringify(body),signal}); }
+  catch(e){ if(e&&e.name==='AbortError') throw abortErr(); meta.lastError='Lỗi mạng'; log('C'+(keyIndex+1)+': lỗi mạng — '+e.message); const er=new Error('Lỗi mạng: '+redact(e.message)); er.status=0; throw er; }
+  if(!res.ok){
+    const t=await res.text().catch(()=>''); const c=classify(res.status,t,parseFloat(res.headers.get('retry-after'))||null);
+    meta.lastError=c.vi; const er=new Error(c.vi); er.status=c.status; er.retryAfter=c.retryAfter; er.bodyText=redact(t);
+    log('C'+(keyIndex+1)+': HTTP '+res.status+(c.kind?' ['+c.kind+']':'')+' — '+c.vi+(c.retryAfter?' Chờ '+formatDuration(c.retryAfter)+'.':'')+(res.status===429?' Chunk sẽ thử bằng key khác.':''));
+    throw er;
+  }
+  let data; try{ data=await res.json(); }catch(e){ if(e&&e.name==='AbortError') throw abortErr(); const er=new Error('Lỗi đọc phản hồi'); er.status=0; throw er; }
+  const cand=data.candidates&&data.candidates[0];
+  const text=((cand&&cand.content&&cand.content.parts)||[]).filter(p=>!p.thought).map(p=>p.text||'').join('');
+  if(!text){ const why=(data.promptFeedback&&data.promptFeedback.blockReason)||(cand&&cand.finishReason)||'EMPTY';
+    const er=new Error('Gemini không trả nội dung ('+why+')'); er.status=0; meta.lastError=er.message; log('C'+(keyIndex+1)+': '+er.message+(/SAFETY|BLOCK|PROHIB/i.test(why)?' — thử bật “Nới lỏng bộ lọc an toàn”.':'')); throw er; }
+  if(cand&&cand.finishReason==='MAX_TOKENS') log('C'+(keyIndex+1)+': ⚠ bản dịch có thể bị cắt (MAX_TOKENS). Tăng/bỏ giới hạn token đầu ra.');
+  meta.success++; meta.lastError=''; if(meta.status==='unknown') meta.status='idle';
+  renderKeys(); return text.trim();
+}
+
+/* ---------- kiểm tra key / kết nối / models ---------- */
+async function test(i){
+  const k=G.keys[i], m=G.meta[i]; if(!k||!k.enabled) return;
+  m.status='testing'; render();
+  try{
+    const r=await fetch(API+'models/'+encodeURIComponent(G.model)+':generateContent',{method:'POST',headers:hdrs(k.key),body:JSON.stringify({contents:[{parts:[{text:'Reply with: OK'}]}],generationConfig:{maxOutputTokens:16}})});
+    if(r.ok){ m.status='idle'; m.lastError=''; m.rateLimitUntil=0; log('C'+(i+1)+': kiểm tra OK ✓'); }
+    else{ const t=await r.text().catch(()=>''); const c=classify(r.status,t,parseFloat(r.headers.get('retry-after'))||null); m.lastError=c.vi;
+      if(r.status===429){ m.status='ratelimited'; m.rateLimitUntil=Date.now()+c.retryAfter*1000; }
+      else if(c.status===401||c.status===403) m.status='error'; else m.status='unknown';
+      log('C'+(i+1)+': kiểm tra thất bại — '+c.vi); }
+  }catch(e){ m.status='unknown'; m.lastError='Lỗi mạng/CORS'; log('C'+(i+1)+': không kết nối được — '+e.message); }
+  sync(); render(); refreshStatus();
+}
+async function testAll(){ for(let i=0;i<G.keys.length;i++){ if(G.keys[i].enabled) await test(i); await new Promise(r=>setTimeout(r,300)); } }
+const firstKey=()=>{ const i=G.keys.findIndex((k,x)=>k.enabled&&G.meta[x].status!=='error'); return i<0?null:G.keys[i]; };
+async function testConnection(){
+  const k=firstKey(), el=$('gemConnStatus'); if(!k){ el.textContent='Chưa có key khả dụng.'; return; }
+  el.textContent='Đang kiểm tra…'; await test(G.keys.indexOf(k)); const m=G.meta[G.keys.indexOf(k)];
+  el.textContent=m.status==='idle'?'✓ Kết nối được với model '+G.model:'✗ '+(m.lastError||'Không thành công');
+}
+async function fetchModels(){
+  const k=firstKey(), grid=$('gemModelGrid'); if(!k){ alert('Hãy thêm ít nhất 1 key Gemini trước.'); return; }
+  grid.innerHTML='<div class="hint">Đang tải danh sách model…</div>';
+  try{ const r=await fetch(API+'models?pageSize=200',{headers:hdrs(k.key)});
+    if(!r.ok){ const c=classify(r.status,await r.text().catch(()=>'')); grid.innerHTML=''; alert('Không lấy được danh sách model: '+c.vi); return; }
+    const d=await r.json(); const ids=(d.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>String(m.name).replace(/^models\//,'')).sort();
+    grid.innerHTML=''; if(!ids.length){ grid.innerHTML='<div class="hint">API không trả model nào hỗ trợ generateContent.</div>'; return; }
+    ids.forEach(id=>{ const c=document.createElement('div'); c.className='modelchip'+(id===G.model?' sel':''); c.dataset.m=id; c.textContent=id; c.onclick=()=>{ setModel(id); $('gemModel').value=id; grid.querySelectorAll('.modelchip').forEach(x=>x.classList.toggle('sel',x.dataset.m===id)); }; grid.appendChild(c); });
+  }catch(e){ grid.innerHTML=''; alert('Lỗi mạng khi lấy models: '+e.message); }
+}
+function setModel(v){ G.model=String(v||'').trim(); if(G.active){ state.model=G.model; $('pillModel').textContent=G.model||'chưa chọn model'; } save(); refreshStatus(); }
+
+/* ---------- quản lý key ---------- */
+function addKeys(list,name){
+  const have=new Set(G.keys.map(k=>k.key)); let n=0;
+  list.forEach(raw=>{ const key=raw.trim(); if(!key||have.has(key)) return; have.add(key);
+    G.keys.push({id:newId(),name:(list.length===1&&name)?name:'Key '+(G.keys.length+1),key,enabled:true});
+    G.meta.push(Object.assign(newKeyMeta(),{status:'unknown'})); n++; });
+  sync(); render(); refreshStatus(); if(n) log('Đã thêm '+n+' key.'); return n;
+}
+function addOne(){ const k=$('gemNewKey'), nm=$('gemNewName'); if(!k.value.trim()) return; addKeys([k.value],nm.value.trim()); k.value=''; nm.value=''; }
+function addBulk(){ const ta=$('gemBulkInput'); const n=addKeys(ta.value.split(/[\r\n,;]+/)); ta.value=''; toggleBulk(false); if(!n) alert('Không có key mới (trống hoặc trùng).'); }
+function toggleBulk(s){ const b=$('gemBulkBox'); b.style.display=(s===undefined?b.style.display==='none':s)?'block':'none'; }
+function guardRunning(){ if(typeof running!=='undefined'&&running&&G.active){ alert('Hãy dừng dịch trước khi thêm bớt/xoá key (tránh lệch chỉ số key đang chạy).'); return true; } return false; }
+function remove(i){ if(guardRunning()) return; if(!confirm('Xoá '+G.keys[i].name+'?')) return; G.keys.splice(i,1); G.meta.splice(i,1); sync(); render(); refreshStatus(); }
+function toggleKey(i){ if(guardRunning()) return; G.keys[i].enabled=!G.keys[i].enabled; sync(); render(); refreshStatus(); }
+function toggleSafety(){ G.relaxSafety=!G.relaxSafety; $('gemSafetySwitch').classList.toggle('on',G.relaxSafety); save(); }
+function exportCfg(withKeys){
+  if(withKeys && !confirm('File xuất sẽ chứa API key dạng chữ thường. Chỉ cất nơi an toàn, KHÔNG đưa lên GitHub/chia sẻ. Tiếp tục?')) return;
+  const out={type:'storyforge-gemini-pool',version:1,model:G.model,relaxSafety:G.relaxSafety,keys:G.keys.map(k=>withKeys?{name:k.name,enabled:k.enabled,key:k.key}:{name:k.name,enabled:k.enabled})};
+  const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'})); a.download=withKeys?'gemini-pool-WITH-KEYS.json':'gemini-pool-config.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+}
+function importCfg(){
+  const f=document.createElement('input'); f.type='file'; f.accept='.json,application/json';
+  f.onchange=async()=>{ try{ const d=JSON.parse(await f.files[0].text()); if(d.type!=='storyforge-gemini-pool') throw new Error('Sai định dạng');
+      if(d.model) setModel(d.model), $('gemModel').value=G.model; G.relaxSafety=!!d.relaxSafety; $('gemSafetySwitch').classList.toggle('on',G.relaxSafety);
+      const withKey=(d.keys||[]).filter(k=>k&&k.key); const n=withKey.length?addKeys(withKey.map(k=>k.key)):0;
+      alert('Đã nhập cấu hình.'+(withKey.length?' Thêm '+n+' key mới.':' (File không chứa key.)')); }catch(e){ alert('Không nhập được: '+e.message); } };
+  f.click();
+}
+
+/* ---------- giao diện ---------- */
+function statusText(i,now){ const m=G.meta[i]; const info=keyStatusInfo(m.status);
+  return info.text+(m.status==='ratelimited'?' · thử lại sau '+formatDuration(Math.max(0,(m.rateLimitUntil-now)/1000)):''); }
+function render(){
+  const L=$('gemKeyList'); if(!L) return; const now=Date.now();
+  L.innerHTML=G.keys.length?'':'<div class="hint">Chưa có key nào. Dán key từ aistudio.google.com/app/api-keys.</div>';
+  G.keys.forEach((k,i)=>{ const m=G.meta[i], info=keyStatusInfo(m.status), color=getKeyColor(i);
+    const d=document.createElement('div'); d.className='keycard st-'+info.dot+(m.inFlight>0?' live':''); d.style.borderLeft='3px solid '+color; d.style.setProperty('--keycolor',color);
+    d.innerHTML='<div class="keycard-top"><span class="keydot" style="background:'+color+';color:'+color+'"></span><span class="keycard-tag" style="color:'+color+'">C'+(i+1)+'</span><span class="keycard-mask">'+esc(k.name)+' · '+esc(mask(k.key))+'</span></div>'
+     +'<div class="keycard-status '+info.cls+' gem-st" data-i="'+i+'">'+statusText(i,now)+'</div>'
+     +'<div class="keycard-stats"><div><b>'+m.requests+'</b>Req</div><div><b>'+m.success+'</b>Thành công</div><div><b>'+m.errors+'</b>Lỗi</div></div>'
+     +'<div class="hint">Dùng gần nhất: '+timeAgo(m.lastUsed)+(m.lastError?' · Lỗi gần nhất: '+esc(m.lastError):'')+'</div>'
+     +'<div class="btn-row"><button class="btn small" onclick="sfGem.test('+i+')">🔍 Kiểm tra</button><button class="btn small" onclick="sfGem.toggleKey('+i+')">'+(k.enabled?'⏸ Tắt':'▶ Bật')+'</button><button class="btn small" onclick="sfGem.remove('+i+')">🗑 Xoá</button></div>';
+    L.appendChild(d); });
+  const on=G.keys.map((k,i)=>k.enabled?G.meta[i]:null).filter(Boolean);
+  const ok=on.filter(m=>m.status!=='error'&&m.status!=='ratelimited').length, wait=on.filter(m=>m.status==='ratelimited').length, bad=on.filter(m=>m.status==='error').length;
+  $('gemCount').textContent='('+G.keys.length+' key)';
+  $('gemSummary').textContent=G.keys.length?(ok+'/'+G.keys.length+' key khả dụng · '+wait+' đang chờ · '+bad+' lỗi · '+(G.keys.length-on.length)+' đã tắt'):'Chưa có key nào.';
+  $('gemWarn').style.display=(G.active&&on.length&&!ok)?'flex':'none';
+  save();
+}
+function badge(){
+  const b=$('gemBadge'); if(!b) return; b.textContent=G.active?'✓ Đang dùng':'Tắt'; b.classList.toggle('using',G.active); b.classList.toggle('off',!G.active);
+  $('gemSwitch').classList.toggle('on',G.active); $('gemSafetySwitch').classList.toggle('on',G.relaxSafety);
+  $('gemSummaryLine').textContent=G.keys.filter(k=>k.enabled).length+' key · '+(G.model||'chưa chọn model');
+  const pb=$('proxyBadge'); if(pb&&G.active){ pb.textContent='Không dùng'; pb.classList.remove('using'); pb.classList.add('off'); }
+}
+
+/* ---------- chuyển provider (pool tách riêng) ---------- */
+function activate(on){
+  if(on===G.active) return true;
+  if(typeof running!=='undefined'&&running){ alert('Hãy dừng dịch trước khi đổi nguồn dịch.'); return false; }
+  if(on){ stash={keys:state.keys,keyMeta:state.keyMeta,model:state.model}; G.active=true; state.model=G.model; sync(); }
+  else{ G.active=false; if(stash){ state.keys=stash.keys; state.keyMeta=stash.keyMeta; state.model=stash.model; stash=null; } }
+  try{ localStorage.setItem(LSP,on?'gemini':'proxy'); }catch(e){}
+  const mi=$('modelInput'); if(mi&&!on) mi.value=state.model||'';
+  if(!on) origRenderKeys();
+  render(); refreshStatus(); return true;
+}
+function toggleProvider(){ activate(!G.active); }
+
+/* ---------- bọc các hàm cũ ---------- */
+const origCall=window.callModel, origRenderKeys=window.renderKeys, origRefresh=window.refreshStatus, origStart=window.startTranslate, origCanon=window.sfCanon_callExtract;
+window.callModel=function(t,k,s){ return G.active?gemCall(t,k,s):origCall.apply(this,arguments); };
+window.renderKeys=function(){ if(G.active){ render(); if(typeof updateDashboard==='function') updateDashboard(); refreshStatus(); } else origRenderKeys.apply(this,arguments); };
+window.refreshStatus=function(){ origRefresh.apply(this,arguments);
+  if(G.active){ $('statusLine').textContent='Gemini Direct · '+(G.model||'model?')+' · '+G.keys.filter(k=>k.enabled).length+' key'; $('pillProxy').textContent='Gemini Direct'; $('pillProxy').classList.add('on'); $('pillModel').textContent=G.model||'chưa chọn model'; }
+  else if($('pillProxy')) $('pillProxy').textContent='Custom Proxy';
+  badge(); };
+window.sfCanon_callExtract=async function(w){
+  if(!G.active) return origCanon.apply(this,arguments);
+  let ki=pickAvailableKey(); if(ki===-1){ await new Promise(r=>setTimeout(r,Math.min(5000,getNearestCooldownMs()))); ki=pickAvailableKey(); if(ki===-1) throw new Error('Không có key Gemini khả dụng để quét Canon Pack.'); }
+  return gemCall(null,ki,undefined,SF_CANON_EXTRACT_SYSTEM_PROMPT+w);
+};
+// Kiểm tra trước khi dịch: model phải tồn tại (404 → dừng sớm, không đổi key vô ích)
+window.startTranslate=async function(){
+  if(G.active){
+    const k=firstKey(); if(!k){ alert('Gemini Direct: chưa có key khả dụng.'); return; }
+    try{ const r=await fetch(API+'models/'+encodeURIComponent(G.model),{headers:hdrs(k.key)});
+      if(r.status===404){ alert(classify(404,'').vi); return; } }catch(e){ /* lỗi mạng: để pipeline retry xử lý */ }
+  }
+  return origStart.apply(this,arguments);
+};
+// Các thao tác dành riêng cho Custom Proxy bị khoá khi đang dùng Gemini (tránh lẫn pool)
+['addKey','removeKey','confirmBulkImportKeys','exportKeys','saveProfileAsNew','updateCurrentProfile','loadProfile','deleteProfile','fetchModels','testAllKeys'].forEach(n=>{
+  const o=window[n]; if(typeof o!=='function') return;
+  window[n]=function(){ if(G.active){ alert('Đang bật Gemini Direct. Hãy tắt Gemini Direct để chỉnh Custom Proxy (hai pool key tách riêng).'); return; } return o.apply(this,arguments); }; });
+window.sfGemActive=()=>G.active;
+
+/* ---------- Quota Recovery Scheduler: đếm ngược + trả key về pool khi hết thời gian chờ ---------- */
+setInterval(()=>{
+  if(!G.keys.length) return; const now=Date.now(); let changed=false;
+  G.meta.forEach((m,i)=>{ if(m.status==='ratelimited'&&now>=m.rateLimitUntil){ m.status='idle'; changed=true; log('C'+(i+1)+': hết thời gian chờ, trở lại pool (request kế tiếp sẽ thử lại).'); } });
+  if(changed){ render(); refreshStatus(); if(G.active&&typeof wakeScheduler==='function') try{ wakeScheduler(); }catch(e){} return; }
+  document.querySelectorAll('.gem-st').forEach(el=>{ const i=+el.dataset.i; if(G.meta[i]&&G.meta[i].status==='ratelimited') el.textContent=statusText(i,now); });
+},1000);
+
+window.sfGem={toggleProvider,setModel,fetchModels,testConnection,testAll,test,addOne,addBulk,toggleBulk,remove,toggleKey,toggleSafety,exportCfg,importCfg,_classify:classify};
+load(); $('gemModel').value=G.model; sync(); render();
+let prov='proxy'; try{ prov=localStorage.getItem(LSP)||'proxy'; }catch(e){}
+if(prov==='gemini') activate(true); else{ refreshStatus(); }
+})();
+</script>
+
 </body>
 </html>
     
