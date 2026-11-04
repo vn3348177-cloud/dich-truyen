@@ -2544,6 +2544,20 @@ Nhiệm vụ: Viết lại đoạn văn dịch máy cho MƯỢT MÀ, TỰ NHIÊN
 `;
 // ▲▲▲ HẾT SLOT 2 ▲▲▲
 
+// Prompt bổ sung: DỊCH Trung -> Việt. Hai prompt gốc ở trên được viết để LÀM MƯỢT bản convert tiếng Việt,
+// nên khi đưa chữ Hán vào, AI chỉ "viết lại" bằng tiếng Trung. Prompt này nằm sau cùng (sát chữ cần dịch) để ghi đè.
+const SF_ZHVI_PROMPT = `[ƯU TIÊN CAO NHẤT — GHI ĐÈ MỌI CHỈ DẪN "VIẾT LẠI / LÀM MƯỢT" Ở TRÊN]
+
+Văn bản sau dòng "ĐOẠN VĂN:" là TIẾNG TRUNG GỐC (chữ Hán giản thể), KHÔNG phải bản convert tiếng Việt.
+Nhiệm vụ thật sự của bạn là DỊCH TRỰC TIẾP từ tiếng Trung sang tiếng Việt, đồng thời vẫn áp dụng các quy tắc ở trên về văn phong, giữ nguyên nội dung, xưng hô và thuật ngữ.
+
+- Output PHẢI là 100% tiếng Việt. TUYỆT ĐỐI KHÔNG chép lại, chỉnh sửa hay viết lại bản tiếng Trung. KHÔNG để sót chữ Hán trong output.
+- Dịch đủ từng câu, từng đoạn. Không tóm tắt, không bỏ sót, không kiểm duyệt.
+- Giữ cấu trúc: mỗi dòng/đoạn gốc tương ứng một dòng/đoạn dịch, giữ nguyên thứ tự và các câu thoại.
+- Tên người, địa danh, môn phái, công pháp, cảnh giới: phiên âm Hán-Việt (ví dụ 王猛 -> Vương Mãnh), nhất quán xuyên suốt; ưu tiên bảng tên/Canon nếu có.
+- Dùng dấu câu tiếng Việt, không dùng dấu câu toàn góc của tiếng Trung.
+- Chỉ xuất bản dịch tiếng Việt, không giải thích, không ghi chú, không tiêu đề.`;
+
 /* ═════════ TỪ ĐÂY TRỞ XUỐNG: KHÔNG SỬA ═════════ */
 // Giữ nguyên nội dung/văn phong 100% so với DEFAULT_PROMPT cũ — chỉ tách phần
 // "ĐOẠN VĂN:" ra thành marker cố định (SF_CHUNK_MARKER) để nó LUÔN nằm ngay trước
@@ -2583,6 +2597,18 @@ async function sfPromptLib_init(){
       if(!haveTrans) toAdd.push(sfPromptLib_defaultRecords()[1]);
       if(toAdd.length){ await sfPromptDB_putMany(toAdd); list = list.concat(toAdd); }
     }
+    // Seed 1 lần prompt "Dịch Trung → Việt" (bật sẵn). Nếu người dùng xoá đi thì KHÔNG tự thêm lại.
+    let zhviSeeded = false;
+    try{ zhviSeeded = !!localStorage.getItem('sf_zhvi_seeded'); }catch(e){}
+    if(!zhviSeeded && !list.some(p=>p.id==='zhvi_default')){
+      const zn = sfPrompt_now();
+      const zrec = { id:'zhvi_default', name:'Dịch Trung → Việt', type:'custom', content: SF_ZHVI_PROMPT, enabled:true, pinned:true, createdAt:zn, updatedAt:zn };
+      await sfPromptDB_put(zrec);
+      list = list.concat([zrec]);
+    }
+    const zex = list.find(p=>p.id==='zhvi_default');
+    if(zex && !zex.pinned){ zex.pinned = true; zex.enabled = true; zex.updatedAt = sfPrompt_now(); await sfPromptDB_put(zex); }
+    try{ localStorage.setItem('sf_zhvi_seeded','1'); }catch(e){}
     sfPromptLibrary = list.sort((a,b)=> (a.createdAt||0)-(b.createdAt||0));
   }catch(e){
     sf_recordRuntimeError('prompt-library-init', e && e.message ? e.message : String(e));
@@ -2612,7 +2638,9 @@ async function sfPromptLib_migrateLegacyString(text, fileName){
 function sfPrompt_composeFinal(){
   const base = sfPromptLibrary.filter(p=> p.type==='base' && p.enabled).map(p=>p.content);
   const trans = sfPromptLibrary.filter(p=> p.type==='translation' && p.enabled).map(p=>p.content);
-  const customs = sfPromptLibrary.filter(p=> (p.type==='custom' || p.type==='mature-safe') && p.enabled).map(p=>p.content);
+  const customsOn = sfPromptLibrary.filter(p=> (p.type==='custom' || p.type==='mature-safe') && p.enabled);
+  // Prompt đã ghim (vd. Dịch Trung → Việt) luôn đứng CUỐI, sát chữ cần dịch, để không bị prompt thể loại ghi đè.
+  const customs = customsOn.filter(p=>!p.pinned).concat(customsOn.filter(p=>p.pinned)).map(p=>p.content);
   const parts = [...base, ...trans, ...customs].map(s=> (s||'').trim()).filter(Boolean);
   parts.push(SF_CHUNK_MARKER); // marker cố định luôn ở cuối, ngay trước chunk nguồn (nối ở callModel())
   return parts.join('\n\n') + '\n';
@@ -6242,7 +6270,7 @@ sfCloud.init();
       // (prompt gốc Hệ thống, gốc Dịch thuật, tuỳ chỉnh, mẫu thể loại khác). Không xoá gì cả.
       const changed = [];
       sfPromptLibrary.forEach(p=>{
-        if(p.tplId!==tplId && p.enabled){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); }
+        if(p.tplId!==tplId && p.enabled && !p.pinned){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); }
       });
       if(existing){
         if(!existing.enabled){ existing.enabled = true; existing.updatedAt = sfPrompt_now(); changed.push(existing); }
@@ -6265,7 +6293,7 @@ sfCloud.init();
       const target = sfPromptLibrary.find(p=>p.id===recId);
       if(!target){ alert('Không tìm thấy prompt này. Hãy bấm "Khôi phục prompt mặc định" rồi thử lại.'); return; }
       const changed = [];
-      sfPromptLibrary.forEach(p=>{ if(p.id!==recId && p.enabled){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); } });
+      sfPromptLibrary.forEach(p=>{ if(p.id!==recId && p.enabled && !p.pinned){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); } });
       if(!target.enabled){ target.enabled=true; target.updatedAt=sfPrompt_now(); changed.push(target); }
       for(const r of changed){ await sfPromptDB_put(r); }
       sfPromptLib_render(); sfPrompt_syncToBox(); refreshActive();
@@ -6296,7 +6324,7 @@ sfCloud.init();
   function refreshActive(){
     try{
       const bar = document.getElementById('sfTplBar'); if(!bar || typeof sfPromptLibrary==='undefined') return;
-      const enabled = sfPromptLibrary.filter(p=>p.enabled);
+      const enabled = sfPromptLibrary.filter(p=>p.enabled && !p.pinned);
       const solo = enabled.length === 1 ? enabled[0] : null; // chỉ "đang dùng" khi là prompt duy nhất bật
       Array.from(bar.children).forEach(b=>{
         const k = b.dataset.key || '';
