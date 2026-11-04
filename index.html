@@ -1918,15 +1918,14 @@ async function restoreFile(fileId){
   if(fileRec.baseUrl) document.getElementById('baseUrl').value = fileRec.baseUrl;
   if(fileRec.model){
     state.model = fileRec.model;
-    document.getElementById('modelInput').value = fileRec.model;
-    document.getElementById('pillModel').textContent = fileRec.model;
+    if(window.sfGemActive && window.sfGemActive() && window.sfGem){
+      window.sfGem.setModel(fileRec.model);
+      if(document.getElementById('gemModel')) document.getElementById('gemModel').value = fileRec.model;
+    } else {
+      if(document.getElementById('modelInput')) document.getElementById('modelInput').value = fileRec.model;
+    }
+    if(document.getElementById('pillModel')) document.getElementById('pillModel').textContent = fileRec.model;
   }
-  // ĐỢT 6 — Fix 1: KHÔNG còn ghi đè thẳng #promptBox.value bằng fileRec.prompt (chuỗi đơn cũ) —
-  // làm vậy sẽ xoá mất mọi prompt tuỳ chỉnh đang có trong Thư viện Prompt. Nếu file cũ có prompt
-  // KHÁC với prompt gốc/mặc định hiện tại, di trú nó thành 1 prompt tuỳ chỉnh (không mất dữ liệu),
-  // rồi luôn dựng lại #promptBox từ pipeline BASE+TRANSLATION+CUSTOM hiện hành của Thư viện.
-  // Chỉ di trú ĐÚNG 1 LẦN/file (đánh dấu promptMigrated) — nếu không, mỗi lần mở lại file sẽ tạo
-  // thêm 1 bản "Đã di trú" trùng lặp vì #promptBox.value giờ luôn là chuỗi ĐÃ GHÉP (base+translation+...).
   if(fileRec.prompt && !fileRec.promptMigrated){
     await sfPromptLib_migrateLegacyString(fileRec.prompt, fileRec.name);
     fileRec.promptMigrated = true;
@@ -1936,8 +1935,13 @@ async function restoreFile(fileId){
   if(document.getElementById('chatUrlPreview')) document.getElementById('chatUrlPreview').textContent = chatUrl() || '—';
   if(document.getElementById('modelsUrlPreview')) document.getElementById('modelsUrlPreview').textContent = modelsUrl() || '—';
   refreshStatus();
-  if(fileRec.zhLearned && typeof sfZhCfg === 'object'){
-    Object.assign(sfZhCfg, fileRec.zhLearned);
+  if(typeof sfZhCfg === 'object'){
+    if(fileRec.zhLearned){
+      Object.assign(sfZhCfg, fileRec.zhLearned);
+    } else {
+      sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+    }
+    sfZhCfg._lastHash = fileRec.sourceHash || '';
     if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
     if(typeof sfZh_save === 'function') sfZh_save();
   }
@@ -2008,6 +2012,9 @@ async function sf_onEngineFinished(){
   if(typeof sfCloud !== 'undefined'){
     sfCloud.enqueueFileMeta(sfCurrentFileMeta);
     if(sfCurrentFileMeta.status === 'done') sfCloud.enqueueHistoryEvent(sfCurrentFileMeta.id, sfCurrentFileMeta.name, 'done');
+  }
+  if(typeof sfQueue_onCurrentFinished === 'function'){
+    setTimeout(()=>{ sfQueue_onCurrentFinished().catch(e=>console.error('[SF Queue] lỗi chạy file kế tiếp:', e)); }, 400);
   }
 }
 
@@ -2284,16 +2291,32 @@ async function sf_onSourceLoaded(text, name){
       existing.sourceText = text;
       existing.updatedAt = now;
       if(name) existing.name = name;
-      if(name) existing.originalFileName = name; // mục 2: luôn nhớ tên file .txt gốc đã tải lên
+      if(name) existing.originalFileName = name;
       sfCurrentFileId = existing.id;
       sfCurrentFileMeta = existing;
+      if(typeof sfZhCfg === 'object'){
+        if(existing.zhLearned){
+          Object.assign(sfZhCfg, existing.zhLearned);
+        } else if(sfZhCfg._lastHash && sfZhCfg._lastHash !== hash){
+          sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+        }
+        sfZhCfg._lastHash = hash;
+        if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
+        if(typeof sfZh_save === 'function') sfZh_save();
+      }
       await saveFileRecord(existing);
     } else {
       const fileId = sf_genFileId();
+      if(typeof sfZhCfg === 'object'){
+        sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+        sfZhCfg._lastHash = hash;
+        if(typeof __sfLearnQueue !== 'undefined') __sfLearnQueue = [];
+        if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
+      }
       const rec = {
         id: fileId,
         name: name || 'Truyện không tên',
-        originalFileName: name || null, // mục 2: tên file .txt gốc, dùng khi xuất file dịch
+        originalFileName: name || null,
         sourceHash: hash,
         sourceText: text,
         createdAt: now, updatedAt: now,
@@ -2303,10 +2326,14 @@ async function sf_onSourceLoaded(text, name){
         model: state.model,
         baseUrl: document.getElementById('baseUrl').value.trim(),
         prompt: document.getElementById('promptBox').value,
-        config: sf_collectConfig()
+        config: sf_collectConfig(),
+        zhLearned: (typeof sfZhCfg === 'object') ? {
+          genre: sfZhCfg.genre, theme: '', tone: '', glossary: '', honorifics: '', style: ''
+        } : null
       };
       sfCurrentFileId = fileId;
       sfCurrentFileMeta = rec;
+      if(typeof sfZh_save === 'function') sfZh_save();
       await saveFileRecord(rec);
     }
     await hydrateLibrary();
@@ -2604,7 +2631,7 @@ function sfZh_updateLearnStatusUI(customMsg, color){
   const hCount = sfZh_countLines(sfZhCfg.honorifics);
   const baseStat = `(Đang nhớ: ${gCount} tên riêng/thuật ngữ · ${hCount} quy ước xưng hô)`;
   if(customMsg){
-    el.innerHTML = `<span style="color:${color||'var(--accent2)'};font-weight:600;">${customMsg}</span> <span style="color:var(--text-dim);">${baseStat}</span>`;
+    el.innerHTML = `<span style="color:${sf_escapeHtml(color||'var(--accent2)')};font-weight:600;">${sf_escapeHtml(customMsg)}</span> <span style="color:var(--text-dim);">${sf_escapeHtml(baseStat)}</span>`;
   } else {
     el.innerHTML = sfZhCfg.autoLearn
       ? `<span style="color:var(--green);font-weight:600;">🟢 Chế độ Vừa dịch vừa học: ĐANG BẬT</span> <span style="color:var(--text-dim);">— AI tự đọc mở đầu & tự học thêm sau mỗi ${sfZhCfg.learnEvery} chunk ${baseStat}</span>`
@@ -2677,18 +2704,33 @@ async function sfZh_callRawAI(promptText){
   if(meta){ meta.requests++; meta.lastUsed = Date.now(); }
   renderKeys();
 
+  const handleHttpErr = (status, retryHeader)=>{
+    if(!meta) return;
+    meta.errors++;
+    if(status === 429){
+      meta.status = 'ratelimited'; meta.c429++;
+      meta.rateLimitUntil = Date.now() + ((parseFloat(retryHeader) || 20) * 1000);
+    } else if(status === 401 || status === 403){
+      meta.status = 'error'; meta.c401++;
+    }
+    renderKeys();
+  };
   if(isGem){
     const api = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(state.model) + ':generateContent';
     const body = {
       contents: [{ role:'user', parts:[{ text: promptText }] }],
       safetySettings: ['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({category:'HARM_CATEGORY_'+c,threshold:'BLOCK_NONE'}))
     };
-    const res = await fetch(api, {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify(body)
-    });
+    let res;
+    try{
+      res = await fetch(api, {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify(body)
+      });
+    }catch(netErr){ if(meta){ meta.errors++; renderKeys(); } throw netErr; }
     if(!res.ok){
+      handleHttpErr(res.status, res.headers.get('retry-after'));
       const t = await res.text().catch(()=>'');
       throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
     }
@@ -2698,15 +2740,19 @@ async function sfZh_callRawAI(promptText){
     const cand = data.candidates && data.candidates[0];
     return (((cand && cand.content && cand.content.parts) || []).filter(p=>!p.thought).map(p=>p.text||'').join('')).trim();
   } else {
-    const res = await fetch(wrapUrl(chatUrl()), {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + key },
-      body: JSON.stringify({
-        model: state.model,
-        messages: [{ role:'user', content: promptText }]
-      })
-    });
+    let res;
+    try{
+      res = await fetch(wrapUrl(chatUrl()), {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + key },
+        body: JSON.stringify({
+          model: state.model,
+          messages: [{ role:'user', content: promptText }]
+        })
+      });
+    }catch(netErr){ if(meta){ meta.errors++; renderKeys(); } throw netErr; }
     if(!res.ok){
+      handleHttpErr(res.status, res.headers.get('retry-after'));
       const t = await res.text().catch(()=>'');
       throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
     }
@@ -3279,7 +3325,54 @@ function toggleQueuePanel(){ const el = document.getElementById('queuePanel'); i
 let corsOn = false;
 function toggleCors(){ corsOn = !corsOn; document.getElementById('corsSwitch').classList.toggle('on', corsOn); document.getElementById('corsRow').style.display = corsOn ? 'block' : 'none'; if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); }
 function wrapUrl(target){ if(!corsOn) return target; const base = document.getElementById('corsProxyUrl').value.trim(); if(!base) return target; return base + encodeURIComponent(target); }
-function downloadCorsScript(){ alert("CORS Proxy script feature simplified for space."); }
+function downloadCorsScript(){
+  const pyCode = [
+    '#!/usr/bin/env python3',
+    '# StoryForge Local CORS Proxy — Chay: python3 cors_proxy.py',
+    'from http.server import HTTPServer, BaseHTTPRequestHandler',
+    'import urllib.request, urllib.parse, urllib.error',
+    '',
+    'class ProxyHandler(BaseHTTPRequestHandler):',
+    '    def _cors(self):',
+    '        self.send_header("Access-Control-Allow-Origin", "*")',
+    '        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")',
+    '        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, x-goog-api-key")',
+    '    def do_OPTIONS(self):',
+    '        self.send_response(204); self._cors(); self.end_headers()',
+    '    def _handle(self, method):',
+    '        qs = urllib.parse.urlparse(self.path).query',
+    '        target = urllib.parse.parse_qs(qs).get("url", [""])[0]',
+    '        if not target:',
+    '            self.send_response(400); self._cors(); self.end_headers(); return',
+    '        length = int(self.headers.get("Content-Length", 0))',
+    '        body = self.rfile.read(length) if length > 0 else None',
+    '        headers = {k: v for k, v in self.headers.items() if k.lower() in ("content-type", "authorization", "x-goog-api-key")}',
+    '        req = urllib.request.Request(target, data=body, headers=headers, method=method)',
+    '        try:',
+    '            with urllib.request.urlopen(req, timeout=90) as resp:',
+    '                data = resp.read()',
+    '                self.send_response(resp.status); self._cors()',
+    '                self.send_header("Content-Type", resp.headers.get("Content-Type", "application/json"))',
+    '                self.end_headers(); self.wfile.write(data)',
+    '        except urllib.error.HTTPError as e:',
+    '            data = e.read()',
+    '            self.send_response(e.code); self._cors(); self.end_headers(); self.wfile.write(data)',
+    '        except Exception as e:',
+    '            self.send_response(502); self._cors(); self.end_headers(); self.wfile.write(str(e).encode("utf-8"))',
+    '    def do_GET(self): self._handle("GET")',
+    '    def do_POST(self): self._handle("POST")',
+    '',
+    'if __name__ == "__main__":',
+    '    print("StoryForge CORS Proxy dang chay tai http://127.0.0.1:8787/proxy?url=")',
+    '    HTTPServer(("127.0.0.1", 8787), ProxyHandler).serve_forever()'
+  ].join('\n');
+  const blob = new Blob([pyCode], { type:'text/x-python;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'cors_proxy.py';
+  a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+}
 function toggleProxy(){ state.proxyOn = !state.proxyOn; document.getElementById('proxySwitch').classList.toggle('on', state.proxyOn); document.getElementById('proxyPill').classList.toggle('on', state.proxyOn); document.getElementById('proxyPill').textContent = state.proxyOn ? 'Bật' : 'Tắt'; refreshStatus(); }
 function normalizeBase(u){ return u.trim().replace(/\/+$/,''); }
 function chatUrl(){ let u = normalizeBase(document.getElementById('baseUrl').value); if(!u) return ''; if(u.endsWith('/chat/completions')) return u; if(u.endsWith('/v1')) return u + '/chat/completions'; return u + '/v1/chat/completions'; }
@@ -3313,7 +3406,7 @@ function renderKeys(){
     const rpmInfo = keyRpmInfo(i);
     rlText += ` · RPM ${rpmInfo.count}/${rpmInfo.limit} (${Math.round(rpmInfo.ratio*100)}% ${rpmInfo.status})`;
     card.innerHTML = `
-      <div class="keycard-top"><span class="keydot" style="background:${color}; color:${color};"></span><span class="keycard-tag" style="color:${color}">C${i+1}</span><span class="keycard-mask">API Key ${maskKey(k)}</span><span class="keycard-del" onclick="removeKey(${i})">🗑</span></div>
+      <div class="keycard-top"><span class="keydot" style="background:${color}; color:${color};"></span><span class="keycard-tag" style="color:${color}">C${i+1}</span><span class="keycard-mask">API Key ${sf_escapeHtml(maskKey(k))}</span><span class="keycard-del" onclick="removeKey(${i})">🗑</span></div>
       <div class="keycard-status ${info.cls}">${info.text}${rlText}</div>
       <div class="keycard-stats"><div><b>${meta.requests}</b>Req</div><div><b>${meta.success}</b>Thành công</div><div><b>${meta.errors}</b>Lỗi</div></div>
     `;
@@ -3441,7 +3534,44 @@ function hasUsableKey(){
     if(!state.keys.length) return false;
     return state.keyMeta.some(m => m.status !== 'error' && m.status !== 'disabled');
 }
-async function testAllKeys(){ alert("Chức năng test key đã được tối giản."); }
+async function testSingleProxyKey(i){
+  ensureKeyMeta();
+  const k = state.keys[i], m = state.keyMeta[i];
+  if(!k || !m) return false;
+  const url = chatUrl();
+  if(!url){ alert('Vui lòng nhập Base URL trước.'); return false; }
+  const model = state.model || document.getElementById('modelInput').value.trim();
+  if(!model){ alert('Vui lòng nhập hoặc chọn Model trước khi kiểm tra key.'); return false; }
+  m.status = 'testing'; renderKeys();
+  try{
+    const res = await fetch(wrapUrl(url), {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + k },
+      body: JSON.stringify({ model, messages:[{ role:'user', content:'Reply with: OK' }], max_tokens: 12 })
+    });
+    if(res.ok){
+      m.status = 'idle'; m.rateLimitUntil = 0; renderKeys(); return true;
+    } else if(res.status === 429){
+      m.status = 'ratelimited'; m.c429++; m.rateLimitUntil = Date.now() + 20000; renderKeys(); return false;
+    } else {
+      m.status = 'error'; if(res.status===401||res.status===403) m.c401++; renderKeys(); return false;
+    }
+  }catch(e){
+    m.status = 'error'; renderKeys(); return false;
+  }
+}
+async function testAllKeys(){
+  if(state.keys.length === 0){ alert('Chưa có API Key nào để kiểm tra.'); return; }
+  if(!chatUrl()){ alert('Vui lòng nhập Base URL trước.'); return; }
+  if(!state.model){ alert('Vui lòng chọn hoặc nhập Model trước.'); return; }
+  const btn = document.getElementById('testAllBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ Đang kiểm tra...'; }
+  for(let i=0; i<state.keys.length; i++){
+    await testSingleProxyKey(i);
+    await new Promise(r=>setTimeout(r, 250));
+  }
+  if(btn){ btn.disabled = false; btn.textContent = '🔍 Kiểm tra tất cả Key'; }
+}
 function refreshKeyStatuses(){ const now = Date.now(); state.keyMeta.forEach(m=>{ if(m.status==='ratelimited' && now>=m.rateLimitUntil) m.status='idle'; }); renderKeys(); }
 function showAllKeysWarning(show){ const el = document.getElementById('allKeysWarning'); if(el) el.style.display = show ? 'flex' : 'none'; }
 
@@ -3511,7 +3641,14 @@ function renderModelGrid(ids){
     grid.appendChild(chip);
   });
 }
-async function testConnection(){ alert("Test kết nối tối giản. Hãy chạy thử 1 chunk."); }
+async function testConnection(){
+  if(state.keys.length === 0){ alert('Hãy thêm ít nhất 1 API Key trước khi test kết nối.'); return; }
+  if(!chatUrl()){ alert('Hãy nhập Base URL trước.'); return; }
+  if(!state.model){ alert('Hãy nhập hoặc chọn Model trước.'); return; }
+  const ok = await testSingleProxyKey(0);
+  if(ok) logLine('ok', null, 0, '🔌 Kết nối Custom Proxy thành công với model ' + state.model);
+  else alert('Kết nối thất bại với Key C1. Hãy kiểm tra lại Base URL, tên Model hoặc API Key.');
+}
 function toggleModelGridVisible(){
   const grid = document.getElementById('modelGrid');
   const btn = document.getElementById('modelGridToggleBtn');
@@ -3723,8 +3860,139 @@ function readFile(f){
 }
 document.getElementById('fileInput').addEventListener('change', e=>{ if(e.target.files[0]) readFile(e.target.files[0]); });
 
-function scanHanTu(){}
-function openReadByChapter(){}
+/* ---------- QUÉT & XỬ LÝ HÁN TỰ CÒN SÓT TRONG BẢN DỊCH ---------- */
+async function scanHanTu(){
+  const HAN_RE = /[\u3400-\u4DBF\u4E00-\u9FFF]+/g;
+  const outTa = document.getElementById('outputText');
+  const fullTrans = outTa ? outTa.value : '';
+  if(!fullTrans.trim() && (!Array.isArray(chunkState) || !chunkState.some(c=>c && c.status==='done'))){
+    alert('Chưa có bản dịch nào để quét Hán tự! Hãy dịch truyện hoặc dán bản dịch vào ô Kết quả dịch trước.');
+    return;
+  }
+  const affectedChunks = [];
+  const sampleWords = new Set();
+  if(Array.isArray(chunkState) && chunkState.some(c=>c && c.status==='done')){
+    chunkState.forEach((c, idx)=>{
+      if(c && c.status === 'done' && c.trans){
+        const matches = c.trans.match(HAN_RE);
+        if(matches && matches.length){
+          affectedChunks.push(idx);
+          matches.slice(0, 8).forEach(w=> sampleWords.add(w));
+        }
+      }
+    });
+  }
+  const allMatches = fullTrans.match(HAN_RE) || [];
+  allMatches.slice(0, 15).forEach(w=> sampleWords.add(w));
+  if(allMatches.length === 0 && affectedChunks.length === 0){
+    alert('✅ Tuyệt vời! Bản dịch sạch 100%, không phát hiện bất kỳ chữ Hán nào còn sót.');
+    logLine('ok', null, null, '🔍 Quét Hán tự: Bản dịch sạch 100%, không còn chữ Hán sót lại.');
+    return;
+  }
+  const wordList = Array.from(sampleWords).slice(0, 12).join(', ');
+  const msg = `⚠️ Phát hiện ${allMatches.length} cụm chữ Hán còn sót` +
+    (affectedChunks.length ? ` tại ${affectedChunks.length} chunk (${affectedChunks.slice(0,10).map(i=>'#'+(i+1)).join(', ')}${affectedChunks.length>10?'...':''})` : '') +
+    `\nVí dụ chữ sót: ${wordList}\n\nBạn có muốn dùng AI tự động dịch sạch các chữ Hán còn sót này sang tiếng Việt ngay bây giờ không?`;
+  if(!confirm(msg)) return;
+
+  try{
+    logLine('info', null, null, `🧹 Đang dùng AI quét và sửa ${allMatches.length} cụm Hán tự còn sót...`);
+    if(affectedChunks.length > 0){
+      for(const idx of affectedChunks){
+        const c = chunkState[idx];
+        if(!c || !c.trans) continue;
+        const fixPrompt = `Đoạn văn tiếng Việt dưới đây còn sót một số chữ Hán chưa dịch hết. Hãy dịch nốt toàn bộ các chữ Hán còn sót sang tiếng Việt tự nhiên, hợp ngữ cảnh, giữ nguyên 100% các câu tiếng Việt đã dịch mượt. Chỉ trả về đoạn văn hoàn chỉnh, không giải thích:\n\n` + c.trans;
+        const cleaned = await sfZh_callRawAI(fixPrompt);
+        if(cleaned && cleaned.trim()){
+          currentResults[idx] = cleaned.trim();
+          markChunkDone(idx, cleaned.trim());
+        }
+      }
+      if(outTa){
+        outTa.value = currentResults.map((r,i)=> r != null ? r : (chunkState[i]?.trans || '')).join('\n\n');
+      }
+    } else if(outTa && outTa.value.trim()){
+      const fixPrompt = `Đoạn văn tiếng Việt dưới đây còn sót một số chữ Hán chưa dịch hết. Hãy dịch nốt toàn bộ các chữ Hán còn sót sang tiếng Việt tự nhiên, hợp ngữ cảnh, giữ nguyên 100% nội dung còn lại. Chỉ trả về văn bản hoàn chỉnh:\n\n` + outTa.value;
+      const cleaned = await sfZh_callRawAI(fixPrompt);
+      if(cleaned && cleaned.trim()) outTa.value = cleaned.trim();
+    }
+    logLine('ok', null, null, '✅ Đã xử lý sạch Hán tự còn sót trong bản dịch!');
+    alert('✅ Đã dịch và làm sạch toàn bộ Hán tự còn sót!');
+  }catch(e){
+    alert('Lỗi khi sửa Hán tự bằng AI: ' + (e.message || e));
+  }
+}
+
+/* ---------- ĐỌC THEO CHƯƠNG & XUẤT HTML ĐỌC OFFLINE ---------- */
+let __sfReaderChapters = [];
+let __sfReaderIndex = 0;
+
+function sf_parseChaptersForReader(){
+  const outVal = (document.getElementById('outputText')?.value || '').trim();
+  const rawText = outVal || sf_getFullSourceText().trim();
+  if(!rawText) return [];
+  const lines = rawText.split(/\r?\n/);
+  const chapRe = /^[ \t]*(?:Chương|Chapter|Đệ|Hồi|Quyển)\s*[:0-9一二三四五六七八九十百千万零〇nhấtnhịtam tứ ngũ lục thất bát cửu thập]/i;
+  const chaps = [];
+  let curTitle = 'Phần mở đầu';
+  let curLines = [];
+  for(const line of lines){
+    if(chapRe.test(line.trim()) && line.trim().length <= 90){
+      if(curLines.join('\n').trim()){
+        chaps.push({ title: curTitle, body: curLines.join('\n').trim() });
+      }
+      curTitle = line.trim();
+      curLines = [];
+    } else {
+      curLines.push(line);
+    }
+  }
+  if(curLines.join('\n').trim()){
+    chaps.push({ title: curTitle, body: curLines.join('\n').trim() });
+  }
+  if(chaps.length <= 1 && Array.isArray(chunkState) && chunkState.length > 1){
+    const fromChunks = [];
+    chunkState.forEach((c, idx)=>{
+      const body = (c.status === 'done' && c.trans) ? c.trans : (c.orig || '');
+      if(body.trim()){
+        const firstLine = body.trim().split(/\r?\n/)[0].slice(0, 60);
+        fromChunks.push({ title: `Phần #${idx+1}: ${firstLine}`, body: body.trim() });
+      }
+    });
+    if(fromChunks.length > 0) return fromChunks;
+  }
+  return chaps;
+}
+
+function sf_renderReaderChapter(idx){
+  if(!__sfReaderChapters.length) return;
+  __sfReaderIndex = Math.max(0, Math.min(__sfReaderChapters.length - 1, idx));
+  const ch = __sfReaderChapters[__sfReaderIndex];
+  const sel = document.getElementById('readChapterSelect');
+  if(sel) sel.value = String(__sfReaderIndex);
+  const titleEl = document.getElementById('readChapterTitle');
+  if(titleEl) titleEl.textContent = ch.title;
+  const bodyEl = document.getElementById('readChapterBody');
+  if(bodyEl) bodyEl.textContent = ch.body;
+  const wrap = document.getElementById('readChapterBodyWrap');
+  if(wrap) wrap.scrollTop = 0;
+  const info = document.getElementById('readChapterInfo');
+  if(info) info.textContent = `Chương ${__sfReaderIndex + 1} / ${__sfReaderChapters.length} · ${ch.body.length.toLocaleString('vi-VN')} ký tự`;
+}
+
+function openReadByChapter(){
+  __sfReaderChapters = sf_parseChaptersForReader();
+  if(!__sfReaderChapters.length){
+    alert('Chưa có nội dung để đọc! Hãy tải truyện hoặc dịch truyện trước.');
+    return;
+  }
+  const sel = document.getElementById('readChapterSelect');
+  if(sel){
+    sel.innerHTML = __sfReaderChapters.map((c, i)=> `<option value="${i}">${sf_escapeHtml(c.title)}</option>`).join('');
+  }
+  document.getElementById('readModalOverlay').style.display = 'flex';
+  sf_renderReaderChapter(0);
+}
 
 /* =====================================================================
    ĐỢT 4/4 — FINAL AUDIT: BỔ SUNG HÀM BỊ THIẾU THAM CHIẾU TỪ HTML
@@ -3760,16 +4028,89 @@ function openReadByChapter(){}
 // trong CSS, không có JS nào khác gán style hiển thị). Các nút bên trong
 // modal vẫn được HTML tham chiếu nên cần stub AN TOÀN tương ứng.
 function closeReadModal(){ const el=document.getElementById('readModalOverlay'); if(el) el.style.display='none'; }
-function readGotoSelect(){}
-function readNextChapter(){}
-function readPrevChapter(){}
-function exportOfflineReader(){}
+function readGotoSelect(){
+  const sel = document.getElementById('readChapterSelect');
+  if(sel) sf_renderReaderChapter(parseInt(sel.value, 10) || 0);
+}
+function readNextChapter(){ sf_renderReaderChapter(__sfReaderIndex + 1); }
+function readPrevChapter(){ sf_renderReaderChapter(__sfReaderIndex - 1); }
+function exportOfflineReader(){
+  if(!__sfReaderChapters.length) __sfReaderChapters = sf_parseChaptersForReader();
+  if(!__sfReaderChapters.length){ alert('Chưa có nội dung để xuất HTML đọc offline.'); return; }
+  const bookTitle = (sfCurrentFileMeta && sfCurrentFileMeta.name) ? sfCurrentFileMeta.name : 'Truyện đã dịch';
+  const chapsJson = JSON.stringify(__sfReaderChapters).replace(/</g, '\\u003c');
+  const readerHtml = `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${sf_escapeHtml(bookTitle)}</title><style>body{margin:0;background:#11131f;color:#e7e8f2;font-family:Georgia,serif;line-height:1.85;padding:20px}main{max-width:780px;margin:0 auto;background:#181b2e;padding:28px 34px;border-radius:14px;border:1px solid #2a2f4a}h1{color:#7c9cff;font-size:22px;margin-top:0}select,button{background:#0e1020;color:#e7e8f2;border:1px solid #2e3352;padding:8px 12px;border-radius:8px;font-size:14px;cursor:pointer}.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;align-items:center}#body{white-space:pre-wrap;font-size:18px}</style></head><body><main><div class="bar"><select id="sel" style="flex:1"></select><button onclick="go(-1)">← Trước</button><button onclick="go(1)">Sau →</button></div><h1 id="ttl"></h1><div id="body"></div><div class="bar" style="margin-top:24px"><button onclick="go(-1)">← Chương trước</button><button onclick="go(1)">Chương sau →</button></div></main><script>const C=${chapsJson};let idx=0;const sel=document.getElementById('sel');C.forEach((c,i)=>{const o=document.createElement('option');o.value=i;o.textContent=c.title;sel.appendChild(o);});sel.onchange=()=>show(+sel.value);function show(i){idx=Math.max(0,Math.min(C.length-1,i));sel.value=idx;document.getElementById('ttl').textContent=C[idx].title;document.getElementById('body').textContent=C[idx].body;window.scrollTo(0,0);}function go(d){show(idx+d);}show(0);<\/script></body></html>`;
+  const blob = new Blob([readerHtml], { type:'text/html;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = bookTitle.replace(/\.[^./\\]+$/, '') + ' - doc-offline.html';
+  a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
+}
 
-// ---- 2) Tìm kiếm trong kết quả: runSearch() (định nghĩa bên dưới) đã là
-// stub rỗng sẵn (tính năng đơn giản hoá) — searchPrev/searchNext thuộc
-// cùng tính năng đó nên giữ nguyên tinh thần đơn giản hoá tương tự.
-function searchPrev(){}
-function searchNext(){}
+/* ---------- TÌM KIẾM TRONG BẢN DỊCH / BẢN GỐC ---------- */
+let __sfSearchMatches = [];
+let __sfSearchCursor = -1;
+let __sfLastSearchQuery = '';
+let __sfLastSearchTarget = '';
+
+function sf_jumpToMatch(idx){
+  const targetId = document.getElementById('searchTarget')?.value === 'source' ? 'sourceText' : 'outputText';
+  const ta = document.getElementById(targetId);
+  const countEl = document.getElementById('searchCount');
+  if(!ta || !__sfSearchMatches.length){
+    if(countEl) countEl.textContent = 'Không tìm thấy kết quả.';
+    return;
+  }
+  __sfSearchCursor = ((idx % __sfSearchMatches.length) + __sfSearchMatches.length) % __sfSearchMatches.length;
+  const pos = __sfSearchMatches[__sfSearchCursor];
+  const qLen = __sfLastSearchQuery.length;
+  ta.focus();
+  ta.setSelectionRange(pos, pos + qLen);
+  const textBefore = ta.value.slice(0, pos);
+  const lineNum = textBefore.split('\n').length;
+  const totalLines = ta.value.split('\n').length || 1;
+  ta.scrollTop = Math.max(0, Math.floor((lineNum / totalLines) * ta.scrollHeight) - 80);
+  if(countEl) countEl.textContent = `Kết quả ${__sfSearchCursor + 1} / ${__sfSearchMatches.length}`;
+}
+
+function runSearch(){
+  const q = (document.getElementById('searchBox')?.value || '').trim();
+  const target = document.getElementById('searchTarget')?.value || 'output';
+  const countEl = document.getElementById('searchCount');
+  if(!q){ if(countEl) countEl.textContent = 'Nhập từ khoá cần tìm.'; return; }
+  const ta = document.getElementById(target === 'source' ? 'sourceText' : 'outputText');
+  if(!ta || !ta.value){ if(countEl) countEl.textContent = 'Ô văn bản đang trống.'; return; }
+  const hay = ta.value.toLowerCase();
+  const needle = q.toLowerCase();
+  __sfSearchMatches = [];
+  let pos = 0;
+  while(true){
+    const found = hay.indexOf(needle, pos);
+    if(found === -1) break;
+    __sfSearchMatches.push(found);
+    pos = found + needle.length;
+  }
+  __sfLastSearchQuery = q;
+  __sfLastSearchTarget = target;
+  if(!__sfSearchMatches.length){
+    if(countEl) countEl.textContent = '0 kết quả.';
+    return;
+  }
+  sf_jumpToMatch(0);
+}
+function searchPrev(){
+  const q = (document.getElementById('searchBox')?.value || '').trim();
+  const target = document.getElementById('searchTarget')?.value || 'output';
+  if(q !== __sfLastSearchQuery || target !== __sfLastSearchTarget || !__sfSearchMatches.length){ runSearch(); return; }
+  sf_jumpToMatch(__sfSearchCursor - 1);
+}
+function searchNext(){
+  const q = (document.getElementById('searchBox')?.value || '').trim();
+  const target = document.getElementById('searchTarget')?.value || 'output';
+  if(q !== __sfLastSearchQuery || target !== __sfLastSearchTarget || !__sfSearchMatches.length){ runSearch(); return; }
+  sf_jumpToMatch(__sfSearchCursor + 1);
+}
 
 // ---- 3) Canon Pack — dùng ĐÚNG state.canonOn + #canonSwitch đã có sẵn
 // trong sf_collectConfig()/sf_applyConfigToUI() (đọc/ghi classList 'on'
@@ -4246,7 +4587,7 @@ async function sfCanon_importJson(file){
     if(!parsed || !Array.isArray(parsed.entities)){ alert('File Canon Pack không đúng định dạng.'); return; }
     const now = Date.now();
     const records = parsed.entities.filter(e=>e && e.sourceName).map(e=>({
-      id: e.id || sfCanon_newId(), fileId: sfCurrentFileId,
+      id: (typeof e.id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(e.id)) ? e.id : sfCanon_newId(), fileId: sfCurrentFileId,
       sourceHash: sfCurrentFileMeta ? sfCurrentFileMeta.sourceHash : (e.sourceHash||''),
       sourceName: e.sourceName, normalizedName: e.normalizedName || sfCanon_normalize(e.sourceName),
       category: SF_CANON_CATEGORIES.includes(e.category) ? e.category : 'TERM',
@@ -5340,7 +5681,7 @@ function cdRowMarkup(c, i){
       <div class="cdbar-outer"><div class="cdbar-inner ${badgeCls}" id="chunk-bar-${i}" style="width:${barPct}%"></div></div>
       <div class="cdbody" id="chunk-body-${i}">
         <div class="chunkcols">
-          <div class="chunkcol orig"><div class="chunkcol-title">📄 Bản gốc</div><div class="chunkcol-body" id="chunk-orig-${i}">${c.orig}</div></div>
+          <div class="chunkcol orig"><div class="chunkcol-title">📄 Bản gốc</div><div class="chunkcol-body" id="chunk-orig-${i}"></div></div>
           <div class="chunkcol trans"><div class="chunkcol-title">🇻🇳 Bản dịch</div><div class="chunkcol-body" id="chunk-trans-${i}"></div></div>
         </div>
       </div>
@@ -5348,6 +5689,8 @@ function cdRowMarkup(c, i){
 }
 function fillChunkBody(i){
   const c = chunkState[i]; if(!c) return;
+  const o = document.getElementById('chunk-orig-'+i);
+  if(o) o.textContent = c.orig || '';
   const t = document.getElementById('chunk-trans-'+i);
   if(t) t.textContent = c.status==='waiting'?'Chưa dịch':(c.status==='running'?'Đang xử lý...':(c.trans||''));
 }
@@ -5479,19 +5822,38 @@ function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus
 /* RATE LIMIT & LOGGING */
 let logEntries = [];
 let logFilter = 'all';
+function sf_matchLogFilter(type, keyIndex, f){
+  if(!f || f === 'all') return true;
+  if(f === 'key') return keyIndex != null;
+  return type === f;
+}
 function logLine(type, idx, keyIndex, msg){
   const el = document.getElementById('progLog'); if(!el) return;
   const time = new Date().toLocaleTimeString('vi-VN',{hour12:false});
-  const row = document.createElement('div'); row.className = 'logrow '+(type||'info');
-  const dot = type==='ok'?'🟢':type==='err'?'🔴':type==='warn'?'🟡':'🔄';
+  const tNorm = type || 'info';
+  const row = document.createElement('div');
+  row.className = 'logrow ' + tNorm;
+  row.dataset.logType = tNorm;
+  row.dataset.hasKey = keyIndex != null ? '1' : '0';
+  if(!sf_matchLogFilter(tNorm, keyIndex, logFilter)) row.style.display = 'none';
+  const dot = tNorm==='ok'?'🟢':tNorm==='err'?'🔴':tNorm==='warn'?'🟡':'🔄';
   const tag = keyIndex!=null?'C'+(keyIndex+1):'--';
-  row.innerHTML = `<span class="logtime">${time}</span><span class="logdot">${dot}</span><span class="logtag" style="${keyIndex!=null?'color:'+getKeyColor(keyIndex):''}">${tag}</span><span class="logmsg">${msg}</span>`;
+  row.innerHTML = `<span class="logtime">${sf_escapeHtml(time)}</span><span class="logdot">${dot}</span><span class="logtag" style="${keyIndex!=null?'color:'+getKeyColor(keyIndex):''}">${sf_escapeHtml(tag)}</span><span class="logmsg">${sf_escapeHtml(msg)}</span>`;
   el.appendChild(row);
   while(el.children.length > 200) el.removeChild(el.firstChild);
   el.scrollTop = el.scrollHeight;
 }
-function setLogFilter(f){ /* simplified */ }
-function clearLog(){ document.getElementById('progLog').innerHTML=''; }
+function setLogFilter(f){
+  logFilter = f || 'all';
+  document.querySelectorAll('.logfilter-btn').forEach(b=> b.classList.toggle('active', b.dataset.f === logFilter));
+  const el = document.getElementById('progLog'); if(!el) return;
+  Array.from(el.children).forEach(row=>{
+    const tNorm = row.dataset.logType || 'info';
+    const hasKey = row.dataset.hasKey === '1' ? 0 : null;
+    row.style.display = sf_matchLogFilter(tNorm, hasKey, logFilter) ? '' : 'none';
+  });
+}
+function clearLog(){ document.getElementById('progLog').innerHTML=''; logEntries=[]; }
 
 /* API CALL */
 async function callModel(textPayload, keyIndex, signal){
@@ -5920,8 +6282,16 @@ async function startTranslate(){
   if(state.keys.length===0){ alert('Thêm API key.'); return; }
   if(!state.model){ alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
-  if(typeof sfZhCfg !== 'undefined' && sfZhCfg.autoLearn && !sfZhCfg.glossary.trim() && !sfZhCfg.honorifics.trim() && typeof sfZh_autoReadInitial === 'function'){
-    try{ await sfZh_autoReadInitial(true); }catch(e){ console.warn('[SF Auto-Learn] Bỏ qua auto-read đầu phiên:', e); }
+  if(typeof sfZhCfg !== 'undefined'){
+    const curHash = sf_computeSourceHash(text);
+    if(sfZhCfg._lastHash && sfZhCfg._lastHash !== curHash){
+      sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+      if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
+    }
+    sfZhCfg._lastHash = curHash;
+    if(sfZhCfg.autoLearn && !sfZhCfg.glossary.trim() && !sfZhCfg.honorifics.trim() && typeof sfZh_autoReadInitial === 'function'){
+      try{ await sfZh_autoReadInitial(true); }catch(e){ console.warn('[SF Auto-Learn] Bỏ qua auto-read đầu phiên:', e); }
+    }
   }
   let offsets = splitChunksWithOffsets(text, chunkSizeVal());
   // Bước 8 (Source Integrity): nếu partition/reconstruction không khớp 100% với văn bản gốc,
@@ -6076,8 +6446,145 @@ function downloadOutput(){
   a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 }
 function copyOutput(){ navigator.clipboard?.writeText(document.getElementById('outputText').value).catch(()=>{}); }
-function runSearch(){}
-function downloadOutputByChapter(){}
+function downloadOutputByChapter(){
+  const doneChunks = Array.isArray(chunkState) && chunkState.some(c=>c && c.status==='done')
+    ? chunkState.map((c,i)=> c.status==='done' ? (c.trans||'') : '').filter(Boolean)
+    : [];
+  const fullText = (document.getElementById('outputText')?.value || '').trim();
+  if(!doneChunks.length && !fullText){
+    alert('Chưa có kết quả dịch để tải theo phần!');
+    return;
+  }
+  const perPartStr = prompt('Nhập số chunk (hoặc số chương) muốn gộp trong mỗi file TXT tải về:', '50');
+  if(!perPartStr) return;
+  const perPart = Math.max(1, parseInt(perPartStr, 10) || 50);
+  const items = doneChunks.length ? doneChunks : sf_parseChaptersForReader().map(c=> c.title + '\n\n' + c.body);
+  const baseName = (sfCurrentFileMeta && sfCurrentFileMeta.originalFileName)
+    ? String(sfCurrentFileMeta.originalFileName).replace(/\.[^./\\]+$/, '')
+    : 'ban-dich';
+  let partIdx = 1;
+  for(let i=0; i<items.length; i+=perPart){
+    const sliceText = items.slice(i, i + perPart).join('\n\n');
+    const blob = new Blob([sliceText], { type:'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${baseName} - Phần ${partIdx} (${i+1}-${Math.min(items.length, i+perPart)}).txt`;
+    a.click();
+    setTimeout(()=> URL.revokeObjectURL(a.href), 1500);
+    partIdx++;
+  }
+}
+
+/* ---------- HÀNG ĐỢI NHIỀU FILE (#queueFileInput) ---------- */
+let sfFileQueue = []; // [{ id, fileId, name, chars, status: 'queued'|'running'|'done' }]
+
+function sfQueue_render(){
+  const countEl = document.getElementById('queueCount');
+  const subEl = document.getElementById('queueSub');
+  const bodyEl = document.getElementById('queueBody');
+  const pending = sfFileQueue.filter(q=> q.status === 'queued').length;
+  if(countEl) countEl.textContent = String(pending);
+  if(subEl){
+    subEl.textContent = pending > 0
+      ? `${pending} file đang chờ dịch tự động nối tiếp`
+      : (running ? 'Đang chạy phiên dịch hiện tại' : 'Không có tác vụ đang chạy');
+  }
+  if(!bodyEl) return;
+  if(!sfFileQueue.length){
+    bodyEl.innerHTML = 'Hàng đợi trống.';
+    return;
+  }
+  bodyEl.innerHTML = sfFileQueue.map((q, idx)=>{
+    const badge = q.status === 'done' ? '🟢 Đã xong' : (q.status === 'running' ? '🟡 Đang dịch' : '⏳ Chờ dịch');
+    return `<div class="histrow" style="align-items:center;">
+      <div style="flex:1;"><b>#${idx+1} · ${sf_escapeHtml(q.name)}</b> <span class="t">(${q.chars.toLocaleString('vi-VN')} ký tự)</span></div>
+      <span>${badge}</span>
+      <div class="btn-row" style="margin-top:0;">
+        ${q.status === 'queued' ? `<button class="btn small primary" onclick="sfQueue_runItem('${sf_escapeHtml(q.id)}')">▶ Dịch ngay</button>` : ''}
+        <button class="btn small danger" onclick="sfQueue_removeItem('${sf_escapeHtml(q.id)}')">✕</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function sfQueue_addFiles(fileList){
+  if(!fileList || !fileList.length) return;
+  for(const f of Array.from(fileList)){
+    try{
+      const text = await sf_readAnyFile(f);
+      if(!text || !text.trim()) continue;
+      const hash = sf_computeSourceHash(text);
+      const now = Date.now();
+      const fileId = sf_genFileId();
+      const rec = {
+        id: fileId,
+        name: f.name || 'Truyện hàng đợi',
+        originalFileName: f.name || null,
+        sourceHash: hash,
+        sourceText: text,
+        createdAt: now, updatedAt: now,
+        status: 'new',
+        totalChars: text.length,
+        totalChunks: 0, translatedChunks: 0, errorChunks: 0,
+        model: state.model,
+        baseUrl: document.getElementById('baseUrl').value.trim(),
+        prompt: document.getElementById('promptBox').value,
+        config: sf_collectConfig()
+      };
+      await saveFileRecord(rec);
+      sfFileQueue.push({
+        id: 'q_' + now.toString(36) + '_' + Math.random().toString(36).slice(2,6),
+        fileId,
+        name: rec.name,
+        chars: text.length,
+        status: 'queued'
+      });
+    }catch(e){
+      sf_recordRuntimeError('queue-read-file', e && e.message ? e.message : String(e));
+    }
+  }
+  await hydrateLibrary();
+  sfQueue_render();
+  logLine('ok', null, null, `🗂️ Đã thêm ${fileList.length} file vào Hàng đợi.`);
+}
+
+async function sfQueue_runItem(qid){
+  if(running){ alert('Đang có tiến trình dịch chạy. File này sẽ tự chạy sau khi tiến trình hiện tại hoàn tất.'); return; }
+  const item = sfFileQueue.find(q=> q.id === qid);
+  if(!item) return;
+  item.status = 'running';
+  sfQueue_render();
+  const rec = await restoreFile(item.fileId);
+  if(!rec){ item.status = 'done'; sfQueue_render(); return; }
+  await startTranslate();
+  item.status = stopFlag ? 'queued' : 'done';
+  sfQueue_render();
+}
+
+function sfQueue_removeItem(qid){
+  sfFileQueue = sfFileQueue.filter(q=> q.id !== qid);
+  sfQueue_render();
+}
+
+async function sfQueue_onCurrentFinished(){
+  if(stopFlag || running) return;
+  const nextItem = sfFileQueue.find(q=> q.status === 'queued');
+  if(!nextItem) return;
+  logLine('info', null, null, `🗂️ Hàng đợi tự động chuyển sang file tiếp theo: ${nextItem.name}`);
+  await sfQueue_runItem(nextItem.id);
+}
+
+(function(){
+  const qInp = document.getElementById('queueFileInput');
+  if(qInp){
+    qInp.addEventListener('change', async (e)=>{
+      if(e.target.files && e.target.files.length){
+        await sfQueue_addFiles(e.target.files);
+        e.target.value = '';
+      }
+    });
+  }
+})();
 
 /* =====================================================================
    MODULE: sfCloud — Đăng nhập Google + Firestore + Storage (Cloud Sync)
