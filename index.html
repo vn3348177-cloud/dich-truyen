@@ -857,6 +857,8 @@
           <span class="acc-chevron">▾</span>
         </div>
         <div class="acc-body">
+          <div id="sfModeBar" class="btn-row" style="gap:8px;margin-bottom:10px;"></div>
+          <div id="sfZhBox" style="display:none;"></div>
           <p class="sub">Prompt gốc luôn được giữ riêng, không bao giờ bị ghi đè. Thêm bao nhiêu prompt tuỳ chỉnh tuỳ ý, bật/tắt từng cái — nội dung đoạn văn sẽ được nối vào cuối pipeline khi dịch.</p>
           <div id="promptLibraryList"></div>
           <div class="btn-row" style="margin-top:6px;">
@@ -868,7 +870,7 @@
             <div style="font-weight:600; font-size:13px; margin-bottom:4px;">🎨 Mẫu prompt theo thể loại</div>
             <div class="hint" style="margin-bottom:8px;">Bấm 1 thể loại → chỉ prompt đó được dùng để dịch (prompt gốc và mọi prompt khác tự tắt, không bị xoá). Nút sáng viền là prompt đang dùng. Bạn vẫn sửa nội dung ngay trong Thư viện.</div>
             <div id="sfTplBar" class="btn-row" style="gap:6px; flex-wrap:wrap;"></div>
-            <div style="margin-top:8px;"><button type="button" class="btn small" id="sfTplShowAll">👁 Hiện cả prompt đã tắt</button></div>
+            <div class="btn-row" style="margin-top:8px;"><button type="button" class="btn small" id="sfTplShowAll">👁 Hiện cả prompt đã tắt</button><button type="button" class="btn primary small" onclick="sfZh_setMode('zh'); sfZh_autoReadInitial(false);">🤖 AI Đọc Truyện &amp; Vừa Dịch Vừa Học (Tự điền Tên riêng / Xưng hô)</button></div>
           </div>
           <div class="acc" id="acc-prompt-preview" style="margin-top:12px;">
             <div class="acc-head" onclick="toggleAcc('acc-prompt-preview')">
@@ -1934,6 +1936,11 @@ async function restoreFile(fileId){
   if(document.getElementById('chatUrlPreview')) document.getElementById('chatUrlPreview').textContent = chatUrl() || '—';
   if(document.getElementById('modelsUrlPreview')) document.getElementById('modelsUrlPreview').textContent = modelsUrl() || '—';
   refreshStatus();
+  if(fileRec.zhLearned && typeof sfZhCfg === 'object'){
+    Object.assign(sfZhCfg, fileRec.zhLearned);
+    if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
+    if(typeof sfZh_save === 'function') sfZh_save();
+  }
   if(typeof updatePromptLen === 'function') updatePromptLen();
 
   // ĐỢT 7B — mục I: sfChunkOffsets (start/end/stableId — KHÔNG có text) được dựng TRƯỚC, rồi
@@ -2558,17 +2565,509 @@ Nhiệm vụ thật sự của bạn là DỊCH TRỰC TIẾP từ tiếng Trung
 - Dùng dấu câu tiếng Việt, không dùng dấu câu toàn góc của tiếng Trung.
 - Chỉ xuất bản dịch tiếng Việt, không giải thích, không ghi chú, không tiêu đề.`;
 
-/* ═════════ TỪ ĐÂY TRỞ XUỐNG: KHÔNG SỬA ═════════ */
-// Giữ nguyên nội dung/văn phong 100% so với DEFAULT_PROMPT cũ — chỉ tách phần
-// "ĐOẠN VĂN:" ra thành marker cố định (SF_CHUNK_MARKER) để nó LUÔN nằm ngay trước
-// chunk nguồn bất kể có bao nhiêu custom prompt được chèn ở giữa.
+/* ═════════ KHỞI TẠO BIẾN THƯ VIỆN TRƯỚC KHI CHẠY sfZh_init (CHỐNG LỖI TDZ) ═════════ */
 const SF_CHUNK_MARKER = 'ĐOẠN VĂN:';
-
-// Tương thích ngược: một số code cũ có thể còn tham chiếu DEFAULT_PROMPT.
 const DEFAULT_PROMPT = SF_TRANSLATION_PROMPT_DEFAULT + '\n\n' + SF_CHUNK_MARKER + '\n';
-
 let sfPromptLibrary = []; // RAM cache, đồng bộ 2 chiều với IndexedDB store 'prompts'
 let __sfPromptLibReady = false;
+
+/* ===== THƯ VIỆN PROMPT — 2 MỤC: (1) Làm mượt convert / Mẫu thể loại, (2) Dịch tiếng Trung (9 thể loại chuyên sâu) ===== */
+const SF_ZH = {"p": {"p1A": "Đóng vai một dịch giả kiêm biên tập viên văn học mạng Trung – Việt kỳ cựu với hơn 10 năm kinh nghiệm dịch truyện xuất bản và truyện VIP thương mại. Nhiệm vụ của bạn là chuyển ngữ đoạn văn bản dưới đây sang tiếng Việt sao cho mượt mà, tự nhiên, giàu cảm xúc và mang đậm hơi thở văn chương Việt Nam.\n\n### I. NGUYÊN TẮC VÀNG (BẮT BUỘC TUÂN THỦ)\n1. Tuyệt đối thoát ly cấu trúc câu tiếng Trung (Thoát ý nhưng không sai nghĩa):\n   - Xóa bỏ hoàn toàn dấu vết văn Convert và văn phong dịch máy (AI).\n   - Không dịch word-by-word. Chủ động đảo trật tự từ, tách câu dài nhiều mệnh đề hoặc gộp câu ngắn để tạo nhịp điệu tự nhiên trong tiếng Việt.\n   - Chuyển đổi câu bị động kiểu Trung (\"bị... làm cho...\") và cấu trúc \"đem...\" (把 - bǎ), \"hướng về...\" (向) sang câu chủ động tự nhiên trong tiếng Việt.\n   - Lược bỏ các đại từ sở hữu dư thừa (\"của hắn\", \"của nàng\", \"của mình\", \"của cô ấy\") khi ngữ cảnh tiếng Việt đã rõ ràng.\n   - Tuyệt đối không lạm dụng các từ đệm sáo rỗng kiểu convert: \"nháy mắt\", \"không khỏi\", \"hít vào một ngụm khí lạnh\", \"một đạo\", \"một cổ\", \"một cỗ\".\n\n2. Xử lý từ vựng và thành ngữ (Điển cố, Tứ tự thành ngữ):\n   - Dịch thoát ý hoặc chuyển sang thành ngữ, tục ngữ, quán ngữ tiếng Việt tương đương thay vì giữ nguyên Hán Việt cứng nhắc (trừ trường hợp cần giữ sắc thái cổ trang/tiên hiệp).\n   - Ví dụ: \"Đổ thêm dầu vào lửa\" (thay vì \"hỏa thượng kiêu du\"), \"Một mũi tên trúng hai đích\" (thay vì \"nhất tiễn song điêu\"), \"Mặt cắt không còn giọt máu / Tái mét\" (thay vì \"sắc mặt trắng bệch như tờ giấy\").\n   - Sử dụng phong phú từ láy, từ tượng thanh, tượng hình tiếng Việt để câu văn sống động.\n\n3. Quy chuẩn Đại từ nhân xưng & Ngữ khí đối thoại:\n   - Giữ nhất quán 100% cặp đại từ xưng hô dựa trên quan hệ, địa vị, độ tuổi và thái độ cảm xúc của nhân vật.\n   - Lời thoại phải có hồn, phản ánh đúng tính cách nhân vật: thêm thắt hợp lý các trợ từ ngữ khí tiếng Việt (nhỉ, nhé, cơ mà, đấy, ư, hả, chăng, thôi, đi...) nhưng không lạm dụng gây sến hoặc lệch tông bối cảnh.\n\n4. Độ trung thực nội dung:\n   - Giữ nguyên 100% tình tiết, không tự ý cắt xén, không tóm tắt, không kiểm duyệt, không thêm bình luận cá nhân.\n   - Giữ nguyên cấu trúc chia đoạn và tiêu đề chương (nếu có).", "tienhiep": "Bạn là dịch giả kiêm biên tập viên chuyên dòng truyện ⚔️ TIÊN KIẾM HIỆP (Tu tiên – Tiên hiệp – Pháp bảo – Cảnh giới). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt chuẩn xuất bản thương mại:\n\n1. Tỷ lệ Hán Việt – Thuần Việt chuẩn mực:\n   - GIỮ NGUYÊN HÁN VIỆT đối với: Tên công pháp, tâm pháp, kiếm quyết, chiêu thức, đan dược, linh thảo, pháp bảo, trận pháp, cảnh giới tu luyện (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, Hóa Thần, Độ Kiếp...), tông môn, chức vị (Trưởng lão, Chưởng môn, Đạo tử, Thánh nữ) và câu khẩu quyết.\n   - DÙNG THUẦN VIỆT GIÀU HÌNH ẢNH đối với: Đoạn dẫn chuyện, miêu tả cảnh sắc tiên giới, động tác giao chiến, nội tâm và cử chỉ. Tuyệt đối không viết kiểu convert như \"hắn một trảo chộp tới\" -> phải viết \"hắn vươn tay chộp thẳng tới\" hoặc \"hắn tung một trảo chụp xuống\".\n\n2. Xử lý cảnh đấu pháp & thiên địa dị tượng:\n   - Nhịp câu dứt khoát, dồn dập, dùng động từ mạnh (chém toạc, chấn vỡ, nghiền nát, cuốn phăng, bùng nổ, rền vang).\n   - Xóa bỏ triệt để lượng từ convert (\"một đạo kiếm quang\", \"một cổ linh khí\", \"một cỗ uy áp\") -> thay bằng lượng từ tiếng Việt tự nhiên (\"một luồng kiếm quang\", \"một làn linh khí\", \"cơn uy áp ngàn cân\", \"tia sáng\", \"vệt kiếm\").\n\n3. Đại từ & Ngữ khí tu chân giới:\n   - Ngôi thứ ba: Hắn / Y / Gã (nam); Nàng / Cô ta / Ả / Bà ta (nữ).\n   - Xưng hô đối thoại: Ta – Ngươi (ngang hàng/kẻ địch), Tại hạ – Đạo hữu / Các hạ (lịch sự), Vãn bối / Đệ tử – Tiền bối / Sư tôn / Lão tổ, Bản tọa / Bản tôn / Bản quân – Ngươi / Khanh.\n   - Lời thoại thoát tục, uy nghiêm hoặc lạnh lùng đúng khí chất tu sĩ; tuyệt đối không dùng từ lóng hiện đại.", "tieuthuyet": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 📖 TIỂU THUYẾT ĐA NĂNG (Văn học xuất bản thương mại). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt mượt mà, giàu tính văn học như sách in nhà xuất bản:\n\n1. Văn phong tiểu thuyết xuất bản:\n   - Câu văn có nhịp điệu, giàu sức gợi, kết hợp hài hòa giữa câu ngắn tạo kịch tính và câu ghép miêu tả chiều sâu tâm lý, bối cảnh.\n   - Thoát ly hoàn toàn trật tự ngữ pháp tiếng Trung: đảo vị trí cụm giới từ chỉ nơi chốn/thời gian về đúng thói quen tiếng Việt, biến câu bị động (\"bị...\", \"được...\") và câu chữ \"đem\" (把) thành câu chủ động linh hoạt.\n   - Thay thế các từ ngữ dịch máy khô khan bằng từ láy, thành ngữ và động từ giàu hình ảnh tiếng Việt.\n\n2. Xưng hô & Điểm nhìn trần thuật:\n   - Tự động nhận diện bối cảnh (Cổ đại hay Hiện đại) để chọn hệ đại từ phù hợp (Cổ đại: hắn/y/nàng/ta/ngươi; Hiện đại: anh/cô/cậu/tôi/em) và giữ NHẤT QUÁN 100% xuyên suốt đoạn văn.\n   - Không tự ý nhảy ngôi kể hoặc đổi cách gọi tên nhân vật giữa chừng.\n\n3. Lời thoại tự nhiên như người thật:\n   - Mỗi nhân vật nói chuyện đúng với lứa tuổi, xuất thân và trạng thái cảm xúc (tức giận, dịu dàng, mỉa mai, lạnh nhạt).\n   - Ngắt nghỉ câu thoại hợp lý, truyền tải trọn vẹn sắc thái nguyên tác mà không bị sượng hay kịch.", "ngontinh": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 💕 NGÔN TÌNH (Lãng mạn – Ngọt sủng – Ngược tâm – Cảm xúc tinh tế). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt mềm mại, giàu cảm xúc và chạm tới trái tim người đọc:\n\n1. Ngôn từ giàu chất thơ và chiều sâu nội tâm:\n   - Chú trọng miêu tả ánh mắt, nhịp thở, cái chạm nhẹ, sự rung động tinh vi và những giằng xé nội tâm bằng từ vựng tiếng Việt tinh tế, giàu nhạc điệu (khẽ khàng, bồi hồi, nghẹn đắng, dịu dàng, lặng lẽ, chơi vơi, thổn thức).\n   - Xóa bỏ hoàn toàn các cụm từ convert thô cứng (\"sắc mặt âm trầm\", \"trong mắt hiện lên một tia phức tạp\", \"hít một ngụm khí lạnh\", \"khóe miệng giật giật\") -> chuyển thành miêu tả tự nhiên (\"ánh mắt tối sầm lại\", \"đáy mắt thoáng vẻ ngổn ngang\", \"khẽ sững người\", \"khóe môi khẽ nhếch\").\n\n2. Đại từ nhân xưng giàu sắc thái tình cảm:\n   - Nếu là Ngôn tình Hiện đại: Dùng \"anh – cô / em\", tuyệt đối KHÔNG dùng \"hắn, nàng, nam nhân, nữ nhân, hài tử\". Khi đang yêu/ngọt ngào xưng \"anh – em\"; khi xa cách/chiến tranh lạnh/tổng tài – cấp dưới xưng \"tôi – anh/cô\".\n   - Nếu là Ngôn tình Cổ đại: Dùng \"chàng / hắn / y – nàng\", xưng hô \"ta / chàng / huynh – nàng / muội / thiếp\" mềm mại, tình tứ.\n\n3. Xử lý cảnh thân mật & cao trào cảm xúc:\n   - Dịch mượt mà, gợi cảm, tinh tế và sang trọng; giữ trọn vẹn 100% chi tiết tình cảm, cử chỉ thân mật mà không bị thô thiển hay sượng sùng.", "vohiep": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🗡️ VÕ HIỆP GIANG HỒ (Kiếm khách – Bang phái – Ân oán giang hồ – Cổ điển Kim Dung/Cổ Long). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt hào sảng, đậm chất hiệp khách:\n\n1. Khí chất văn phong Võ hiệp cổ điển:\n   - Câu văn gọn, đanh, hào sảng, trọng nghĩa khí và tiết tấu nhanh mạnh như tiếng đao kiếm chạm nhau.\n   - Giữ chuẩn tên Hán Việt cho: Tuyệt kỹ võ công, chiêu thức, nội công tâm pháp, huyệt đạo, binh khí, môn phái, bang hội và ngoại hiệu giang hồ (Ví dụ: Hàng Long Thập Bát Chưởng, Lăng Ba Vi Bộ, Điểm Thương phái, Cái Bang, Thiết Chưởng Thủy Thượng Phiêu).\n\n2. Miêu tả giao đấu & khinh công:\n   - Dịch rõ ràng từng chuyển động chiêu thức: bộ pháp, thủ pháp, thân pháp, kình lực, nội lực va chạm.\n   - Thay thế các từ convert lặp lại (\"một đạo đao mang\", \"hướng về phía trước phóng đi\") bằng động từ võ thuật chuẩn xác (\"vung đao chém xả\", \"lách mình tránh đòn\", \"phóng vút lên không\", \"tung chưởng vỗ tới\", \"xoay cổ tay điểm trúng huyệt đạo\").\n\n3. Ngôn ngữ & Lễ nghi Giang hồ:\n   - Ngôi thứ ba: Hắn / Y / Gã / Lão (nam); Nàng / Thị / Ả / Bà lão (nữ).\n   - Xưng hô chuẩn giang hồ: Tại hạ – Các hạ / Huynh đài / Bằng hữu, Vãn bối – Tiền bối / Lão tiền bối, Tiểu đệ – Đại ca / Sư huynh, Đại hiệp / Thiếu hiệp / Cô nương / Nữ hiệp, Bổn tọa / Lão phu / Lão nạp / Bần đạo.\n   - Lời thoại phóng khoáng, bộc trực, tuyệt đối không pha tạp khẩu ngữ hiện đại.", "cotrang": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🏯 CỔ ĐẠI / CUNG ĐẤU (Trạch đấu – Gia đấu – Quan trường – Điền văn cổ phong). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt tao nhã, chuẩn mực lễ giáo phong kiến:\n\n1. Từ vựng cổ phong, trang phục, kiến trúc & lễ nghi:\n   - Sử dụng chuẩn xác hệ từ vựng cổ trang: xiêm y, cẩm bào, trâm cài, bộ dao, chính viện, sương phòng, hoa sảnh, thỉnh an, quy củ, chưởng sự, ma ma, nha hoàn, gã sai vặt, tiểu tư.\n   - Nếu là mạch Điền văn (làm giàu, ẩm thực, nông thôn cổ đại): Giọng văn cần ấm áp, mộc mạc, miêu tả món ăn, nguyên liệu và cảnh sinh hoạt gia đình sống động, cuốn hút.\n\n2. Nghệ thuật đối thoại \"Ngoài cười trong không cười\" (Cung đấu / Trạch đấu):\n   - Lời thoại của hoàng hậu, phi tần, lão thái thái, đương gia chủ mẫu, đích nữ, thứ nữ phải giữ vẻ ngoài đoan trang, dịu dàng, đúng lễ nghĩa nhưng từng chữ đều sắc bén, thâm sâu, ẩn chứa mũi nhọn châm biếm.\n   - Dịch thoát ý các câu thành ngữ, yết hậu ngữ và lời nói bóng gió để độc giả Việt cảm nhận ngay sự thâm thúy mà không bị rối.\n\n3. Tôn ti trật tự xưng hô nghiêm ngặt:\n   - Hoàng cung: Trẫm / Hoàng thượng – Thần / Thần thiếp / Nô tài / Nô tỳ; Bản cung / Ai gia / Thái hậu / Quý phi / Tiểu chủ.\n   - Gia tộc / Hậu viện: Lão thái thái / Lão gia / Phu nhân / Gia (Nhị gia, Tam gia) / Thiếu phu nhân / Cô nương (Tiểu thư) / Di nương; Nô tỳ / Lão nô / Tiểu nhân.", "dothi": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🏙️ ĐÔ THỊ / HIỆN ĐẠI (Thương trường – Hào môn thế gia – Thanh xuân – Đời thường). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt hiện đại, tự nhiên như đời thực:\n\n1. CẤM TUYỆT ĐỐI từ Hán Việt cổ & từ Convert trong bối cảnh hiện đại:\n   - Tuyệt đối KHÔNG dùng: \"hắn\", \"nàng\", \"y\", \"nam nhân\", \"nữ nhân\", \"phụ thân\", \"mẫu thân\", \"bằng hữu\", \"hài tử\", \"y phục\", \"tửu điếm\", \"bệnh viện nhân dân đệ nhất\" (giữ kiểu Hán cứng).\n   - BẮT BUỘC thay bằng: \"anh / cậu / gã / ông ta\", \"cô / chị / bà ta\", \"người đàn ông / chàng trai\", \"người phụ nữ / cô gái\", \"bố / ba\", \"mẹ / má\", \"bạn bè\", \"đứa trẻ / con\", \"quần áo / bộ đồ\", \"khách sạn\".\n\n2. Hệ thống xưng hô hiện đại linh hoạt:\n   - Thương trường / Công sở: Tôi – Anh / Chị / Cô; Sếp [Tên] / Chủ tịch [Tên] / Giám đốc [Tên] – Tôi / Em.\n   - Gia đình / Hào môn: Ông nội / Bà nội / Bố / Mẹ / Anh cả / Chị dâu – Con / Em; Cậu chủ / Cô chủ / Quản gia (nếu gia tộc lớn).\n   - Bạn bè / Thanh xuân: Tớ – Cậu, Tao – Mày, Ông – Bà, Anh – Em.\n\n3. Quy đổi đơn vị tiền tệ, đo lường & tiếng lóng hiện đại:\n   - Tiền tệ: Đổi \"vạn\" và \"ức\" sang hệ đếm tiếng Việt chuẩn (1 vạn = 10 nghìn; 10 vạn = 100 nghìn; 100 vạn = 1 triệu; 1000 vạn = 10 triệu; 1 ức = 100 triệu). Ví dụ: \"năm ngàn vạn tệ\" -> \"năm mươi triệu tệ\".\n   - Cân nặng: Đổi \"cân\" Trung Quốc (1 cân = 0.5 kg) sang kg/ký khi nói về cân nặng người (Ví dụ: \"nặng 90 cân\" -> \"nặng 45 kg / 45 ký\").\n   - Chuyển ngữ mượt mà các từ lóng mạng hiện đại (hot search, lên xu hướng, trà xanh, phát cơm chó, đỉnh của chóp...).", "huyenhuyen": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🐉 HUYỀN HUYỄN / DỊ GIỚI (Đông phương Huyền huyễn – Tây phương Kỳ ảo – Ma pháp – Đấu khí – Dị thú). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt hoành tráng, giàu sức tưởng tượng:\n\n1. Phân định rõ màu sắc Đông phương & Tây phương Dị giới:\n   - Nếu là Đông phương Huyền huyễn (Huyết mạch, Thần thể, Hoang cổ, Thánh địa, Đế tộc): Giữ âm Hán Việt trang trọng cho tên huyết mạch, thần thông, cổ kinh, cảnh giới và danh hiệu (Hoang Cổ Thánh Thể, Đại Đế, Thần Vương, Cấm khu).\n   - Nếu là Tây phương Kỳ ảo / Dị giới (Ma pháp, Đấu khí, Kỵ sĩ, Tinh linh, Long tộc, Hầm ngục): Dùng từ vựng kỳ ảo mượt mà (Ma pháp sư, Đại kiếm sư, Ma thú, Tinh linh, Cổ long, Công hội mạo hiểm giả), phiên âm tên nhân vật phương Tây tự nhiên hoặc giữ theo chuẩn bộ truyện.\n\n2. Miêu tả chiến trường, quy tắc thiên địa & dị tượng:\n   - Câu văn hùng tráng, giàu nhịp điệu sử thi khi miêu tả cảnh đại chiến, thức tỉnh huyết mạch hoặc thi triển cấm chú.\n   - Loại bỏ triệt để kiểu câu convert lặp từ (\"một cỗ năng lượng kinh khủng\", \"đem không gian xé rách\") -> chuyển thành (\"luồng năng lượng kinh hoàng\", \"xé toạc cả khoảng không\").\n\n3. Giữ vững hệ thống cấp bậc & thiết lập thế giới:\n   - Thống nhất 100% tên cấp bậc, ma thú, dược tề, thần khí và đại lục xuyên suốt chương truyện.", "xuyenkhong": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🔁 XUYÊN KHÔNG / TRỌNG SINH (Xuyên sách – Hệ thống – Trọng sinh báo thù / Làm giàu – Cổ kim giao thoa). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt linh hoạt, sắc sảo và cuốn hút:\n\n1. Tách biệt tinh tế giữa \"Nội tâm người xuyên/trọng sinh\" và \"Bối cảnh thời đại\":\n   - Suy nghĩ nội tâm (đặc biệt là nhân vật xuyên từ hiện đại về cổ đại hoặc xuyên sách): Có thể pha nét thông minh, tỉnh táo, đôi chút hài hước/cà khịa (tổn thoại/吐槽) duyên dáng của người có tư duy hiện đại.\n   - Lời nói phát ra ngoài miệng nhân vật: Phải khớp với thân phận hiện tại trong truyện (nếu đang đóng vai cổ nhân thì lời nói phải đúng lễ nghi cổ đại, không bị lố).\n   - Nếu là Trọng sinh báo thù: Giọng văn nội tâm cần trầm ổn, từng trải, sắc lạnh và quyết đoán của người đã sống qua một kiếp.\n\n2. Xử lý thông báo Hệ thống & Bảng thuộc tính (nếu có):\n   - Dịch các dòng nhắc nhở của Hệ thống, nhiệm vụ, phần thưởng gọn gàng, đồng nhất trong dấu ngoặc vuông [...] hoặc định dạng rõ ràng.\n\n3. Rõ ràng mạch thời gian & Điểm nhìn:\n   - Phân biệt mạch lạc giữa ký ức \"kiếp trước / nguyên tác\", suy nghĩ của \"nguyên chủ\" và hành động ở \"kiếp này / hiện tại\", không để độc giả bị rối ngôi kể.", "linhdi": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 👻 LINH DỊ / KINH DỊ (Linh dị dân gian – Quy tắc quái đàm – Vô hạn lưu phó bản – Trinh thám huyền bí). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt với bầu không khí lạnh lẽo, rợn ngợp và đầy kịch tính:\n\n1. Kiến tạo bầu không khí Ám ảnh & Hồi hộp:\n   - Sử dụng hệ từ vựng giàu tính thị giác, thính giác và xúc giác u ám (lạnh lẽo, tanh nồng, trắng bệch, lập lòe, kẽo kẹt, rợn tóc gáy, bóng tối đặc quánh, lạnh sống lưng, tĩnh mịch đến nghẹt thở).\n   - Điều tiết nhịp câu theo độ căng thẳng: Dùng câu ngắn, ngắt nhịp nhanh, dồn dập khi đối mặt hiểm nguy/quỷ dị; dùng câu dài, trầm chậm khi dẫn dắt manh mối và miêu tả không gian tĩnh lặng.\n\n2. Xử lý chất liệu Linh dị dân gian & Quy tắc quái đàm:\n   - Với Linh dị cổ truyền/dân gian (Phong thủy, đạo thuật, cổ trùng, minh hôn, tang lễ, bùa chú): Giữ đúng thuật ngữ chuyên ngành (Chu sa, Hoàng phù, Nhiếp hồn linh, Âm sát, Quỷ đả tường, Minh khí) kết hợp lời giải thích mượt mà.\n   - Với Quy tắc quái đàm / Vô hạn lưu: Dịch chính xác tuyệt đối từng chữ trong các \"Tờ giấy quy tắc\", \"Manh mối phó bản\" và \"Điều kiện tử vong\" vì đây là mấu chốt suy luận của người đọc (không dịch lệch nghĩa các từ phủ định/điều kiện).\n\n3. Xưng hô & Tâm lý nhân vật:\n   - Giữ đúng xưng hô theo bối cảnh (Hiện đại dùng anh/cô/cậu/tôi; Cổ đại/Dân quốc dùng hắn/nàng/ta/ngươi/tiên sinh/đạo trưởng).\n   - Giữ nguyên mức độ kinh dị, máu me hoặc quỷ dị của nguyên tác, tuyệt đối không tự ý làm nhẹ đi hay cắt bỏ chi tiết.", "g2": "Bạn là dịch giả kiêm biên tập viên chuyên dòng truyện ⚔️ TIÊN KIẾM HIỆP (Tu tiên – Tiên hiệp – Pháp bảo – Cảnh giới). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt chuẩn xuất bản thương mại:\n\n1. Tỷ lệ Hán Việt – Thuần Việt chuẩn mực:\n   - GIỮ NGUYÊN HÁN VIỆT đối với: Tên công pháp, tâm pháp, kiếm quyết, chiêu thức, đan dược, linh thảo, pháp bảo, trận pháp, cảnh giới tu luyện (Luyện Khí, Trúc Cơ, Kim Đan, Nguyên Anh, Hóa Thần, Độ Kiếp...), tông môn, chức vị (Trưởng lão, Chưởng môn, Đạo tử, Thánh nữ) và câu khẩu quyết.\n   - DÙNG THUẦN VIỆT GIÀU HÌNH ẢNH đối với: Đoạn dẫn chuyện, miêu tả cảnh sắc tiên giới, động tác giao chiến, nội tâm và cử chỉ. Tuyệt đối không viết kiểu convert như \"hắn một trảo chộp tới\" -> phải viết \"hắn vươn tay chộp thẳng tới\" hoặc \"hắn tung một trảo chụp xuống\".\n\n2. Xử lý cảnh đấu pháp & thiên địa dị tượng:\n   - Nhịp câu dứt khoát, dồn dập, dùng động từ mạnh (chém toạc, chấn vỡ, nghiền nát, cuốn phăng, bùng nổ, rền vang).\n   - Xóa bỏ triệt để lượng từ convert (\"một đạo kiếm quang\", \"một cổ linh khí\", \"một cỗ uy áp\") -> thay bằng lượng từ tiếng Việt tự nhiên (\"một luồng kiếm quang\", \"một làn linh khí\", \"cơn uy áp ngàn cân\", \"tia sáng\", \"vệt kiếm\").\n\n3. Đại từ & Ngữ khí tu chân giới:\n   - Ngôi thứ ba: Hắn / Y / Gã (nam); Nàng / Cô ta / Ả / Bà ta (nữ).\n   - Xưng hô đối thoại: Ta – Ngươi (ngang hàng/kẻ địch), Tại hạ – Đạo hữu / Các hạ (lịch sự), Vãn bối / Đệ tử – Tiền bối / Sư tôn / Lão tổ, Bản tọa / Bản tôn / Bản quân – Ngươi / Khanh.\n   - Lời thoại thoát tục, uy nghiêm hoặc lạnh lùng đúng khí chất tu sĩ; tuyệt đối không dùng từ lóng hiện đại.", "g3": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🏙️ ĐÔ THỊ / HIỆN ĐẠI (Thương trường – Hào môn thế gia – Thanh xuân – Đời thường). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt hiện đại, tự nhiên như đời thực:\n\n1. CẤM TUYỆT ĐỐI từ Hán Việt cổ & từ Convert trong bối cảnh hiện đại:\n   - Tuyệt đối KHÔNG dùng: \"hắn\", \"nàng\", \"y\", \"nam nhân\", \"nữ nhân\", \"phụ thân\", \"mẫu thân\", \"bằng hữu\", \"hài tử\", \"y phục\", \"tửu điếm\", \"bệnh viện nhân dân đệ nhất\" (giữ kiểu Hán cứng).\n   - BẮT BUỘC thay bằng: \"anh / cậu / gã / ông ta\", \"cô / chị / bà ta\", \"người đàn ông / chàng trai\", \"người phụ nữ / cô gái\", \"bố / ba\", \"mẹ / má\", \"bạn bè\", \"đứa trẻ / con\", \"quần áo / bộ đồ\", \"khách sạn\".\n\n2. Hệ thống xưng hô hiện đại linh hoạt:\n   - Thương trường / Công sở: Tôi – Anh / Chị / Cô; Sếp [Tên] / Chủ tịch [Tên] / Giám đốc [Tên] – Tôi / Em.\n   - Gia đình / Hào môn: Ông nội / Bà nội / Bố / Mẹ / Anh cả / Chị dâu – Con / Em; Cậu chủ / Cô chủ / Quản gia (nếu gia tộc lớn).\n   - Bạn bè / Thanh xuân: Tớ – Cậu, Tao – Mày, Ông – Bà, Anh – Em.\n\n3. Quy đổi đơn vị tiền tệ, đo lường & tiếng lóng hiện đại:\n   - Tiền tệ: Đổi \"vạn\" và \"ức\" sang hệ đếm tiếng Việt chuẩn (1 vạn = 10 nghìn; 10 vạn = 100 nghìn; 100 vạn = 1 triệu; 1000 vạn = 10 triệu; 1 ức = 100 triệu). Ví dụ: \"năm ngàn vạn tệ\" -> \"năm mươi triệu tệ\".\n   - Cân nặng: Đổi \"cân\" Trung Quốc (1 cân = 0.5 kg) sang kg/ký khi nói về cân nặng người (Ví dụ: \"nặng 90 cân\" -> \"nặng 45 kg / 45 ký\").\n   - Chuyển ngữ mượt mà các từ lóng mạng hiện đại (hot search, lên xu hướng, trà xanh, phát cơm chó, đỉnh của chóp...).", "g4": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 🏯 CỔ ĐẠI / CUNG ĐẤU (Trạch đấu – Gia đấu – Quan trường – Điền văn cổ phong). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt tao nhã, chuẩn mực lễ giáo phong kiến:\n\n1. Từ vựng cổ phong, trang phục, kiến trúc & lễ nghi:\n   - Sử dụng chuẩn xác hệ từ vựng cổ trang: xiêm y, cẩm bào, trâm cài, bộ dao, chính viện, sương phòng, hoa sảnh, thỉnh an, quy củ, chưởng sự, ma ma, nha hoàn, gã sai vặt, tiểu tư.\n   - Nếu là mạch Điền văn (làm giàu, ẩm thực, nông thôn cổ đại): Giọng văn cần ấm áp, mộc mạc, miêu tả món ăn, nguyên liệu và cảnh sinh hoạt gia đình sống động, cuốn hút.\n\n2. Nghệ thuật đối thoại \"Ngoài cười trong không cười\" (Cung đấu / Trạch đấu):\n   - Lời thoại của hoàng hậu, phi tần, lão thái thái, đương gia chủ mẫu, đích nữ, thứ nữ phải giữ vẻ ngoài đoan trang, dịu dàng, đúng lễ nghĩa nhưng từng chữ đều sắc bén, thâm sâu, ẩn chứa mũi nhọn châm biếm.\n   - Dịch thoát ý các câu thành ngữ, yết hậu ngữ và lời nói bóng gió để độc giả Việt cảm nhận ngay sự thâm thúy mà không bị rối.\n\n3. Tôn ti trật tự xưng hô nghiêm ngặt:\n   - Hoàng cung: Trẫm / Hoàng thượng – Thần / Thần thiếp / Nô tài / Nô tỳ; Bản cung / Ai gia / Thái hậu / Quý phi / Tiểu chủ.\n   - Gia tộc / Hậu viện: Lão thái thái / Lão gia / Phu nhân / Gia (Nhị gia, Tam gia) / Thiếu phu nhân / Cô nương (Tiểu thư) / Di nương; Nô tỳ / Lão nô / Tiểu nhân.", "g5": "Bạn là dịch giả kiêm biên tập viên chuyên dòng 👻 LINH DỊ / KINH DỊ (Linh dị dân gian – Quy tắc quái đàm – Vô hạn lưu phó bản – Trinh thám huyền bí). Hãy dịch/biên tập đoạn văn sau sang tiếng Việt với bầu không khí lạnh lẽo, rợn ngợp và đầy kịch tính:\n\n1. Kiến tạo bầu không khí Ám ảnh & Hồi hộp:\n   - Sử dụng hệ từ vựng giàu tính thị giác, thính giác và xúc giác u ám (lạnh lẽo, tanh nồng, trắng bệch, lập lòe, kẽo kẹt, rợn tóc gáy, bóng tối đặc quánh, lạnh sống lưng, tĩnh mịch đến nghẹt thở).\n   - Điều tiết nhịp câu theo độ căng thẳng: Dùng câu ngắn, ngắt nhịp nhanh, dồn dập khi đối mặt hiểm nguy/quỷ dị; dùng câu dài, trầm chậm khi dẫn dắt manh mối và miêu tả không gian tĩnh lặng.\n\n2. Xử lý chất liệu Linh dị dân gian & Quy tắc quái đàm:\n   - Với Linh dị cổ truyền/dân gian (Phong thủy, đạo thuật, cổ trùng, minh hôn, tang lễ, bùa chú): Giữ đúng thuật ngữ chuyên ngành (Chu sa, Hoàng phù, Nhiếp hồn linh, Âm sát, Quỷ đả tường, Minh khí) kết hợp lời giải thích mượt mà.\n   - Với Quy tắc quái đàm / Vô hạn lưu: Dịch chính xác tuyệt đối từng chữ trong các \"Tờ giấy quy tắc\", \"Manh mối phó bản\" và \"Điều kiện tử vong\" vì đây là mấu chốt suy luận của người đọc (không dịch lệch nghĩa các từ phủ định/điều kiện).\n\n3. Xưng hô & Tâm lý nhân vật:\n   - Giữ đúng xưng hô theo bối cảnh (Hiện đại dùng anh/cô/cậu/tôi; Cổ đại/Dân quốc dùng hắn/nàng/ta/ngươi/tiên sinh/đạo trưởng).\n   - Giữ nguyên mức độ kinh dị, máu me hoặc quỷ dị của nguyên tác, tuyệt đối không tự ý làm nhẹ đi hay cắt bỏ chi tiết.", "p6": "Đóng vai một Tổng biên tập tiểu thuyết dày dặn kinh nghiệm. Dưới đây là [Bản gốc tiếng Trung] (nếu có) và [Bản dịch tiếng Việt nháp]. Nhiệm vụ của bạn là biên tập, chuốt văn lại bản tiếng Việt sao cho đạt chuẩn xuất bản thương mại.\n\nYêu cầu biên tập:\n1. Sửa triệt để các câu văn còn bị ngược ngữ pháp, sượng sùng, lặp từ hoặc mang âm hưởng Convert/AI.\n2. Thay thế các động từ, tính từ nghèo nàn bằng từ vựng tiếng Việt giàu sức gợi, từ láy và thành ngữ tự nhiên.\n3. Kiểm tra lại toàn bộ lời thoại: Đảm bảo ngữ điệu tự nhiên như người thật đang nói chuyện, đúng tính cách và vị thế nhân vật.\n4. Giữ nguyên 100% cốt truyện, chi tiết, tên riêng và cặp đại từ xưng hô đã thiết lập. Không tự ý thêm bớt tình tiết.\n\nChỉ xuất ra bản biên tập hoàn chỉnh cuối cùng.\n\n[Dán bản dịch nháp (và bản gốc tiếng Trung nếu muốn đối chiếu sát nghĩa)]", "p7": "Hãy đọc đoạn văn bản tiếng Trung dưới đây và lập cho tôi một Bảng Thiết Lập Dịch Thuật (Glossary) chuẩn xác để phục vụ việc dịch bộ truyện này lâu dài.\n\nVui lòng trích xuất và trình bày dưới dạng bảng gồm các mục sau:\n1. Danh sách Nhân vật:\n   - Tên tiếng Trung | Phiên âm Hán Việt chuẩn | Giới tính & Vai trò/Thân phận | Gợi ý đại từ ngôi thứ 3 (hắn/y/chàng/anh/cô/nàng...).\n2. Ma trận Xưng hô giữa các cặp nhân vật xuất hiện trong đoạn:\n   - Nhân vật A gọi Nhân vật B là gì? Xưng là gì? (Ghi rõ sắc thái: tôn kính, thân mật, lạnh nhạt hay thù địch).\n3. Địa danh, Tổ chức, Môn phái, Chức vụ:\n   - Chữ Hán | Tên dịch Hán Việt hoặc Thuần Việt chuẩn xác.\n4. Thuật ngữ đặc thù (Chiêu thức, Pháp bảo, Cảnh giới, Vật phẩm...):\n   - Chữ Hán | Cách dịch đề xuất mượt mà, thống nhất.\n\nVăn bản tiếng Trung cần trích xuất:\n[Dán văn bản tiếng Trung]"}, "final": "Hãy bắt đầu dịch đoạn văn bản sau đây sang tiếng Việt chuẩn thương mại (chỉ xuất bản dịch hoàn chỉnh, không giải thích gì thêm):", "table": "| Lỗi thường gặp (Văn Convert / AI) | Nguyên nhân | Cách dịch chuẩn chuyên nghiệp (Người thật) |\n| :--- | :--- | :--- |\n| \"Hắn **đem** thanh kiếm rút ra, hướng về phía trước chém tới.\" | Dính cấu trúc chữ 把 (đem) và 向 (hướng về) của tiếng Trung. | \"Hắn tuốt kiếm khỏi vỏ, vung tay chém thẳng về phía trước.\" |\n| \"Cố Ngôn nhìn **của mình** bàn tay, trong lòng dâng lên **một cổ** bi thương.\" | Dư đại từ sở hữu (\"của mình\") và dính lượng từ Hán Việt (\"một cổ\"). | \"Cố Ngôn nhìn xuống bàn tay mình, nỗi bi thương chợt dâng trào trong ngực.\" |\n| \"Ngươi đây là đang tìm cái chết!\" | Dịch sát chữ \"Nễ giá thị tại trảo tử\", nghe cứng trong ngữ cảnh hiện đại. | \"Mày chán sống rồi phải không!\" (Hiện đại) / \"Ngươi muốn tìm đường chết sao!\" (Cổ đại) |\n| \"Sắc mặt của nàng **nháy mắt** trở nên trắng bệch như tờ giấy.\" | Lạm dụng từ \"nháy mắt\" (瞬间) và so sánh sáo rỗng. | \"Mặt cô thoáng chốc cắt không còn giọt máu.\" / \"Sắc mặt nàng tái mét đi trong tích tắc.\" |\n| \"Hắn **không khỏi** hít vào **một ngụm khí lạnh**.\" | Cụm từ sáo rỗng kinh điển của truyện Trung (đảo trừu nhất khẩu lương khí). | \"Hắn bất giác rùng mình, hít sâu một hơi lạnh toát.\" / \"Anh không khỏi giật mình kinh hãi.\" |\n| \"Lâm tiểu thư, **thỉnh** bên này ngồi.\" | Giữ nguyên từ Hán Việt \"thỉnh\" trong giao tiếp thông thường. | \"Cô Lâm, mời ngồi bên này ạ.\" (Hiện đại) / \"Lâm tiểu thư, mời ngồi bên này.\" (Cổ đại) |\n| \"Căn biệt thự này trị giá **năm ngàn vạn**.\" | Không quy đổi đơn vị đếm \"vạn\" và \"ức\" sang hệ đếm tiếng Việt. | \"Căn biệt thự này trị giá **năm mươi triệu tệ**.\" |\n| \"Cô ấy cao một mét sáu mươi lăm, nặng **chín mươi cân**.\" | Không quy đổi đơn vị \"cân\" Trung Quốc (1 cân TQ = 0.5 kg). | \"Cô cao mét sáu lăm, nặng **bốn mươi lăm ký**.\" |"};
+const SF_ZH_GENRES = [
+  ['','🌐 Đa năng (Chỉ Prompt 1)'],
+  ['tienhiep','⚔️ Tiên kiếm hiệp'],
+  ['tieuthuyet','📖 Tiểu thuyết'],
+  ['ngontinh','💕 Ngôn tình'],
+  ['vohiep','🗡️ Võ hiệp giang hồ'],
+  ['cotrang','🏯 Cổ đại / Cung đấu'],
+  ['dothi','🏙️ Đô thị / Hiện đại'],
+  ['huyenhuyen','🐉 Huyền huyễn / Dị giới'],
+  ['xuyenkhong','🔁 Xuyên không / Trọng sinh'],
+  ['linhdi','👻 Linh dị / Kinh dị']
+];
+let sfZhCfg = {genre:'tienhiep',theme:'',tone:'',glossary:'',honorifics:'',style:'',fewshot:true,autoLearn:true,learnEvery:2,over:{}};
+try{
+  Object.assign(sfZhCfg, JSON.parse(localStorage.getItem('sf_zh_cfg')||'{}'));
+  const legacyMap = {g2:'tienhiep', g3:'dothi', g4:'cotrang', g5:'linhdi'};
+  if(legacyMap[sfZhCfg.genre]) sfZhCfg.genre = legacyMap[sfZhCfg.genre];
+  if(typeof sfZhCfg.autoLearn !== 'boolean') sfZhCfg.autoLearn = true;
+  if(!sfZhCfg.learnEvery) sfZhCfg.learnEvery = 2;
+}catch(e){}
+function sfZh_mode(){ try{ return localStorage.getItem('sf_prompt_mode')||'zh'; }catch(e){ return 'zh'; } }
+function sfZh_active(){ return sfZh_mode()==='zh'; }
+function sfZh_txt(k){ const o=sfZhCfg.over||{}; return o[k]!=null ? o[k] : SF_ZH.p[k]; }
+function sfZh_countLines(s){ return String(s||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean).length; }
+function sfZh_updateLearnStatusUI(customMsg, color){
+  const el = document.getElementById('sfZhLearnStatus');
+  if(!el) return;
+  const gCount = sfZh_countLines(sfZhCfg.glossary);
+  const hCount = sfZh_countLines(sfZhCfg.honorifics);
+  const baseStat = `(Đang nhớ: ${gCount} tên riêng/thuật ngữ · ${hCount} quy ước xưng hô)`;
+  if(customMsg){
+    el.innerHTML = `<span style="color:${color||'var(--accent2)'};font-weight:600;">${customMsg}</span> <span style="color:var(--text-dim);">${baseStat}</span>`;
+  } else {
+    el.innerHTML = sfZhCfg.autoLearn
+      ? `<span style="color:var(--green);font-weight:600;">🟢 Chế độ Vừa dịch vừa học: ĐANG BẬT</span> <span style="color:var(--text-dim);">— AI tự đọc mở đầu & tự học thêm sau mỗi ${sfZhCfg.learnEvery} chunk ${baseStat}</span>`
+      : `<span style="color:var(--amber);font-weight:600;">⚪ Chế độ Vừa dịch vừa học: ĐANG TẮT</span> <span style="color:var(--text-dim);">— Bấm "📖 AI Đọc Truyện" nếu muốn AI điền 1 lần ${baseStat}</span>`;
+  }
+}
+function sfZh_syncInputsFromCfg(){
+  const $=id=>document.getElementById(id);
+  [['sfZhTheme','theme'],['sfZhTone','tone'],['sfZhGloss','glossary'],['sfZhHon','honorifics'],['sfZhStyle','style']].forEach(([id,k])=>{
+    if($(id) && $(id).value !== (sfZhCfg[k]||'')) $(id).value = sfZhCfg[k]||'';
+  });
+  const g=document.getElementById('sfZhGenres');
+  if(g) g.querySelectorAll('.modelchip').forEach(b=>b.classList.toggle('sel',b.dataset.g===sfZhCfg.genre));
+  const sw=document.getElementById('sfZhAutoLearnSwitch');
+  if(sw) sw.classList.toggle('on', !!sfZhCfg.autoLearn);
+  const freq=document.getElementById('sfZhLearnFreq');
+  if(freq) freq.value = String(sfZhCfg.learnEvery||2);
+  sfZh_updateLearnStatusUI();
+}
+function sfZh_save(){
+  try{ localStorage.setItem('sf_zh_cfg', JSON.stringify(sfZhCfg)); }catch(e){}
+  if(typeof sfCurrentFileMeta === 'object' && sfCurrentFileMeta){
+    sfCurrentFileMeta.zhLearned = {
+      genre: sfZhCfg.genre, theme: sfZhCfg.theme, tone: sfZhCfg.tone,
+      glossary: sfZhCfg.glossary, honorifics: sfZhCfg.honorifics, style: sfZhCfg.style
+    };
+    if(typeof sf_scheduleFileSave === 'function') sf_scheduleFileSave();
+  }
+  sfZh_updateLearnStatusUI();
+  if(typeof sfPrompt_syncToBox==='function') sfPrompt_syncToBox();
+}
+function sfZh_buildLearnedContextBlock(){
+  const c=sfZhCfg, s=['### II. THÔNG TIN THIẾT LẬP BỘ TRUYỆN (AI ĐỌC & VỪA DỊCH VỪA HỌC)'];
+  if(c.theme && c.theme.trim()) s.push('- Thể loại chi tiết: '+c.theme.trim());
+  if(c.tone && c.tone.trim()) s.push('- Bối cảnh & Tông giọng: '+c.tone.trim());
+  if(c.glossary && c.glossary.trim()) s.push('- Bảng tên riêng & Thuật ngữ cố định (BẮT BUỘC GIỮ ĐÚNG 100%):\n'+c.glossary.trim());
+  if(c.honorifics && c.honorifics.trim()) s.push('- Quy ước xưng hô giữa các nhân vật (BẮT BUỘC GIỮ NHẤT QUÁN):\n'+c.honorifics.trim());
+  if(c.style && c.style.trim()) s.push('- Phong cách văn mẫu tham khảo (Bắt chước nhịp văn và độ mượt này):\n'+c.style.trim());
+  return s.length > 1 ? s.join('\n') : '';
+}
+function sfZh_compose(){
+  const c=sfZhCfg, L=[sfZh_txt('p1A').trim()];
+  const learnedBlock = sfZh_buildLearnedContextBlock();
+  if(learnedBlock) L.push(learnedBlock);
+  if(c.genre && SF_ZH.p[c.genre]) L.push('### III. QUY TẮC CHUYÊN BIỆT THEO THỂ LOẠI (áp dụng thêm cho Nguyên tắc vàng)\n'+sfZh_txt(c.genre).trim());
+  if(c.fewshot) L.push('### IV. BẢNG VÍ DỤ CHUYỂN ĐỔI TỪ VĂN MÁY DỊCH SANG VĂN NGƯỜI THẬT (học theo cách xử lý này)\n'+SF_ZH.table);
+  L.push(SF_ZH.final+' Đoạn dưới đây là văn bản cần xử lý (nếu là chữ Hán gốc, output phải 100% tiếng Việt, tuyệt đối không chép lại chữ Hán):');
+  L.push(SF_CHUNK_MARKER);
+  return L.join('\n\n')+'\n';
+}
+
+/* ---------- BỘ NÃO AI TỰ ĐỌC TRUYỆN & VỪA DỊCH VỪA HỌC (HỖ TRỢ CẢ GEMINI DIRECT & CUSTOM PROXY) ---------- */
+async function sfZh_callRawAI(promptText){
+  const isGem = !!(window.sfGemActive && window.sfGemActive());
+  if(!isGem && !state.proxyOn) throw new Error('Chưa bật Custom Proxy hoặc Gemini Direct.');
+  if(!isGem && !document.getElementById('baseUrl').value.trim()) throw new Error('Chưa nhập Base URL cho Custom Proxy.');
+  if(!state.keys || state.keys.length === 0) throw new Error('Chưa có API Key nào.');
+  if(!state.model) throw new Error('Chưa chọn Model.');
+
+  let keyIdx = pickAvailableKey();
+  if(keyIdx === -1){
+    await new Promise(r=>setTimeout(r, Math.min(4000, getNearestCooldownMs())));
+    keyIdx = pickAvailableKey();
+    if(keyIdx === -1) throw new Error('Tất cả API key hiện đang bận hoặc chờ giới hạn.');
+  }
+  ensureKeyMeta();
+  const key = state.keys[keyIdx];
+  const meta = state.keyMeta[keyIdx];
+  recordKeyCall(keyIdx);
+  if(meta){ meta.requests++; meta.lastUsed = Date.now(); }
+  renderKeys();
+
+  if(isGem){
+    const api = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(state.model) + ':generateContent';
+    const body = {
+      contents: [{ role:'user', parts:[{ text: promptText }] }],
+      safetySettings: ['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({category:'HARM_CATEGORY_'+c,threshold:'BLOCK_NONE'}))
+    };
+    const res = await fetch(api, {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'x-goog-api-key': key },
+      body: JSON.stringify(body)
+    });
+    if(!res.ok){
+      const t = await res.text().catch(()=>'');
+      throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
+    }
+    const data = await res.json();
+    if(meta) meta.success++;
+    renderKeys();
+    const cand = data.candidates && data.candidates[0];
+    return (((cand && cand.content && cand.content.parts) || []).filter(p=>!p.thought).map(p=>p.text||'').join('')).trim();
+  } else {
+    const res = await fetch(wrapUrl(chatUrl()), {
+      method:'POST',
+      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + key },
+      body: JSON.stringify({
+        model: state.model,
+        messages: [{ role:'user', content: promptText }]
+      })
+    });
+    if(!res.ok){
+      const t = await res.text().catch(()=>'');
+      throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
+    }
+    const data = await res.json();
+    if(meta) meta.success++;
+    renderKeys();
+    return (data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '').trim();
+  }
+}
+
+function sfZh_parseJSONSafe(raw){
+  if(!raw) return null;
+  let s = String(raw).trim();
+  s = s.replace(/^```(?:json)?/i, '').replace(/```$/,'').trim();
+  const fb = s.indexOf('{'), lb = s.lastIndexOf('}');
+  if(fb >= 0 && lb > fb) s = s.slice(fb, lb + 1);
+  try{ return JSON.parse(s); }catch(e){
+    console.warn('[SF Auto-Learn] Không parse được JSON:', e, raw);
+    return null;
+  }
+}
+
+// Hợp nhất thông minh (chống trùng lặp) vào sfZhCfg
+function sfZh_mergeLearnedObject(obj, overwriteMeta){
+  if(!obj || typeof obj !== 'object') return { addedGloss:0, addedHon:0 };
+  const validGenres = ['tienhiep','tieuthuyet','ngontinh','vohiep','cotrang','dothi','huyenhuyen','xuyenkhong','linhdi'];
+  if(obj.genreCode && validGenres.includes(String(obj.genreCode).trim().toLowerCase())){
+    if(overwriteMeta || !sfZhCfg.theme){
+      sfZhCfg.genre = String(obj.genreCode).trim().toLowerCase();
+      // Đồng bộ chọn luôn mẫu thể loại bên tab 1-Click nếu người dùng đang ở tab đó
+      if(!sfZh_active() && typeof window.sfTpl_add === 'function'){
+        window.sfTpl_add(sfZhCfg.genre);
+      }
+    }
+  }
+  if(obj.theme && String(obj.theme).trim() && (overwriteMeta || !sfZhCfg.theme.trim())){
+    sfZhCfg.theme = String(obj.theme).trim();
+  }
+  if(obj.tone && String(obj.tone).trim() && (overwriteMeta || !sfZhCfg.tone.trim())){
+    sfZhCfg.tone = String(obj.tone).trim();
+  }
+  if(obj.styleSample && String(obj.styleSample).trim() && (overwriteMeta || !sfZhCfg.style.trim())){
+    sfZhCfg.style = String(obj.styleSample).trim();
+  }
+
+  // Merge Glossary (Chữ Hán / Từ gốc = Tên dịch)
+  const curGlossLines = String(sfZhCfg.glossary||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const seenGlossKeys = new Set();
+  curGlossLines.forEach(line=>{
+    const m = line.split(/[=:]/);
+    if(m[0]) seenGlossKeys.add(m[0].trim().toLowerCase());
+    if(m[1]) seenGlossKeys.add(m[1].trim().toLowerCase());
+  });
+  let addedGloss = 0;
+  const newGlossArr = Array.isArray(obj.glossary) ? obj.glossary : (typeof obj.glossary === 'string' ? obj.glossary.split(/\r?\n/) : []);
+  newGlossArr.forEach(item=>{
+    let line = '';
+    if(typeof item === 'string') line = item.trim();
+    else if(item && item.src && item.trans) line = `${String(item.src).trim()} = ${String(item.trans).trim()}`;
+    line = line.replace(/^[-*•+]\s*/, '').trim();
+    if(!line || !line.includes('=')) return;
+    const parts = line.split('=');
+    const k = (parts[0]||'').trim().toLowerCase();
+    const v = (parts.slice(1).join('=')||'').trim();
+    if(!k || !v || seenGlossKeys.has(k)) return;
+    seenGlossKeys.add(k);
+    curGlossLines.push(`${parts[0].trim()} = ${v}`);
+    addedGloss++;
+  });
+  if(addedGloss > 0) sfZhCfg.glossary = curGlossLines.join('\n');
+
+  // Merge Honorifics (Nhân vật A <-> Nhân vật B: xưng - gọi)
+  const curHonLines = String(sfZhCfg.honorifics||'').split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+  const seenHonKeys = new Set();
+  curHonLines.forEach(line=>{
+    const pairPart = line.split(':')[0] || line;
+    seenHonKeys.add(pairPart.replace(/\s+/g,' ').trim().toLowerCase());
+  });
+  let addedHon = 0;
+  const newHonArr = Array.isArray(obj.honorifics) ? obj.honorifics : (typeof obj.honorifics === 'string' ? obj.honorifics.split(/\r?\n/) : []);
+  newHonArr.forEach(item=>{
+    let line = '';
+    if(typeof item === 'string') line = item.trim();
+    else if(item && item.pair && item.rule) line = `${String(item.pair).trim()}: ${String(item.rule).trim()}`;
+    line = line.replace(/^[-*•+]\s*/, '').trim();
+    if(!line || !line.includes(':')) return;
+    const pairKey = (line.split(':')[0]||'').replace(/\s+/g,' ').trim().toLowerCase();
+    if(!pairKey || seenHonKeys.has(pairKey)) return;
+    seenHonKeys.add(pairKey);
+    curHonLines.push(line);
+    addedHon++;
+  });
+  if(addedHon > 0) sfZhCfg.honorifics = curHonLines.join('\n');
+
+  sfZh_syncInputsFromCfg();
+  sfZh_save();
+  return { addedGloss, addedHon };
+}
+
+// 1. Hàm cho AI đọc đoạn mở đầu của truyện và tự động điền cả 5 ô + chọn nút thể loại
+let __sfZhReading = false;
+async function sfZh_autoReadInitial(silentIfBusy){
+  if(__sfZhReading){ if(!silentIfBusy) alert('AI đang đọc và phân tích truyện, vui lòng chờ giây lát...'); return false; }
+  const fullText = sf_getFullSourceText();
+  if(!fullText || !fullText.trim()){
+    if(!silentIfBusy) alert('Chưa có nội dung truyện! Hãy tải file truyện lên hoặc dán nội dung vào ô "Nội dung gốc" trước.');
+    return false;
+  }
+  __sfZhReading = true;
+  const btn = document.getElementById('sfZhAutoReadBtn');
+  if(btn){ btn.disabled = true; btn.textContent = '⏳ AI đang đọc truyện...'; }
+  sfZh_updateLearnStatusUI('🟡 AI đang đọc mở đầu truyện để tự thiết lập 5 mục (Thể loại, Bối cảnh, Tên riêng, Xưng hô, Văn mẫu)...', 'var(--amber)');
+  if(typeof logLine === 'function') logLine('info', null, null, '🤖 AI đang đọc đoạn mở đầu truyện để tự động điền Thiết lập dịch thuật...');
+
+  try{
+    const sample = fullText.slice(0, 5000);
+    const prompt = `Bạn là Tổng biên tập dịch thuật tiểu thuyết Trung – Việt chuyên nghiệp. Hãy đọc đoạn mở đầu truyện dưới đây và phân tích để thiết lập bộ quy chuẩn dịch thuật thương mại cho toàn bộ bộ truyện.
+
+Trả về KẾT QUẢ DUY NHẤT BẰNG JSON THUẦN (không markdown, không giải thích ngoài JSON) theo đúng cấu trúc sau:
+{
+  "genreCode": "chọn đúng 1 mã phù hợp nhất trong 9 mã: tienhiep | tieuthuyet | ngontinh | vohiep | cotrang | dothi | huyenhuyen | xuyenkhong | linhdi",
+  "theme": "Mô tả ngắn gọn thể loại chi tiết (VD: Đô thị thương trường, trọng sinh làm giàu / Tiên hiệp cổ điển, phàm nhân tu tiên / Cổ đại cung đấu, gia đấu...)",
+  "tone": "Mô tả bối cảnh & tông giọng chủ đạo (VD: Hiện đại, nhịp nhanh, hài hước sảng văn / Cổ phong trang nhã, trầm ổn, nhiều ẩn ý...)",
+  "glossary": [
+    "Chữ Hán (hoặc tên gốc) = Tên dịch Hán-Việt / Thuần Việt chuẩn (kèm chú thích ngắn vai trò nếu cần, VD: 王猛 = Vương Mãnh)"
+  ],
+  "honorifics": [
+    "Nhân vật A <-> Nhân vật B: cách xưng – gọi (sắc thái quan hệ, VD: Vương Triết <-> Vương Mãnh: con – ba (thân mật))"
+  ],
+  "styleSample": "Dịch mẫu 1 đoạn văn tiêu biểu nhất (khoảng 100-150 chữ) từ chính văn bản bên dưới sang tiếng Việt chuẩn tiểu thuyết xuất bản, mượt mà, giàu hình ảnh để làm mẫu giọng văn cho các chương sau."
+}
+
+VĂN BẢN MỞ ĐẦU TRUYỆN:
+` + sample;
+
+    const raw = await sfZh_callRawAI(prompt);
+    const parsed = sfZh_parseJSONSafe(raw);
+    if(!parsed) throw new Error('Phản hồi từ AI không đúng định dạng JSON.');
+    const res = sfZh_mergeLearnedObject(parsed, true);
+    sfZh_updateLearnStatusUI(`🟢 AI đã đọc truyện & điền xong 5 mục! (+${res.addedGloss} tên riêng, +${res.addedHon} quy ước xưng hô)`, 'var(--green)');
+    if(typeof logLine === 'function') logLine('ok', null, null, `🤖 AI đã tự thiết lập xong: Thể loại [${sfZhCfg.genre}] · +${res.addedGloss} tên riêng · +${res.addedHon} xưng hô.`);
+    return true;
+  }catch(e){
+    console.error('[SF Auto-Learn] autoReadInitial lỗi:', e);
+    sfZh_updateLearnStatusUI('🔴 Lỗi khi AI đọc truyện: ' + (e.message || e), 'var(--red)');
+    if(!silentIfBusy) alert('Không thể tự động đọc truyện: ' + (e.message || e));
+    return false;
+  }finally{
+    __sfZhReading = false;
+    if(btn){ btn.disabled = false; btn.textContent = '📖 AI Đọc Truyện & Tự Điền 5 Mục Ngay'; }
+  }
+}
+
+// 2. Cơ chế "VỪA DỊCH VỪA HỌC" (Background Learner chạy ngầm sau khi dịch xong các chunk)
+let __sfLearnQueue = [];
+let __sfLearnWorkerBusy = false;
+let __sfLearnedChunkCount = 0;
+
+function sfZh_onChunkTranslated(idx, origText, transText){
+  if(!sfZhCfg.autoLearn) return;
+  if(!origText || !transText) return;
+  __sfLearnQueue.push({ idx, orig: origText.slice(0, 1800), trans: transText.slice(0, 1800) });
+  const freq = Math.max(1, parseInt(sfZhCfg.learnEvery, 10) || 2);
+  // Học ngay ở chunk đầu tiên (idx===0) hoặc khi đã tích đủ `freq` chunk trong hàng đợi học
+  if(idx === 0 || __sfLearnQueue.length >= freq){
+    sfZh_processLearnQueue();
+  }
+}
+
+async function sfZh_processLearnQueue(){
+  if(__sfLearnWorkerBusy || __sfLearnQueue.length === 0) return;
+  __sfLearnWorkerBusy = true;
+  const batch = __sfLearnQueue.splice(0, 3); // gom tối đa 3 chunk một lượt học để siêu tiết kiệm request
+  const chunkLabels = batch.map(b=>'#'+(b.idx+1)).join(', ');
+  try{
+    sfZh_updateLearnStatusUI(`🟡 AI đang vừa dịch vừa học từ Chunk ${chunkLabels}...`, 'var(--amber)');
+    const pairText = batch.map(b => `--- CHUNK #${b.idx+1} ---\n[BẢN GỐC]:\n${b.orig}\n\n[BẢN DỊCH TIẾNG VIỆT]:\n${b.trans}`).join('\n\n');
+    const needMeta = !sfZhCfg.theme.trim() || !sfZhCfg.tone.trim() || !sfZhCfg.style.trim();
+    const prompt = `Bạn là bộ nhớ AI "Vừa Dịch Vừa Học" của hệ thống dịch tiểu thuyết. Hãy đối chiếu [BẢN GỐC] và [BẢN DỊCH TIẾNG VIỆT] vừa dịch xong dưới đây để trích xuất các TÊN RIÊNG MỚI, THUẬT NGỮ MỚI và QUY ƯỚC XƯNG HÔ MỚI nhằm giữ tính nhất quán cho các chương tiếp theo.
+
+DỮ LIỆU ĐÃ BIẾT (KHÔNG LẶP LẠI NHỮNG MỤC ĐÃ CÓ NÀY):
+- Bảng tên riêng đã có:
+${sfZhCfg.glossary ? sfZhCfg.glossary.slice(-1500) : '(Chưa có)'}
+- Quy ước xưng hô đã có:
+${sfZhCfg.honorifics ? sfZhCfg.honorifics.slice(-1000) : '(Chưa có)'}
+
+YÊU CẦU:
+1. Chỉ trích xuất những tên nhân vật, địa danh, tổ chức, công pháp, cảnh giới, vật phẩm MỚI chưa có trong danh sách đã biết, lấy đúng tên tiếng Việt đã dùng trong [BẢN DỊCH TIẾNG VIỆT].
+2. Chỉ trích xuất các cặp nhân vật có đối thoại hoặc quan hệ xưng hô MỚI chưa có trong danh sách đã biết.
+${needMeta ? '3. Điền thêm "theme" (thể loại chi tiết), "tone" (bối cảnh & tông giọng) và "styleSample" (trích 1 đoạn dịch mượt nhất khoảng 120 chữ từ bản dịch bên dưới).' : ''}
+
+Chỉ trả về JSON THUẦN (không giải thích, không markdown):
+{
+  ${needMeta ? '"theme": "...", "tone": "...", "styleSample": "...",' : ''}
+  "glossary": ["Chữ Hán = Tên tiếng Việt trong bản dịch"],
+  "honorifics": ["Nhân vật A <-> Nhân vật B: xưng – gọi (quan hệ/sắc thái)"]
+}
+
+DỮ LIỆU CẶP CHUNK VỪA DỊCH:
+` + pairText;
+
+    const raw = await sfZh_callRawAI(prompt);
+    const parsed = sfZh_parseJSONSafe(raw);
+    if(parsed){
+      const res = sfZh_mergeLearnedObject(parsed, false);
+      __sfLearnedChunkCount += batch.length;
+      if(res.addedGloss > 0 || res.addedHon > 0){
+        sfZh_updateLearnStatusUI(`🟢 Vừa học thêm từ Chunk ${chunkLabels}: +${res.addedGloss} tên riêng, +${res.addedHon} xưng hô`, 'var(--green)');
+        if(typeof logLine === 'function') logLine('info', null, null, `🧠 AI Vừa dịch vừa học (Chunk ${chunkLabels}): +${res.addedGloss} tên riêng, +${res.addedHon} quy ước xưng hô.`);
+      } else {
+        sfZh_updateLearnStatusUI(`🟢 Đã quét Chunk ${chunkLabels} (không có tên/xưng hô mới phát sinh)`, 'var(--green)');
+      }
+    }
+  }catch(e){
+    console.warn('[SF Auto-Learn] Lỗi học ngầm (bỏ qua an toàn, không ảnh hưởng dịch):', e);
+    sfZh_updateLearnStatusUI();
+  }finally{
+    __sfLearnWorkerBusy = false;
+    if(__sfLearnQueue.length >= Math.max(1, parseInt(sfZhCfg.learnEvery, 10) || 2)){
+      setTimeout(sfZh_processLearnQueue, 600);
+    }
+  }
+}
+
+// 3. Quét & học lại từ các Chunk đã dịch xong (dùng khi mở truyện cũ hoặc bấm nút thủ công)
+async function sfZh_learnFromTranslatedChunks(){
+  const donePairs = [];
+  if(Array.isArray(chunkState)){
+    for(let i=0; i<chunkState.length; i++){
+      const c = chunkState[i];
+      if(c && c.status === 'done' && c.trans){
+        donePairs.push({ idx: i, orig: (c.orig||'').slice(0, 1500), trans: c.trans.slice(0, 1500) });
+        if(donePairs.length >= 4) break;
+      }
+    }
+  }
+  if(donePairs.length === 0){
+    alert('Chưa có chunk nào dịch xong! Bạn có thể bấm "📖 AI Đọc Truyện & Tự Điền 5 Mục Ngay" để đọc từ văn bản gốc trước khi dịch.');
+    return;
+  }
+  __sfLearnQueue.push(...donePairs);
+  await sfZh_processLearnQueue();
+}
+
+// 4. Đồng bộ 2 chiều với bảng Canon Pack (#canonInput & sfCanonEntities)
+function sfZh_syncWithCanon(){
+  let addedFromCanon = 0;
+  const manualCanon = document.getElementById('canonInput');
+  const glossList = [];
+  if(manualCanon && manualCanon.value.trim()){
+    manualCanon.value.split(/\r?\n/).forEach(l=>{
+      const m = l.match(/^\s*(.+?)\s*[=:]\s*(.+?)\s*$/);
+      if(m) glossList.push(`${m[1]} = ${m[2]}`);
+    });
+  }
+  if(Array.isArray(sfCanonEntities)){
+    sfCanonEntities.forEach(e=>{
+      if(e && e.sourceName && e.translation) glossList.push(`${e.sourceName} = ${e.translation}`);
+    });
+  }
+  const res = sfZh_mergeLearnedObject({ glossary: glossList }, false);
+  // Đồng bộ ngược từ sfZhCfg.glossary sang #canonInput để Canon Pack cũng có đủ
+  if(manualCanon && sfZhCfg.glossary.trim()){
+    const existingCanon = new Set(manualCanon.value.split(/\r?\n/).map(x=>x.split(/[=:]/)[0].trim().toLowerCase()).filter(Boolean));
+    const extraCanon = [];
+    sfZhCfg.glossary.split(/\r?\n/).forEach(l=>{
+      const p = l.split('=');
+      if(p.length >= 2 && !existingCanon.has(p[0].trim().toLowerCase())){
+        extraCanon.push(`${p[0].trim()} = ${p.slice(1).join('=').trim()}`);
+      }
+    });
+    if(extraCanon.length){
+      manualCanon.value = (manualCanon.value.trim() ? manualCanon.value.trim() + '\n' : '') + extraCanon.join('\n');
+    }
+  }
+  sfZh_updateLearnStatusUI(`🟢 Đã đồng bộ 2 chiều với Canon Pack (+${res.addedGloss} mục mới)`, 'var(--green)');
+}
+
+function sfZh_clearLearned(){
+  if(!confirm('Xoá trắng cả 5 ô thiết lập (Thể loại chi tiết, Bối cảnh, Bảng tên riêng, Quy ước xưng hô, Văn mẫu) để học lại cho truyện mới?')) return;
+  sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+  __sfLearnQueue = [];
+  sfZh_syncInputsFromCfg();
+  sfZh_save();
+  sfZh_updateLearnStatusUI('🟢 Đã xoá trắng 5 ô thiết lập.', 'var(--green)');
+}
+
+function sfZh_toggleAutoLearn(){
+  sfZhCfg.autoLearn = !sfZhCfg.autoLearn;
+  sfZh_syncInputsFromCfg();
+  sfZh_save();
+}
+
+function sfZh_setMode(m){
+  try{ localStorage.setItem('sf_prompt_mode', m); }catch(e){}
+  const body=document.querySelector('#acc-prompt > .acc-body'); if(!body) return;
+  // Giữ sfZhBox hiển thị phần "Bộ nhớ AI Đọc & Vừa Dịch Vừa Học" hoặc cho phép chuyển tab mượt mà
+  const keep=['sfModeBar','sfZhBox','acc-prompt-preview'];
+  Array.from(body.children).forEach(el=>{ if(!keep.includes(el.id)) el.style.display = (m==='zh') ? 'none' : ''; });
+  document.getElementById('sfZhBox').style.display = (m==='zh') ? '' : 'none';
+  document.querySelectorAll('#sfModeBar .modelchip').forEach(b=> b.classList.toggle('sel', b.dataset.m===m));
+  if(typeof sfPrompt_syncToBox==='function' && Array.isArray(sfPromptLibrary)) sfPrompt_syncToBox();
+}
+function sfZh_init(){
+  const bar=document.getElementById('sfModeBar'), box=document.getElementById('sfZhBox'); if(!bar||!box) return;
+  bar.innerHTML='<div class="modelchip" data-m="smooth">🧹 Thư viện & Mẫu thể loại (1-Click)</div><div class="modelchip" data-m="zh">🈶 Dịch tiếng Trung & AI Tự Học (Khuyên dùng)</div>';
+  bar.querySelectorAll('.modelchip').forEach(b=> b.onclick=()=>sfZh_setMode(b.dataset.m));
+  const F=(id,lbl,rows,ph)=>`<label style="margin-top:8px;">${lbl}</label><textarea id="${id}" rows="${rows}" placeholder="${ph||''}"></textarea>`;
+  const editOpts = [['p1A','Prompt 1 — Cốt lõi (Nguyên tắc vàng)']].concat(SF_ZH_GENRES.filter(x=>x[0])).map(x=>`<option value="${x[0]}">${x[1]}</option>`).join('');
+  box.innerHTML='<p class="sub">Dùng bộ prompt dịch truyện Trung → Việt chuyên nghiệp: <b>Prompt 1 (Cốt lõi)</b> + <b>1 trong 9 Prompt Thể loại chuyên sâu</b> + <b>Bộ nhớ AI Đọc & Vừa Dịch Vừa Học</b>.</p>'
+   +'<label>🎨 Chọn thể loại truyện (9 thể loại chuyên sâu — hoặc để AI tự nhận diện bên dưới)</label><div class="modelgrid" id="sfZhGenres"></div>'
+   +'<div style="margin:12px 0; padding:12px 14px; background:linear-gradient(90deg,#211c4088,#141a2c); border:1px solid #3a3560; border-radius:12px;">'
+   +'  <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; margin-bottom:8px;">'
+   +'    <div style="font-weight:700; font-size:13.5px; color:var(--text);">🤖 Bộ nhớ AI: Tự Đọc Truyện &amp; Vừa Dịch Vừa Học (Không cần gõ tay)</div>'
+   +'    <div style="display:flex; align-items:center; gap:8px;">'
+   +'      <div class="switch on" id="sfZhAutoLearnSwitch" onclick="sfZh_toggleAutoLearn()" title="Bật/tắt chế độ vừa dịch vừa tự học"></div>'
+   +'      <span style="font-size:12.5px; font-weight:600;">🧠 Vừa dịch vừa học</span>'
+   +'      <select id="sfZhLearnFreq" style="width:auto; padding:4px 8px; font-size:12px;" title="Tần suất AI học thêm khi đang dịch">'
+   +'        <option value="1">Học mỗi 1 chunk</option>'
+   +'        <option value="2" selected>Học mỗi 2 chunk</option>'
+   +'        <option value="5">Học mỗi 5 chunk</option>'
+   +'      </select>'
+   +'    </div>'
+   +'  </div>'
+   +'  <div class="hint" id="sfZhLearnStatus" style="margin-bottom:10px; line-height:1.5;"></div>'
+   +'  <div class="btn-row" style="margin-top:0; gap:8px;">'
+   +'    <button type="button" class="btn primary small" id="sfZhAutoReadBtn" onclick="sfZh_autoReadInitial(false)">📖 AI Đọc Truyện &amp; Tự Điền 5 Mục Ngay</button>'
+   +'    <button type="button" class="btn small" onclick="sfZh_learnFromTranslatedChunks()">⚡ Học bổ sung từ Chunk đã dịch</button>'
+   +'    <button type="button" class="btn small" onclick="sfZh_syncWithCanon()">🔄 Đồng bộ với Canon Pack</button>'
+   +'    <button type="button" class="btn small danger" onclick="sfZh_clearLearned()">🗑 Xoá trắng 5 ô</button>'
+   +'  </div>'
+   +'  <div class="hint" style="margin-top:8px;">💡 <b>Cách hoạt động:</b> Khi bật <b>🧠 Vừa dịch vừa học</b>, lúc bạn bấm <b>🚀 Bắt đầu dịch</b> mà 5 ô dưới còn trống, AI sẽ tự đọc chương đầu để điền sẵn trước khi dịch; sau đó trong lúc dịch các chunk tiếp theo, AI tự động phát hiện nhân vật mới, thuật ngữ mới &amp; cách xưng hô mới để cộng dồn vào các ô bên dưới theo thời gian thực!</div>'
+   +'</div>'
+   +F('sfZhTheme','1. Thể loại chi tiết (AI tự điền hoặc tự sửa)',1,'AI sẽ tự điền khi đọc truyện — vd: Tiên hiệp cổ điển / Đô thị hào môn / Điền văn làm giàu...')
+   +F('sfZhTone','2. Bối cảnh & Tông giọng (AI tự điền hoặc tự sửa)',1,'AI sẽ tự điền khi đọc truyện — vd: Trầm ổn, hài hước, sảng văn, ngọt sủng...')
+   +F('sfZhGloss','3. Bảng tên riêng & Thuật ngữ cố định (AI tự tích luỹ thêm khi vừa dịch vừa học)',5,'AI sẽ tự động trích xuất và cộng dồn tên nhân vật, địa danh, cảnh giới vào đây...\nVí dụ:\n王猛 = Vương Mãnh\n赵美玲 = Triệu Mỹ Linh')
+   +F('sfZhHon','4. Quy ước xưng hô giữa các nhân vật (AI tự tích luỹ thêm khi vừa dịch vừa học)',4,'AI sẽ tự động phát hiện quan hệ nhân vật và ghi nhớ cặp xưng hô vào đây...\nVí dụ:\nVương Triết <-> Ba: con – ba (thân mật)')
+   +F('sfZhStyle','5. Phong cách văn mẫu tham khảo (AI tự dịch mẫu ~120 chữ đầu để giữ giọng văn đồng nhất)',3,'AI sẽ tự trích dịch 1 đoạn văn mẫu chuẩn xuất bản của truyện này vào đây...')
+   +'<label style="margin-top:8px;display:flex;gap:8px;align-items:center;"><input type="checkbox" id="sfZhFew"> Kèm bảng ví dụ chuyển đổi từ văn máy dịch sang văn người thật</label>'
+   +'<div style="margin-top:10px;padding:10px 12px;border:1px dashed var(--panel-border);border-radius:10px;"><div style="font-weight:600;font-size:13px;">✏️ Xem / sửa nội dung từng prompt thể loại</div>'
+   +'<select id="sfZhEditSel" style="margin-top:6px;">'+editOpts+'</select>'
+   +'<textarea id="sfZhEdit" rows="8" style="margin-top:6px;"></textarea><button type="button" class="btn small" id="sfZhReset" style="margin-top:6px;">↺ Khôi phục bản gốc của prompt này</button></div>'
+   +'<div style="margin-top:10px;"><div style="font-weight:600;font-size:13px;">🛠 Prompt phụ trợ (copy dùng riêng)</div><div class="btn-row" style="gap:6px;margin-top:6px;"><button type="button" class="btn small" data-cp="p6">📋 Copy Prompt 6 — Biên tập & chuốt văn</button><button type="button" class="btn small" data-cp="p7">📋 Copy Prompt 7 — Trích bảng thuật ngữ</button></div></div>';
+  const g=document.getElementById('sfZhGenres'), $=id=>document.getElementById(id);
+  const paintG=()=>g.querySelectorAll('.modelchip').forEach(b=>b.classList.toggle('sel',b.dataset.g===sfZhCfg.genre));
+  SF_ZH_GENRES.forEach(x=>{ const d=document.createElement('div'); d.className='modelchip'; d.dataset.g=x[0]; d.textContent=x[1]; d.onclick=()=>{ sfZhCfg.genre=x[0]; if($('sfZhEditSel')&&x[0]){ $('sfZhEditSel').value=x[0]; $('sfZhEdit').value=sfZh_txt(x[0]); } paintG(); sfZh_save(); }; g.appendChild(d); });
+  paintG();
+  [['sfZhTheme','theme'],['sfZhTone','tone'],['sfZhGloss','glossary'],['sfZhHon','honorifics'],['sfZhStyle','style']].forEach(([id,k])=>{ $(id).value=sfZhCfg[k]||''; $(id).addEventListener('input',()=>{ sfZhCfg[k]=$(id).value; sfZh_save(); }); });
+  $('sfZhFew').checked=!!sfZhCfg.fewshot; $('sfZhFew').onchange=()=>{ sfZhCfg.fewshot=$('sfZhFew').checked; sfZh_save(); };
+  $('sfZhLearnFreq').value = String(sfZhCfg.learnEvery||2);
+  $('sfZhLearnFreq').onchange=()=>{ sfZhCfg.learnEvery = parseInt($('sfZhLearnFreq').value,10)||2; sfZh_save(); };
+  $('sfZhAutoLearnSwitch').classList.toggle('on', !!sfZhCfg.autoLearn);
+  const ld=()=>{ $('sfZhEdit').value=sfZh_txt($('sfZhEditSel').value); };
+  $('sfZhEditSel').onchange=ld; ld();
+  $('sfZhEdit').addEventListener('input',()=>{ sfZhCfg.over=sfZhCfg.over||{}; sfZhCfg.over[$('sfZhEditSel').value]=$('sfZhEdit').value; sfZh_save(); });
+  $('sfZhReset').onclick=()=>{ delete sfZhCfg.over[$('sfZhEditSel').value]; ld(); sfZh_save(); };
+  box.querySelectorAll('[data-cp]').forEach(b=> b.onclick=()=>{ navigator.clipboard.writeText(SF_ZH.p[b.dataset.cp]).then(()=>{ const t=b.textContent; b.textContent='✓ Đã copy'; setTimeout(()=>b.textContent=t,1200); }); });
+  sfZh_updateLearnStatusUI();
+  sfZh_setMode(sfZh_mode());
+}
+try{ sfZh_init(); }catch(e){ console.error('sfZh_init', e); }
 
 function sfPrompt_now(){ return Date.now(); }
 function sfPrompt_newId(prefix){ return (prefix||'p') + '_' + sfPrompt_now().toString(36) + '_' + Math.random().toString(36).slice(2,8); }
@@ -2636,12 +3135,17 @@ async function sfPromptLib_migrateLegacyString(text, fileName){
 }
 // Dựng prompt CUỐI CÙNG theo đúng pipeline mục II. KHÔNG gọi API — chỉ ghép chuỗi.
 function sfPrompt_composeFinal(){
+  if(typeof sfZh_active==='function' && sfZh_active()) return sfZh_compose();
   const base = sfPromptLibrary.filter(p=> p.type==='base' && p.enabled).map(p=>p.content);
   const trans = sfPromptLibrary.filter(p=> p.type==='translation' && p.enabled).map(p=>p.content);
   const customsOn = sfPromptLibrary.filter(p=> (p.type==='custom' || p.type==='mature-safe') && p.enabled);
   // Prompt đã ghim (vd. Dịch Trung → Việt) luôn đứng CUỐI, sát chữ cần dịch, để không bị prompt thể loại ghi đè.
   const customs = customsOn.filter(p=>!p.pinned).concat(customsOn.filter(p=>p.pinned)).map(p=>p.content);
   const parts = [...base, ...trans, ...customs].map(s=> (s||'').trim()).filter(Boolean);
+  if(typeof sfZh_buildLearnedContextBlock === 'function'){
+    const learnedBlock = sfZh_buildLearnedContextBlock();
+    if(learnedBlock) parts.push(learnedBlock);
+  }
   parts.push(SF_CHUNK_MARKER); // marker cố định luôn ở cuối, ngay trước chunk nguồn (nối ở callModel())
   return parts.join('\n\n') + '\n';
 }
@@ -4968,7 +5472,7 @@ function markChunkRunning(idx, keyIndex){ const c = chunkState[idx]; if(c){ setC
 // Mục 1A: sau khi chunk DỊCH XONG (kể cả dịch lần đầu lẫn dịch lại thủ công), kiểm tra
 // header CHƯƠNG giữa source thật của chính chunk (c.orig) và bản dịch mới. Chỉ để
 // CẢNH BÁO — không tự sửa translation, không tự chèn header, không tự retry.
-function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; c.headerWarning = sf_findMissingHeaders(c.orig, res); if(!c.headerWarning || !c.headerWarning.length) c.headerRepairStatus = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
+function markChunkDone(idx, res){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'done'); c.trans=res; c.headerWarning = sf_findMissingHeaders(c.orig, res); if(!c.headerWarning || !c.headerWarning.length) c.headerRepairStatus = null; refreshChunkRow(idx); sf_autosaveChunk(idx); if(typeof sfZh_onChunkTranslated==='function'){ try{ sfZh_onChunkTranslated(idx, c.orig, res); }catch(e){} } } updateProgressUI(); }
 function markChunkError(idx, msg){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'error'); c.trans='Lỗi: '+msg; c.headerWarning = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } updateProgressUI(); }
 function markChunkWaiting(idx){ const c = chunkState[idx]; if(c){ setChunkStatus(idx, 'waiting'); c.key=null; c.headerWarning = null; refreshChunkRow(idx); sf_autosaveChunk(idx); } }
 
@@ -5416,7 +5920,9 @@ async function startTranslate(){
   if(state.keys.length===0){ alert('Thêm API key.'); return; }
   if(!state.model){ alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
-  
+  if(typeof sfZhCfg !== 'undefined' && sfZhCfg.autoLearn && !sfZhCfg.glossary.trim() && !sfZhCfg.honorifics.trim() && typeof sfZh_autoReadInitial === 'function'){
+    try{ await sfZh_autoReadInitial(true); }catch(e){ console.warn('[SF Auto-Learn] Bỏ qua auto-read đầu phiên:', e); }
+  }
   let offsets = splitChunksWithOffsets(text, chunkSizeVal());
   // Bước 8 (Source Integrity): nếu partition/reconstruction không khớp 100% với văn bản gốc,
   // DỪNG NGAY — tuyệt đối không được bắt đầu dịch với chunk map có khả năng làm mất/lặp nội dung.
@@ -6160,122 +6666,63 @@ sfCloud.init();
 </script>
 <script>
 /* =====================================================================
-   MẪU PROMPT THEO THỂ LOẠI — module độc lập.
+   MẪU PROMPT THEO THỂ LOẠI (9 THỂ LOẠI CHUYÊN SÂU CHUẨN THƯƠNG MẠI) — module độc lập.
    Chỉ DÙNG các hàm/biến có sẵn: sfPromptLibrary, sfPromptDB_put, sfPrompt_newId,
    sfPrompt_now, sfPromptLib_render, sfPrompt_syncToBox. KHÔNG sửa hàm nào có sẵn.
-   Dòng "ĐOẠN VĂN CẦN VIẾT LẠI:" được bỏ vì pipeline tự thêm marker "ĐOẠN VĂN:".
    ===================================================================== */
 (function(){
-  const HEAD = '[QUAN TRỌNG: CHỈ TRẢ VỀ VĂN BẢN ĐÃ VIẾT LẠI. KHÔNG GIẢI THÍCH. KHÔNG NÓI "Dưới đây là...". KHÔNG LỜI MỞ ĐẦU. BẮT ĐẦU NGAY VỚI NỘI DUNG.]';
-  const COMMON = `[YÊU CẦU BẮT BUỘC VỀ MỨC ĐỘ BIÊN TẬP]
-- Chỉ làm mượt ở mức câu chữ, ngữ pháp và độ tự nhiên của tiếng Việt.
-- KHÔNG tự thêm ý nghĩa mới, cảm xúc ngầm, subtext hoặc sắc thái mà bản convert không có rõ ràng.
-- KHÔNG tự ý nâng giọng văn lên quá hoa mỹ nếu đoạn gốc đang ngắn, lạnh, trực tiếp hoặc thiên về thông tin.
-- Ưu tiên trung thành trước, mượt sau.
+  const HEAD = '[QUAN TRỌNG: CHỈ TRẢ VỀ BẢN DỊCH / BẢN BIÊN TẬP TIẾNG VIỆT HOÀN CHỈNH. KHÔNG GIẢI THÍCH. KHÔNG NÓI "Dưới đây là...". KHÔNG LỜI MỞ ĐẦU. BẮT ĐẦU NGAY VỚI NỘI DUNG.]';
+  const COMMON = `[NGUYÊN TẮC CỐT LÕI CHUẨN XUẤT BẢN THƯƠNG MẠI]
+- Nếu văn bản đầu vào là chữ Hán: DỊCH TRỰC TIẾP 100% sang tiếng Việt mượt mà, tuyệt đối không để sót chữ Hán. Nếu đầu vào là bản convert tiếng Việt: biên tập và viết lại toàn bộ câu chữ cho tự nhiên như người thật dịch.
+- Thoát ly hoàn toàn cấu trúc ngữ pháp tiếng Trung: Xóa bỏ câu chữ "đem..." (把), "bị... làm cho", "hướng về phía...", lược bỏ đại từ sở hữu dư thừa ("của hắn", "của nàng", "của mình").
+- Xóa bỏ triệt để các từ đệm dịch máy / convert: "nháy mắt", "không khỏi", "hít vào một ngụm khí lạnh", "một đạo", "một cổ", "một cỗ", "trong mắt hiện lên một tia...".
+- Dịch thoát ý các thành ngữ bốn chữ sang thành ngữ, quán ngữ và từ láy tiếng Việt giàu hình ảnh, hợp ngữ cảnh.
+- GIỮ NGUYÊN 100% TÌNH TIẾT: Không tóm tắt, không cắt xén, không kiểm duyệt, không tự ý gộp hoặc bỏ câu thoại, giữ nguyên tiêu đề chương (nếu có).`;
 
-[YÊU CẦU BẮT BUỘC VỀ TÊN NHÂN VẬT VÀ XƯNG HÔ]
-- Nếu đã chọn một cách gọi, phiên âm, tên riêng hoặc xưng hô cho nhân vật thì phải giữ xuyên suốt.
-- KHÔNG tự ý đổi tên kiểu Lâm Phong -> Lin Feng, hắn -> cậu -> y chỉ để câu văn nghe mượt hơn.
-- Chỉ được đổi xưng hô khi văn cảnh thật sự thay đổi vai vế, quan hệ hoặc điểm nhìn.
-- Nếu tên hoặc cách gọi còn mơ hồ, ưu tiên giữ theo lần xuất hiện đầu tiên trong đoạn/chapter hiện tại.
-
-[YÊU CẦU BẮT BUỘC VỀ HÁN-VIỆT VÀ THUẬT NGỮ]
-- KHÔNG trộn Hán-Việt và pinyin trong cùng một truyện/đoạn nếu prompt hiện tại không chủ động yêu cầu như vậy.
-- Tên người, địa danh, môn phái, công pháp, cảnh giới, pháp bảo phải được giữ nhất quán.
-- Nếu không chắc cách dịch nào tốt hơn, hãy giữ cách gọi đang dùng thay vì tự ý đổi sang kiểu khác.
-- KHÔNG Việt hóa nửa mùa và không đổi hệ quy chiếu tên riêng giữa các đoạn.
-
-[YÊU CẦU BẮT BUỘC VỀ CẤU TRÚC VÀ NHỊP VĂN]
-- Giữ thứ tự ý, thứ tự đoạn và cấu trúc hội thoại nếu bản gốc không bị lỗi rõ ràng.
-- KHÔNG tự ý gộp nhiều câu thoại thành một đoạn dài, không biến câu ngắn gắt thành câu dài mềm.
-- Giữ nhịp nhanh/chậm phù hợp với cảnh đánh nhau, đối thoại, nội tâm và giải thích thông tin.
-- KHÔNG tự ý gộp/tách cảnh, gộp/tách hội thoại hoặc đảo vị trí thông tin quan trọng.
-
-[LỖI CẦN TRÁNH KHI LÀM MƯỢT CONVERT]
-- Tránh lặp lại một cụm từ đẹp quá nhiều lần nếu bản gốc không lặp như vậy.
-- KHÔNG dịch sát chữ kiểu Hán văn nếu cách viết đó khiến câu tiếng Việt bị cứng, khó đọc hoặc sai nhịp.
-- Hạn chế lạm dụng các từ đệm như: lập tức, bỗng, không khỏi, trong lòng, sắc mặt thay đổi... khi không thật sự cần.
-- Không để câu nào cũng một nhịp văn, một khuôn câu hoặc một kiểu nhấn nhá giống văn AI.
-- Tránh dùng quá nhiều từ Hán-Việt nặng nếu có cách diễn đạt tiếng Việt tự nhiên hơn, nhưng cũng không Việt hóa mềm quá mức làm mất chất thể loại.`;
-
-  // [id, emoji, tên, dòng vai trò, [yêu cầu riêng của thể loại]]
+  // [id, emoji, tên, key trong SF_ZH.p]
   const GENRES = [
-    ['tienhiep','⚔️','Tiên kiếm hiệp','Bạn là biên tập viên chuyên thể loại tu tiên/kiếm hiệp. Viết lại đoạn văn sau cho mượt mà.',[
-      'Giữ nguyên tên công pháp, cảnh giới, bảo bối, võ học',
-      'Giữ nguyên tên nhân vật, địa danh, môn phái',
-      'Sửa câu dịch máy thành câu văn chương tao nhã',
-      'Dùng từ ngữ phù hợp thể loại (linh khí, tu vi, đan dược...)',
-      'Giữ không khí tiên hiệp, huyền ảo']],
-    ['tieuthuyet','📖','Tiểu thuyết','Bạn là biên tập viên văn học chuyên nghiệp. Hãy viết lại đoạn văn sau cho mượt mà, tự nhiên hơn.',[
-      'Giữ nguyên ý nghĩa, cốt truyện, tên nhân vật',
-      'Sửa câu cụt, lủng củng thành câu hoàn chỉnh',
-      'Thay thế từ dịch máy bằng từ tự nhiên',
-      'Giữ nguyên đại từ nhân xưng (hắn, nàng, ta, ngươi...)',
-      'KHÔNG thêm bớt nội dung, chỉ viết lại cho mượt']],
-    ['ngontinh','💕','Ngôn tình','Bạn là biên tập viên chuyên thể loại ngôn tình. Viết lại đoạn văn sau cho lãng mạn, mượt mà.',[
-      'Giữ nguyên cảm xúc nhân vật, tình tiết lãng mạn',
-      'Sửa diễn đạt cứng nhắc thành mềm mại, tinh tế',
-      'Dùng từ ngữ ngọt ngào, bay bổng',
-      'Giữ nguyên tên nhân vật và mối quan hệ',
-      'Tạo không khí lãng mạn, xúc động']],
-    ['vohiep','🗡️','Võ hiệp giang hồ','Bạn là biên tập viên chuyên thể loại võ hiệp giang hồ. Viết lại đoạn văn sau cho mượt mà, đậm khí chất giang hồ.',[
-      'Giữ nguyên tên võ công, chiêu thức, binh khí, bang phái, môn phái',
-      'Giữ nguyên tên nhân vật, biệt hiệu, địa danh',
-      'Giữ cách xưng hô giang hồ (huynh đệ, tại hạ, các hạ, đại hiệp...)',
-      'Câu văn dứt khoát, hào sảng, giữ nhịp gọn trong cảnh giao đấu',
-      'Giữ không khí kiếm khách, nghĩa khí, ân oán giang hồ']],
-    ['cotrang','🏯','Cổ đại / Cung đấu','Bạn là biên tập viên chuyên thể loại cổ đại, cung đấu, trạch đấu. Viết lại đoạn văn sau cho mượt mà, đúng phong vị cổ trang.',[
-      'Giữ nguyên chức danh, phẩm cấp, danh xưng (hoàng thượng, nương nương, tiểu chủ, phu nhân...)',
-      'Giữ nguyên tên nhân vật, cung điện, phủ đệ, địa danh',
-      'Giữ đúng lễ nghi, cách xưng hô theo vai vế và thứ bậc',
-      'Lời thoại giữ độ kín kẽ, ẩn ý sẵn có; KHÔNG tự thêm mưu tính mà bản gốc không có',
-      'Giữ không khí cổ phong, trang nhã']],
-    ['dothi','🏙️','Đô thị / Hiện đại','Bạn là biên tập viên chuyên thể loại đô thị, hiện đại. Viết lại đoạn văn sau cho mượt mà, gần gũi.',[
-      'Giữ nguyên tên nhân vật, công ty, địa danh, thương hiệu',
-      'Dùng từ ngữ đời thường, hiện đại; tránh văn phong cổ trang không cần thiết',
-      'Sửa câu dịch máy, câu cụt, câu lủng củng thành câu tự nhiên',
-      'Hội thoại giữ khẩu ngữ đúng vai vế, tuổi tác, quan hệ',
-      'Giữ nhịp nhanh, rõ ràng, dễ đọc']],
-    ['huyenhuyen','🐉','Huyền huyễn / Dị giới','Bạn là biên tập viên chuyên thể loại huyền huyễn, dị giới. Viết lại đoạn văn sau cho mượt mà, hùng vĩ.',[
-      'Giữ nguyên tên công pháp, kỹ năng, cấp bậc, huyết mạch, dị thú, thần khí',
-      'Giữ nguyên tên nhân vật, thế lực, đại lục, địa danh',
-      'Giữ nhất quán hệ thống cấp bậc/sức mạnh đã dùng',
-      'Miêu tả chiến đấu, thiên địa dị tượng rõ ràng, không thêm chi tiết mới',
-      'Giữ không khí huyền ảo, hùng tráng']],
-    ['xuyenkhong','🔁','Xuyên không / Trọng sinh','Bạn là biên tập viên chuyên thể loại xuyên không, trọng sinh. Viết lại đoạn văn sau cho mượt mà, rõ mạch.',[
-      'Giữ nguyên tên nhân vật, thân phận cũ và thân phận mới',
-      'Phân biệt rõ suy nghĩ của người xuyên/trọng sinh với nguyên chủ, không lẫn điểm nhìn',
-      'Giữ nguyên mốc thời gian, dòng thời gian, thông tin "kiếp trước/kiếp này"',
-      'Nội tâm giữ đúng giọng hiện có; KHÔNG tự thêm hồi tưởng hay tiết lộ',
-      'Giữ mạch truyện rõ ràng, không đảo thứ tự sự kiện']],
-    ['linhdi','👻','Linh dị / Kinh dị','Bạn là biên tập viên chuyên thể loại linh dị, kinh dị, huyền bí. Viết lại đoạn văn sau cho mượt mà, giữ bầu không khí rợn người.',[
-      'Giữ nguyên tên nhân vật, địa danh, vật phẩm, quy tắc/lời nguyền đã nêu',
-      'Giữ nguyên mức độ rùng rợn của bản gốc; KHÔNG làm nhẹ đi cũng KHÔNG tự thêm chi tiết ghê rợn',
-      'Giữ nhịp căng thẳng: câu ngắn cho lúc hồi hộp, câu dài cho lúc dẫn dắt',
-      'Sửa câu dịch máy thành câu tự nhiên, giữ chất âm u, ám ảnh',
-      'Giữ nguyên các manh mối, gợi ý ở đúng vị trí ban đầu']]
+    ['tienhiep','⚔️','Tiên kiếm hiệp'],
+    ['tieuthuyet','📖','Tiểu thuyết'],
+    ['ngontinh','💕','Ngôn tình'],
+    ['vohiep','🗡️','Võ hiệp giang hồ'],
+    ['cotrang','🏯','Cổ đại / Cung đấu'],
+    ['dothi','🏙️','Đô thị / Hiện đại'],
+    ['huyenhuyen','🐉','Huyền huyễn / Dị giới'],
+    ['xuyenkhong','🔁','Xuyên không / Trọng sinh'],
+    ['linhdi','👻','Linh dị / Kinh dị']
   ];
 
+  const TPL_VERSION = 2; // v2: nâng cấp lên bộ 9 prompt chuyên sâu chuẩn thương mại
+
   function buildContent(g){
-    return HEAD + '\n\n' + g[3] + '\n\nYÊU CẦU:\n' + g[4].map(s=>'- '+s).join('\n') + '\n\n' + COMMON;
+    const id = g[0];
+    const body = (typeof SF_ZH !== 'undefined' && SF_ZH.p && SF_ZH.p[id]) ? SF_ZH.p[id] : '';
+    return HEAD + '\n\n' + body + '\n\n' + COMMON;
   }
 
-  async function addTemplate(id){
+  async function addTemplate(id, forceReset){
     try{
       if(typeof sfPromptLibrary==='undefined' || !Array.isArray(sfPromptLibrary)){ alert('Thư viện prompt chưa sẵn sàng, thử lại sau giây lát.'); return; }
       const g = GENRES.find(x=>x[0]===id); if(!g) return;
       const tplId = 'tpl_' + id;
       const existing = sfPromptLibrary.find(p=>p.tplId===tplId);
       // CHẾ ĐỘ CHỌN 1: chỉ prompt được bấm được bật. Tắt TẤT CẢ prompt còn lại
-      // (prompt gốc Hệ thống, gốc Dịch thuật, tuỳ chỉnh, mẫu thể loại khác). Không xoá gì cả.
+      // (kể cả zhvi_default vì bản v2 đã tích hợp sẵn chỉ dẫn dịch Trung -> Việt không xung đột đại từ).
       const changed = [];
       sfPromptLibrary.forEach(p=>{
-        if(p.tplId!==tplId && p.enabled && !p.pinned){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); }
+        if(p.tplId!==tplId && p.enabled){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); }
       });
       if(existing){
-        if(!existing.enabled){ existing.enabled = true; existing.updatedAt = sfPrompt_now(); changed.push(existing); }
+        // Tự động nâng cấp nếu mẫu trong DB là bản v1 sơ sài cũ hoặc người dùng bấm Khôi phục mẫu
+        if(forceReset || !existing.tplVer || existing.tplVer < TPL_VERSION){
+          existing.content = buildContent(g);
+          existing.tplVer = TPL_VERSION;
+          existing.updatedAt = sfPrompt_now();
+          if(!changed.includes(existing)) changed.push(existing);
+        }
+        if(!existing.enabled){ existing.enabled = true; existing.updatedAt = sfPrompt_now(); if(!changed.includes(existing)) changed.push(existing); }
       } else {
-        const rec = { id: sfPrompt_newId('tpl'), tplId, name: g[1]+' '+g[2], type:'custom', content: buildContent(g), enabled:true, createdAt: sfPrompt_now(), updatedAt: sfPrompt_now() };
+        const rec = { id: sfPrompt_newId('tpl'), tplId, tplVer: TPL_VERSION, name: g[1]+' '+g[2], type:'custom', content: buildContent(g), enabled:true, createdAt: sfPrompt_now(), updatedAt: sfPrompt_now() };
         sfPromptLibrary.push(rec); changed.push(rec);
       }
       for(const r of changed){ await sfPromptDB_put(r); }
@@ -6315,8 +6762,8 @@ sfCloud.init();
       const b = document.createElement('button');
       b.type = 'button'; b.className = 'btn small'; b.textContent = g[1]+' '+g[2];
       b.dataset.key = 'tpl:tpl_' + g[0];
-      b.title = 'Thêm/bật mẫu prompt: ' + g[2];
-      b.addEventListener('click', ()=> addTemplate(g[0]));
+      b.title = 'Dùng mẫu prompt chuyên sâu: ' + g[2] + ' (Giữ Shift + Click để khôi phục nội dung gốc của mẫu này)';
+      b.addEventListener('click', (ev)=> addTemplate(g[0], !!ev.shiftKey));
       bar.appendChild(b);
     });
   }
@@ -6324,8 +6771,9 @@ sfCloud.init();
   function refreshActive(){
     try{
       const bar = document.getElementById('sfTplBar'); if(!bar || typeof sfPromptLibrary==='undefined') return;
-      const enabled = sfPromptLibrary.filter(p=>p.enabled && !p.pinned);
-      const solo = enabled.length === 1 ? enabled[0] : null; // chỉ "đang dùng" khi là prompt duy nhất bật
+      const enabledNonPinned = sfPromptLibrary.filter(p=>p.enabled && !p.pinned);
+      const enabledAll = sfPromptLibrary.filter(p=>p.enabled);
+      const solo = enabledNonPinned.length === 1 ? enabledNonPinned[0] : (enabledAll.length === 1 ? enabledAll[0] : null);
       Array.from(bar.children).forEach(b=>{
         const k = b.dataset.key || '';
         const on = !!solo && ( k==='id:'+solo.id || (solo.tplId && k==='tpl:'+solo.tplId) );
@@ -6337,7 +6785,6 @@ sfCloud.init();
   }
 
   // ẨN các thẻ prompt đang TẮT trong Thư viện — chỉ thẻ đang bật được hiển thị.
-  // Chỉ đổi style hiển thị (display), không sửa/xoá dữ liệu, không đụng hàm render có sẵn.
   let showAll = false;
   function applyHide(){
     try{
@@ -6599,4 +7046,3 @@ if(prov==='gemini') activate(true); else{ refreshStatus(); }
 
 </body>
 </html>
-    
