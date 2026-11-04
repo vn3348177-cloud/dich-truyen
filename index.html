@@ -3121,6 +3121,22 @@ function sf_decodeText(buf){
   const u8=new Uint8Array(buf);
   if(u8[0]===0xFF&&u8[1]===0xFE) return new TextDecoder('utf-16le').decode(u8);
   if(u8[0]===0xFE&&u8[1]===0xFF) return new TextDecoder('utf-16be').decode(u8);
+  // Tự nhận diện mã hóa: UTF-8 (nghiêm ngặt) -> GB18030/GBK (giản thể) -> Big5 (phồn thể) -> Shift-JIS
+  const tryDec=enc=>{ try{ return new TextDecoder(enc,{fatal:true}).decode(u8).replace(/^\uFEFF/,''); }catch(e){ return null; } };
+  const ratio=(s,re)=>{ const m=s.match(re); return m?m.length/(s.length||1):0; };
+  const bad=s=>ratio(s,/[\uE000-\uF8FF\u3400-\u4DBF\u0080-\u009F\uFFFD]/g); // ký tự "rác" khi đọc sai bảng mã
+  const kana=s=>ratio(s,/[\u3040-\u30FF]/g);
+  const utf=tryDec('utf-8'); if(utf!==null) return utf;
+  const gb=tryDec('gb18030');
+  if(gb!==null){
+    if(bad(gb)<0.005){
+      if(kana(gb)<0.01){ const sj=tryDec('shift_jis'); if(sj!==null && kana(sj)>=0.15) return sj; }
+      return gb;
+    }
+    const b5=tryDec('big5'); if(b5!==null && bad(b5)<bad(gb)) return b5;
+    return gb;
+  }
+  const b5=tryDec('big5'); if(b5!==null) return b5;
   return new TextDecoder('utf-8').decode(u8).replace(/^\uFEFF/,'');
 }
 
