@@ -2663,14 +2663,123 @@ function sfZh_save(){
   sfZh_updateLearnStatusUI();
   if(typeof sfPrompt_syncToBox==='function') sfPrompt_syncToBox();
 }
+// Làm sạch chữ Hán bị lẫn trong phần tiếng Việt của Quy ước xưng hô hoặc vế phải Bảng tên riêng
+function sfZh_stripHanziInVietText(str){
+  if(!str) return '';
+  let s = String(str);
+  // Nếu có dạng "Cao俊飞 (Cao Tuấn Phi)" hoặc "王哲 (Vương Triết)" -> giữ phần tiếng Việt trong ngoặc
+  s = s.replace(/[A-Za-zÀ-ỹ\s]*[\u3400-\u4DBF\u4E00-\u9FFF]+[A-Za-zÀ-ỹ\s]*\s*\(([^()]+)\)/g, '$1');
+  // Thay một số hậu tố Hán thông dụng nếu AI lỡ viết kèm tên Việt
+  s = s.replace(/先生/g, ' tiên sinh').replace(/小姐/g, ' tiểu thư').replace(/老师/g, ' lão sư/thầy').replace(/总/g, ' tổng').replace(/姐/g, ' tỷ').replace(/哥/g, ' ca');
+  // Xoá các ký tự chữ Hán còn sót lại trong chuỗi tiếng Việt
+  s = s.replace(/[\u3400-\u4DBF\u4E00-\u9FFF《》【】]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  return s;
+}
+
+// Tự động dọn chữ Hán bị lẫn ở vế phải Glossary và trong Honorifics hiện có
+function sfZh_sanitizeExistingLearnedData(){
+  if(!sfZhCfg) return;
+  if(sfZhCfg.glossary){
+    const cleanG = [];
+    sfZhCfg.glossary.split(/\r?\n/).forEach(line=>{
+      const l = line.trim(); if(!l || !l.includes('=')) return;
+      const parts = l.split('=');
+      const src = parts[0].trim().replace(/^[《【「『]+|[》】」』]+$/g, '');
+      let trans = parts.slice(1).join('=').trim();
+      trans = sfZh_stripHanziInVietText(trans);
+      if(src && trans) cleanG.push(`${src} = ${trans}`);
+    });
+    sfZhCfg.glossary = cleanG.join('\n');
+  }
+  if(sfZhCfg.honorifics){
+    const cleanH = [];
+    sfZhCfg.honorifics.split(/\r?\n/).forEach(line=>{
+      const l = line.trim(); if(!l) return;
+      const cleaned = sfZh_stripHanziInVietText(l);
+      if(cleaned && cleaned.includes(':')) cleanH.push(cleaned);
+    });
+    sfZhCfg.honorifics = cleanH.join('\n');
+  }
+}
+
+// Phân tích danh sách cặp [src, trans] từ sfZhCfg.glossary và #canonInput
+function sfZh_getAllGlossaryPairs(){
+  const map = new Map();
+  const addLine = (line)=>{
+    const l = String(line||'').trim();
+    if(!l) return;
+    const m = l.match(/^(.+?)\s*[=:]\s*(.+)$/);
+    if(!m) return;
+    const rawSrc = m[1].trim();
+    const cleanSrc = rawSrc.replace(/^[《【「『"']+|[》】」』"']+$/g, '').trim();
+    let trans = m[2].trim();
+    // Bỏ phần chú thích trong ngoặc ở vế phải nếu có (VD: "Vương Mãnh (ba của Vương Triết)" -> khi thay thế chỉ lấy "Vương Mãnh")
+    const shortTrans = sfZh_stripHanziInVietText(trans.replace(/\s*\([^()]*\)\s*$/, '').trim()) || sfZh_stripHanziInVietText(trans);
+    if(cleanSrc && shortTrans){
+      map.set(cleanSrc, { src: cleanSrc, fullTrans: sfZh_stripHanziInVietText(trans), shortTrans });
+    }
+  };
+  if(sfZhCfg && sfZhCfg.glossary){
+    sfZhCfg.glossary.split(/\r?\n/).forEach(addLine);
+  }
+  const canonTa = document.getElementById('canonInput');
+  if(canonTa && canonTa.value){
+    canonTa.value.split(/\r?\n/).forEach(addLine);
+  }
+  return Array.from(map.values());
+}
+
+// Khối Thiết lập hiển thị trong #promptBox (giới hạn gọn gàng tối đa 20 mục tiêu biểu để #promptBox không phình >10.000 ký tự)
 function sfZh_buildLearnedContextBlock(){
-  const c=sfZhCfg, s=['### II. THÔNG TIN THIẾT LẬP BỘ TRUYỆN (AI ĐỌC & VỪA DỊCH VỪA HỌC)'];
+  const c=sfZhCfg, s=['### II. THÔNG TIN THIẾT LẬP BỘ TRUYỆN'];
   if(c.theme && c.theme.trim()) s.push('- Thể loại chi tiết: '+c.theme.trim());
   if(c.tone && c.tone.trim()) s.push('- Bối cảnh & Tông giọng: '+c.tone.trim());
-  if(c.glossary && c.glossary.trim()) s.push('- Bảng tên riêng & Thuật ngữ cố định (BẮT BUỘC GIỮ ĐÚNG 100%):\n'+c.glossary.trim());
-  if(c.honorifics && c.honorifics.trim()) s.push('- Quy ước xưng hô giữa các nhân vật (BẮT BUỘC GIỮ NHẤT QUÁN):\n'+c.honorifics.trim());
-  if(c.style && c.style.trim()) s.push('- Phong cách văn mẫu tham khảo (Bắt chước nhịp văn và độ mượt này):\n'+c.style.trim());
+  if(c.glossary && c.glossary.trim()){
+    const gLines = c.glossary.trim().split(/\r?\n/).filter(Boolean);
+    const previewG = gLines.slice(0, 18).join('\n') + (gLines.length > 18 ? `\n... (và +${gLines.length - 18} tên riêng khác sẽ được lọc tự động theo từng chunk khi dịch)` : '');
+    s.push('- Bảng tên riêng & Thuật ngữ cố định (BẮT BUỘC DỊCH ĐÚNG 100%, TUYỆT ĐỐI KHÔNG ĐỂ NGUYÊN CHỮ HÁN):\n' + previewG);
+  }
+  if(c.honorifics && c.honorifics.trim()){
+    const hLines = c.honorifics.trim().split(/\r?\n/).filter(Boolean);
+    const previewH = hLines.slice(0, 12).join('\n') + (hLines.length > 12 ? `\n... (và +${hLines.length - 12} quy ước xưng hô khác được lọc tự động theo nhân vật trong chunk)` : '');
+    s.push('- Quy ước xưng hô giữa các nhân vật (GIỮ NHẤT QUÁN 100%):\n' + previewH);
+  }
+  if(c.style && c.style.trim()) s.push('- Phong cách văn mẫu tham khảo:\n'+c.style.trim().slice(0, 500));
   return s.length > 1 ? s.join('\n') : '';
+}
+
+// Lọc CHÍNH XÁC các tên riêng & quy ước xưng hô xuất hiện trong Chunk `chunkOrigText` đang dịch!
+function sfZh_buildChunkSpecificGlossaryBlock(chunkOrigText){
+  if(!chunkOrigText) return '';
+  const allPairs = sfZh_getAllGlossaryPairs();
+  if(!allPairs.length && (!sfZhCfg || !sfZhCfg.honorifics)) return '';
+  const matchedPairs = [];
+  const matchedVietNames = [];
+  for(const item of allPairs){
+    if(item.src && chunkOrigText.includes(item.src)){
+      matchedPairs.push(`${item.src} -> ${item.fullTrans}`);
+      matchedVietNames.push(item.shortTrans.toLowerCase());
+    }
+  }
+  const matchedHon = [];
+  if(sfZhCfg && sfZhCfg.honorifics){
+    const hLines = sfZhCfg.honorifics.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
+    for(const h of hLines){
+      const hLower = h.toLowerCase();
+      if(matchedVietNames.some(vn => vn && vn.length >= 2 && hLower.includes(vn)) || matchedHon.length < 6){
+        matchedHon.push(h);
+        if(matchedHon.length >= 12) break;
+      }
+    }
+  }
+  const out = [];
+  if(matchedPairs.length){
+    out.push(`[BẢNG TÊN RIÊNG XUẤT HIỆN TRONG ĐOẠN NÀY — BẮT BUỘC THAY THẾ SANG TIẾNG VIỆT, CẤM ĐỂ LẠI CHỮ HÁN]:\n` + matchedPairs.slice(0, 35).join('\n'));
+  }
+  if(matchedHon.length){
+    out.push(`[QUY ƯỚC XƯNG HÔ ÁP DỤNG CHO ĐOẠN NÀY]:\n` + matchedHon.join('\n'));
+  }
+  return out.join('\n\n');
 }
 function sfZh_compose(){
   const c=sfZhCfg, L=[sfZh_txt('p1A').trim()];
@@ -2815,11 +2924,12 @@ function sfZh_mergeLearnedObject(obj, overwriteMeta){
     line = line.replace(/^[-*•+]\s*/, '').trim();
     if(!line || !line.includes('=')) return;
     const parts = line.split('=');
-    const k = (parts[0]||'').trim().toLowerCase();
-    const v = (parts.slice(1).join('=')||'').trim();
+    const rawSrc = (parts[0]||'').trim().replace(/^[《【「『]+|[》】」』]+$/g, '').trim();
+    const k = rawSrc.toLowerCase();
+    const v = sfZh_stripHanziInVietText((parts.slice(1).join('=')||'').trim());
     if(!k || !v || seenGlossKeys.has(k)) return;
     seenGlossKeys.add(k);
-    curGlossLines.push(`${parts[0].trim()} = ${v}`);
+    curGlossLines.push(`${rawSrc} = ${v}`);
     addedGloss++;
   });
   if(addedGloss > 0) sfZhCfg.glossary = curGlossLines.join('\n');
@@ -2837,7 +2947,7 @@ function sfZh_mergeLearnedObject(obj, overwriteMeta){
     let line = '';
     if(typeof item === 'string') line = item.trim();
     else if(item && item.pair && item.rule) line = `${String(item.pair).trim()}: ${String(item.rule).trim()}`;
-    line = line.replace(/^[-*•+]\s*/, '').trim();
+    line = sfZh_stripHanziInVietText(line.replace(/^[-*•+]\s*/, '').trim());
     if(!line || !line.includes(':')) return;
     const pairKey = (line.split(':')[0]||'').replace(/\s+/g,' ').trim().toLowerCase();
     if(!pairKey || seenHonKeys.has(pairKey)) return;
@@ -2939,9 +3049,9 @@ ${sfZhCfg.glossary ? sfZhCfg.glossary.slice(-1500) : '(Chưa có)'}
 - Quy ước xưng hô đã có:
 ${sfZhCfg.honorifics ? sfZhCfg.honorifics.slice(-1000) : '(Chưa có)'}
 
-YÊU CẦU:
-1. Chỉ trích xuất những tên nhân vật, địa danh, tổ chức, công pháp, cảnh giới, vật phẩm MỚI chưa có trong danh sách đã biết, lấy đúng tên tiếng Việt đã dùng trong [BẢN DỊCH TIẾNG VIỆT].
-2. Chỉ trích xuất các cặp nhân vật có đối thoại hoặc quan hệ xưng hô MỚI chưa có trong danh sách đã biết.
+YÊU CẦU BẮT BUỘC:
+1. Chỉ trích xuất những tên nhân vật, địa danh, tổ chức, công pháp, cảnh giới, vật phẩm MỚI chưa có trong danh sách đã biết. Nếu trong [BẢN DỊCH TIẾNG VIỆT] vô tình còn sót tên chữ Hán (như 王哲, 雷大朝), hãy chủ động phiên âm Hán-Việt chuẩn xác cho tên đó (VD: "王哲 = Vương Triết", "雷大朝 = Lôi Đại Triều"). Vế bên phải dấu "=" PHẢI LÀ 100% TIẾNG VIỆT, CẤM chứa chữ Hán.
+2. Trong mục "honorifics" (Quy ước xưng hô), TOÀN BỘ tên nhân vật và cách xưng hô PHẢI VIẾT BẰNG 100% TIẾNG VIỆT (tuyệt đối KHÔNG viết kiểu nửa Việt nửa Hán như "Vương先生" hay "Cao俊飞", phải viết là "ông/tiên sinh Vương", "Cao Tuấn Phi").
 ${needMeta ? '3. Điền thêm "theme" (thể loại chi tiết), "tone" (bối cảnh & tông giọng) và "styleSample" (trích 1 đoạn dịch mượt nhất khoảng 120 chữ từ bản dịch bên dưới).' : ''}
 
 Chỉ trả về JSON THUẦN (không giải thích, không markdown):
@@ -3057,6 +3167,7 @@ function sfZh_setMode(m){
   if(typeof sfPrompt_syncToBox==='function' && Array.isArray(sfPromptLibrary)) sfPrompt_syncToBox();
 }
 function sfZh_init(){
+  try{ sfZh_sanitizeExistingLearnedData(); }catch(e){}
   const bar=document.getElementById('sfModeBar'), box=document.getElementById('sfZhBox'); if(!bar||!box) return;
   bar.innerHTML='<div class="modelchip" data-m="smooth">🧹 Thư viện & Mẫu thể loại (1-Click)</div><div class="modelchip" data-m="zh">🈶 Dịch tiếng Trung & AI Tự Học (Khuyên dùng)</div>';
   bar.querySelectorAll('.modelchip').forEach(b=> b.onclick=()=>sfZh_setMode(b.dataset.m));
@@ -3901,12 +4012,34 @@ async function scanHanTu(){
       for(const idx of affectedChunks){
         const c = chunkState[idx];
         if(!c || !c.trans) continue;
-        const fixPrompt = `Đoạn văn tiếng Việt dưới đây còn sót một số chữ Hán chưa dịch hết. Hãy dịch nốt toàn bộ các chữ Hán còn sót sang tiếng Việt tự nhiên, hợp ngữ cảnh, giữ nguyên 100% các câu tiếng Việt đã dịch mượt. Chỉ trả về đoạn văn hoàn chỉnh, không giải thích:\n\n` + c.trans;
-        const cleaned = await sfZh_callRawAI(fixPrompt);
-        if(cleaned && cleaned.trim()){
-          currentResults[idx] = cleaned.trim();
-          markChunkDone(idx, cleaned.trim());
+        // Bước 1: Thay thế nhanh bằng Bảng tên riêng đã học
+        let curTrans = sf_applyGlossaryReplacement(c.trans);
+        const remHan = sf_countHanziChars(curTrans);
+        if(remHan === 0){
+          currentResults[idx] = curTrans;
+          markChunkDone(idx, curTrans);
+          logLine('ok', idx, null, `Chunk #${idx+1}: Đã thay thế sạch Hán tự bằng Bảng tên riêng.`);
+          continue;
         }
+        // Bước 2: Nếu chunk bị trả về nguyên đoạn tiếng Trung (> 25 chữ Hán, như lỗi Chunk #15), dịch lại từ BẢN GỐC c.orig!
+        if(remHan > 25 && c.orig){
+          logLine('warn', idx, null, `Chunk #${idx+1} có ${remHan} chữ Hán (chưa dịch) -> Đang dịch lại từ Bản gốc...`);
+          const chunkGloss = (typeof sfZh_buildChunkSpecificGlossaryBlock === 'function') ? sfZh_buildChunkSpecificGlossaryBlock(c.orig) : '';
+          const reTrans = await sf_forceStrictRetranslate(c.orig, chunkGloss);
+          if(reTrans && reTrans.trim()){
+            curTrans = sf_applyGlossaryReplacement(reTrans.trim());
+          }
+        }
+        // Bước 3: Nếu vẫn còn vài chữ Hán tên riêng lẻ tẻ (1..25 chữ Hán, như Chunk #21), dùng AI làm sạch nốt trong câu
+        if(sf_countHanziChars(curTrans) > 0){
+          logLine('info', idx, null, `Chunk #${idx+1}: Đang dịch nốt ${sf_countHanziChars(curTrans)} chữ Hán lẻ còn sót...`);
+          const cleaned = await sf_cleanResidualHanziInText(curTrans);
+          if(cleaned && cleaned.trim()){
+            curTrans = sf_applyGlossaryReplacement(cleaned.trim());
+          }
+        }
+        currentResults[idx] = curTrans;
+        markChunkDone(idx, curTrans);
       }
       if(outTa){
         outTa.value = currentResults.map((r,i)=> r != null ? r : (chunkState[i]?.trans || '')).join('\n\n');
@@ -5911,58 +6044,140 @@ async function callModel(textPayload, keyIndex, signal){
 function buildContextPrefix(idx){
   if(!chunkState || idx<=0) return '';
   const prev = chunkState[idx-1]; if(!prev) return '';
-  let body, tag;
+  // QUAN TRỌNG: TUYỆT ĐỐI KHÔNG lấy prev.orig (chữ Hán của chunk trước) đưa vào prompt!
+  // Vì khi chạy song song nhiều luồng, đưa 250 chữ Hán của cuối chunk #20 vào trước chunk #21
+  // sẽ khiến AI dịch luôn cả đoạn cuối của chunk #20 vào đầu bản dịch của chunk #21 (lặp đoạn & lệch bản gốc).
+  // Chỉ khi chunk trước ĐÃ DỊCH XONG (status==='done') và sạch chữ Hán mới lấy 120 ký tự cuối để đối chiếu đại từ xưng hô.
   if(prev.status==='done' && prev.trans){
-    body = prev.trans.slice(-250); tag = 'BẢN DỊCH ĐOẠN TRƯỚC ĐỂ ĐỐI CHIẾU XƯNG HÔ';
-  } else if(prev.orig) {
-    body = prev.orig.slice(-250); tag = 'NGỮ CẢNH BẢN GỐC CỦA ĐOẠN TRƯỚC';
-  } else return '';
-  return `[${tag}]: "${body}"\n[LƯU Ý]: Phần ngữ cảnh phía trên CHỈ DÙNG ĐỂ THAM KHẢO. BẮT ĐẦU DỊCH TỪ ĐOẠN DƯỚI ĐÂY:\n`;
+    const tail = prev.trans.slice(-140).replace(/[\u3400-\u4DBF\u4E00-\u9FFF]+/g, '').trim();
+    if(tail){
+      return `[THAM KHẢO CÂU CUỐI ĐOẠN TRƯỚC ĐỂ GIỮ MẠCH XƯNG HÔ (TUYỆT ĐỐI KHÔNG DỊCH LẠI CÂU NÀY)]: "...${tail}"`;
+    }
+  }
+  return '';
 }
 
-/* DYNAMIC SCHEDULER (single scheduler: runEngine drives everything; executeDynamicTask
-   performs ONE attempt then returns, releasing its global slot in every case — success,
-   permanent failure, or requeue-for-retry. Retries always re-enter the global queue and
-   are re-dispatched by runEngine's own slot/key selection; they never sleep while holding
-   an active slot. Per-chunk retry count and backoff are tracked on chunkState/chunkRetryAfter
-   so counts survive across the multiple executeDynamicTask calls a chunk may need. */
+// Thay thế tức thì mọi cụm chữ Hán đã có trong Bảng tên riêng / Canon Pack mà AI vô tình để sót trong bản dịch
+function sf_applyGlossaryReplacement(text){
+  if(!text) return '';
+  let out = String(text);
+  // Xoá các dấu ngoặc thư danh kiểu Trung Quốc 《...》 hoặc 【...】 nếu bao quanh chữ Việt
+  const pairs = (typeof sfZh_getAllGlossaryPairs === 'function') ? sfZh_getAllGlossaryPairs() : [];
+  // Sắp xếp theo độ dài chữ Hán giảm dần để cụm dài được thay trước cụm ngắn
+  pairs.sort((a,b)=> b.src.length - a.src.length);
+  for(const p of pairs){
+    if(p.src && p.shortTrans && out.includes(p.src)){
+      out = out.split(p.src).join(p.shortTrans);
+    }
+  }
+  return out;
+}
+
+// Đếm tổng số ký tự chữ Hán trong chuỗi
+function sf_countHanziChars(text){
+  if(!text) return 0;
+  const m = String(text).match(/[\u3400-\u4DBF\u4E00-\u9FFF]/g);
+  return m ? m.length : 0;
+}
+
+// Ép dịch lại khi phát hiện AI bị trôi lệnh (trả về nguyên đoạn chữ Hán hoặc viết tiếp truyện bằng tiếng Trung như ở Chunk #15)
+async function sf_forceStrictRetranslate(origChunkText, chunkGlossBlock, signal){
+  const strictPrompt = `[MỆNH LỆNH BẮT BUỘC — CHẾ ĐỘ DỊCH THUẬT NGHIÊM NGẶT]
+Bạn là dịch giả tiểu thuyết Trung – Việt chuyên nghiệp. Ở lượt trước bạn đã mắc lỗi xuất ra chữ Hán thay vì dịch sang tiếng Việt.
+Nhiệm vụ duy nhất của bạn bây giờ là DỊCH TRỰC TIẾP 100% đoạn văn tiếng Trung dưới đây sang tiếng Việt mượt mà, chuẩn văn phong tiểu thuyết xuất bản.
+
+QUY TẮC TUYỆT ĐỐI:
+1. Bản dịch đầu ra PHẢI LÀ 100% TIẾNG VIỆT. CẤM TUYỆT ĐỐI để sót bất kỳ chữ Hán nào (kể cả tên người, họ tên, địa danh, chiêu thức — tất cả phải phiên âm Hán-Việt chuẩn xác, ví dụ 王哲 -> Vương Triết, 雷大朝 -> Lôi Đại Triều, 赵美玲 -> Triệu Mỹ Linh).
+2. CẤM TUYỆT ĐỐI tự sáng tác/viết tiếp câu chuyện bằng tiếng Trung. Dịch đúng từng câu, từng đoạn từ câu đầu tiên đến câu cuối cùng của đoạn văn gốc.
+3. Không giải thích, không lời mở đầu, chỉ trả về bản dịch tiếng Việt.
+
+${chunkGlossBlock ? chunkGlossBlock + '\n\n' : ''}[ĐOẠN VĂN TIẾNG TRUNG CẦN DỊCH SANG 100% TIẾNG VIỆT]:
+` + origChunkText;
+  return await sfZh_callRawAI(strictPrompt);
+}
+
+// Quét sạch các từ/tên riêng chữ Hán lẻ tẻ còn sót lại trong câu tiếng Việt (ví dụ 1-25 chữ Hán như "Bàn tay phải của 雷大朝... vạt thẳng vào mặt 王哲")
+async function sf_cleanResidualHanziInText(vietWithSomeHanzi){
+  const cleanPrompt = `[NHIỆM VỤ: DỊCH NỐT CÁC CHỮ HÁN CÒN SÓT TRONG BẢN DỊCH TIẾNG VIỆT]
+Đoạn văn tiếng Việt dưới đây bị sót lại một vài từ hoặc tên riêng bằng chữ Hán chưa được phiên âm/dịch sang tiếng Việt.
+YÊU CẦU BẮT BUỘC:
+1. Chuyển toàn bộ các chữ Hán còn sót (như tên người, tên chiêu thức, danh xưng...) sang tên Hán-Việt hoặc từ tiếng Việt tương ứng thật tự nhiên (ví dụ: 王哲 -> Vương Triết, 雷大朝 -> Lôi Đại Triều, 先生 -> tiên sinh).
+2. GIỮ NGUYÊN 100% các câu chữ tiếng Việt đã dịch xung quanh, tuyệt đối không tóm tắt hay cắt bớt bất kỳ dòng nào.
+3. Kết quả trả về phải sạch bóng 100% chữ Hán. Chỉ trả về văn bản đã làm sạch, không giải thích:
+
+` + vietWithSomeHanzi;
+  return await sfZh_callRawAI(cleanPrompt);
+}
+
+/* DYNAMIC SCHEDULER */
 let currentChunks = [];
 let currentResults = [];
 let schedulerWakeup = null;
 let pauseFlag = false;
 const MAX_CHUNK_RETRIES = 6;
-let chunkRetryAfter = Object.create(null); // idx -> timestamp before which it should not be redispatched
+let chunkRetryAfter = Object.create(null);
 
 function wakeScheduler(){ if(schedulerWakeup) schedulerWakeup(); }
 async function waitWhilePaused(){ while(pauseFlag && !stopFlag){ await new Promise(r=>setTimeout(r, 400)); } }
 function togglePause(){ pauseFlag = !pauseFlag; document.getElementById('pauseBtn').textContent = pauseFlag ? '▶ Tiếp tục' : '⏸ Tạm dừng'; }
 
-// Performs exactly ONE request attempt for chunk `idx` on `keyIdx`, then returns.
-// The caller (runEngine) owns the global slot and always releases it via .finally()
-// when this promise settles — success, permanent failure, or requeue-for-retry all
-// resolve this promise, so the slot is freed in every case, immediately, with no
-// inline sleeping while holding it.
 async function executeDynamicTask(idx, keyIdx, queueRef) {
     if(stopFlag) { markChunkWaiting(idx); return; }
     const c = chunkState[idx];
-    if(c && c.status === 'done') return; // never re-request a finished chunk
+    if(c && c.status === 'done') return;
 
-    // ĐỢT 7C — mục III: 1 AbortController riêng cho request này — đăng ký vào tập toàn cục để
-    // stopTranslate() huỷ được NGAY, gỡ lại trong finally để không rò rỉ tham chiếu.
     const abortCtrl = new AbortController();
     activeAbortControllers.add(abortCtrl);
 
     try {
         markChunkRunning(idx, keyIdx);
+        const origChunkText = currentChunks[idx] || '';
         const ctxPrefix = buildContextPrefix(idx);
-        // ĐỢT 6 — mục VIII: chèn Canon Context (nếu bật) TRƯỚC context prefix + chunk nguồn.
-        // buildCanonContext() tự giới hạn số entity/độ dài, chỉ lấy entity liên quan đến CHÍNH
-        // chunk này — không nhét toàn bộ Canon Pack vào mọi request.
         const canonBlock = (typeof buildCanonContext === 'function') ? (buildCanonContext(idx) || '') : '';
-        const payloadCore = ctxPrefix ? (ctxPrefix + '\n' + currentChunks[idx]) : currentChunks[idx];
-        const payloadText = canonBlock ? (canonBlock + '\n' + payloadCore) : payloadCore;
+        const chunkGlossBlock = (typeof sfZh_buildChunkSpecificGlossaryBlock === 'function') ? (sfZh_buildChunkSpecificGlossaryBlock(origChunkText) || '') : '';
+
+        // Ghép toàn bộ chỉ dẫn bổ trợ (Canon + Bảng tên riêng của đúng chunk này + Câu cuối đoạn trước)
+        // kèm MỆNH LỆNH KHÓA ĐẦU RA ngay sát trên đoạn văn gốc để AI không bao giờ dịch nhầm đoạn trước hay trả về tiếng Trung!
+        const preBlocks = [canonBlock, chunkGlossBlock, ctxPrefix].filter(Boolean).join('\n\n');
+        const strictGuardLine = `[CHỈ DẪN BẮT BUỘC NGAY TRƯỚC KHI DỊCH: Dịch ĐÚNG và ĐỦ đoạn văn bên dưới sang 100% TIẾNG VIỆT. Mọi tên người, địa danh, công pháp chữ Hán phải phiên âm Hán-Việt đầy đủ (tuyệt đối không để sót chữ Hán như 王哲, 雷大朝 trong câu tiếng Việt; tuyệt đối không viết tiếp bằng tiếng Trung).]\n[BẮT ĐẦU ĐOẠN VĂN CẦN DỊCH]:\n`;
+        const payloadText = (preBlocks ? (preBlocks + '\n\n') : '') + strictGuardLine + origChunkText;
 
         let res = await callModel(payloadText, keyIdx, abortCtrl.signal);
+
+        // --- HẬU KIỂM TỰ ĐỘNG 3 TẦNG (CHỐNG SÓT CHỮ HÁN & CHỐNG TRẢ VỀ TIẾNG TRUNG) ---
+        // Tầng 1: Thay thế tức thì bằng từ điển đã học
+        res = sf_applyGlossaryReplacement(res);
+
+        // Tầng 2: Nếu bản gốc có chữ Hán, kiểm tra xem bản dịch có bị trả về nguyên đoạn chữ Hán (như lỗi Chunk #15) không
+        const srcHanCount = sf_countHanziChars(origChunkText);
+        if(srcHanCount > 5){
+          let outHanCount = sf_countHanziChars(res);
+          // Nếu kết quả trả về có > 20 chữ Hán hoặc tỷ lệ chữ Hán > 8% -> AI đã bị trôi lệnh trả về tiếng Trung!
+          if(outHanCount > 20 || (res.length > 0 && (outHanCount / res.length) > 0.08)){
+            logLine('warn', idx, keyIdx, `Chunk ${idx+1}: Phát hiện AI trả về đoạn chữ Hán (${outHanCount} chữ Hán). Đang tự động ép dịch lại sang 100% tiếng Việt...`);
+            const reTrans = await sf_forceStrictRetranslate(origChunkText, chunkGlossBlock, abortCtrl.signal);
+            if(reTrans && reTrans.trim()){
+              res = sf_applyGlossaryReplacement(reTrans.trim());
+              outHanCount = sf_countHanziChars(res);
+            }
+          }
+          // Tầng 3: Nếu chỉ còn sót 1..20 chữ Hán lẻ tẻ (ví dụ tên nhân vật mới 雷大朝 chưa kịp có trong từ điển)
+          if(outHanCount > 0 && outHanCount <= 20){
+            logLine('info', idx, keyIdx, `Chunk ${idx+1}: Tự động làm sạch ${outHanCount} chữ Hán tên riêng còn sót...`);
+            try{
+              const cleaned = await sf_cleanResidualHanziInText(res);
+              if(cleaned && cleaned.trim() && sf_countHanziChars(cleaned) < outHanCount){
+                res = sf_applyGlossaryReplacement(cleaned.trim());
+              }
+            }catch(cleanErr){ console.warn('[SF Output Guard] Bỏ qua lỗi làm sạch chữ Hán lẻ:', cleanErr); }
+          }
+          // Nếu sau cả 2 lần ép dịch mà kết quả vẫn toàn chữ Hán (> 35 chữ Hán), ném lỗi để Scheduler thử lại bằng key khác chứ không đánh dấu Đã dịch sai!
+          if(sf_countHanziChars(res) > 35){
+            const hanErr = new Error('Model vẫn trả về tiếng Trung thay vì dịch sang tiếng Việt');
+            hanErr.status = 500;
+            throw hanErr;
+          }
+        }
 
         if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
         currentResults[idx] = res;
