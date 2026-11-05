@@ -2803,8 +2803,10 @@ function sfZh_syncInputsFromCfg(){
   sfZh_updateLearnStatusUI();
 }
 /* ---------- KHO LƯU TRỮ GLOSSARY RIÊNG THEO TỪNG BỘ TRUYỆN TRONG INDEXEDDB (Đề xuất E.2) ---------- */
+let __sfGlossDbPromise = null;
 function sfGlossDB_open(){
-  return new Promise((res, rej)=>{
+  if(__sfGlossDbPromise) return __sfGlossDbPromise;
+  __sfGlossDbPromise = new Promise((res, rej)=>{
     try{
       const r = indexedDB.open('sf_book_glossary_v1', 1);
       r.onupgradeneeded = ()=>{
@@ -2813,10 +2815,16 @@ function sfGlossDB_open(){
           db.createObjectStore('book_glossaries', { keyPath: 'sourceHash' });
         }
       };
-      r.onsuccess = ()=> res(r.result);
-      r.onerror = ()=> rej(r.error);
-    }catch(e){ rej(e); }
+      r.onsuccess = ()=>{
+        const db = r.result;
+        db.onversionchange = ()=>{ try{ db.close(); }catch(e){} __sfGlossDbPromise = null; };
+        db.onclose = ()=>{ __sfGlossDbPromise = null; };
+        res(db);
+      };
+      r.onerror = ()=>{ __sfGlossDbPromise = null; rej(r.error); };
+    }catch(e){ __sfGlossDbPromise = null; rej(e); }
   });
+  return __sfGlossDbPromise;
 }
 async function sfGlossDB_saveForCurrentBook(){
   try{
@@ -4774,6 +4782,16 @@ async function sfRepair_runFullAuditAndDeltaQueue(){
       }
     }
     if(doneRecs.length) await saveChunkRecords(doneRecs);
+    if(sfCurrentFileMeta){
+      sfCurrentFileMeta.translatedChunks = doneRecs.length;
+      sfCurrentFileMeta.totalChunks = chunkState.length;
+      sfCurrentFileMeta.errorChunks = 0;
+      sfCurrentFileMeta.status = needTranslateCount > 0 ? 'paused' : 'done';
+      sfCurrentFileMeta.updatedAt = Date.now();
+      await saveFileRecord(sfCurrentFileMeta);
+      await hydrateLibrary();
+      if(typeof sfCloud !== 'undefined') sfCloud.enqueueFileMeta(sfCurrentFileMeta);
+    }
   }catch(dbErr){ console.warn('[SF Repair] Lưu IndexedDB:', dbErr); }
 
   const sampleList = (arr) => arr.length ? (arr.slice(0, 25).map(n=>'Chương '+n).join(', ') + (arr.length > 25 ? ` ... (+${arr.length-25} chương nữa)` : '')) : 'Không có';
@@ -7678,6 +7696,23 @@ async function startTranslate(){
   if(state.keys.length===0){ sfUI.alert('Thêm API key.'); return; }
   if(!state.model){ sfUI.alert('Nhập model.'); return; }
   let text = sf_getFullSourceText(); if(!text.trim()){ sfUI.alert('Dán truyện trước.'); return; }
+  // Bảo vệ chống mất tiến độ: Nếu phiên hiện tại đã có sẵn các chương/chunk DONE và vẫn còn chunk WAITING/ERROR
+  // (ví dụ vừa chạy Bước 2 của Studio Đối chiếu hoặc vừa tạm dừng), ưu tiên chạy tiếp các chunk còn thiếu!
+  if(Array.isArray(chunkState) && chunkState.length > 0 && chunkStats.done > 0 && (chunkStats.waiting > 0 || chunkStats.error > 0)){
+    const continueDelta = sfUI.confirm(`Phiên hiện tại đã có sẵn ${chunkStats.done}/${chunkState.length} mục hoàn thành (còn ${chunkStats.waiting + chunkStats.error} mục chưa dịch).
+
+Bấm OK để TIẾP TỤC DỊCH BÙ các mục còn thiếu (giữ nguyên ${chunkStats.done} mục đã xong).
+Bấm Cancel nếu bạn thực sự muốn XÓA LÀM LẠI từ đầu.`);
+    if(continueDelta){
+      if(sfCurrentFileMeta){
+        sfCurrentFileMeta.status = 'translating';
+        await saveFileRecord(sfCurrentFileMeta);
+      }
+      await runEngine(chunkState.map((_,i)=> i));
+      await sf_onEngineFinished();
+      return;
+    }
+  }
   if(typeof sfZhCfg !== 'undefined'){
     const curHash = sf_computeSourceHash(text);
     if(sfZhCfg._lastHash && sfZhCfg._lastHash !== curHash){
@@ -8609,6 +8644,8 @@ function toggleCloudLibraryPanel(){
   const p = document.getElementById('cloudLibraryPanel');
   const wasShown = p.classList.contains('show');
   document.getElementById('cloudHistoryPanel').classList.remove('show');
+  const cfgP = document.getElementById('cloudConfigPanel');
+  if(cfgP) cfgP.classList.remove('show');
   p.classList.toggle('show', !wasShown);
   if(!wasShown) sfCloud.refreshCloudLibrary();
 }
