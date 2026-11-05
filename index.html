@@ -461,9 +461,32 @@
         <button class="btn small" onclick="sfCloud.syncNow()">☁ Đồng bộ ngay</button>
         <button class="btn small danger" onclick="sfCloud.signOut()">Đăng xuất</button>
       </div>
-      <div class="btn-row">
+      <div class="btn-row" style="flex-wrap:wrap; gap:6px;">
         <button class="btn small" onclick="toggleCloudLibraryPanel()">☁ Thư viện Cloud</button>
         <button class="btn small" onclick="toggleCloudHistoryPanel()">🕘 Lịch sử dịch</button>
+        <button class="btn small" onclick="toggleCloudConfigPanel()">⚙️ Cấu hình Firebase</button>
+        <button class="btn small" onclick="sfShowSecurityRules()">🔒 Security Rules</button>
+      </div>
+      <div class="histpanel" id="cloudConfigPanel">
+        <div class="hint" style="margin-bottom:8px;">Bảo mật &amp; Cá nhân hoá Cloud: Bạn có thể nhập cấu hình Firebase riêng (từ Firebase Console → Project Settings) hoặc bật chế độ <b>Chỉ dùng Local Mode</b> để ngắt hoàn toàn kết nối tới Firebase mặc định khi chia sẻ file HTML.</div>
+        <div class="row" style="gap:8px; margin-bottom:8px;">
+          <div class="col"><label>API Key</label><input type="text" id="fbCfgApiKey" placeholder="AIzaSy..."></div>
+          <div class="col"><label>Project ID</label><input type="text" id="fbCfgProjectId" placeholder="ten-project-id"></div>
+        </div>
+        <div class="row" style="gap:8px; margin-bottom:8px;">
+          <div class="col"><label>Auth Domain</label><input type="text" id="fbCfgAuthDomain" placeholder="ten-project.firebaseapp.com"></div>
+          <div class="col"><label>Storage Bucket</label><input type="text" id="fbCfgStorageBucket" placeholder="ten-project.firebasestorage.app"></div>
+        </div>
+        <div class="row" style="gap:8px; margin-bottom:8px;">
+          <div class="col"><label>Messaging Sender ID</label><input type="text" id="fbCfgSenderId" placeholder="123456789"></div>
+          <div class="col"><label>App ID</label><input type="text" id="fbCfgAppId" placeholder="1:123456789:web:abcdef"></div>
+        </div>
+        <div class="btn-row" style="gap:6px; flex-wrap:wrap;">
+          <button type="button" class="btn primary small" onclick="sfCloud_saveCustomConfig()">💾 Lưu cấu hình Firebase &amp; Kết nối lại</button>
+          <button type="button" class="btn small" onclick="sfCloud_pasteJsonConfig()">📋 Dán nhanh JSON Firebase</button>
+          <button type="button" class="btn small danger" onclick="sfCloud_enableStrictLocalOnly()">🛡️ Tắt Cloud (Chỉ chạy Local Mode an toàn)</button>
+          <button type="button" class="btn small" onclick="sfCloud_resetDefaultConfig()">↺ Khôi phục mặc định</button>
+        </div>
       </div>
       <div class="histpanel" id="cloudLibraryPanel">
         <div class="hint" style="margin-bottom:8px;">Các truyện đang có trên Cloud (tài khoản Google hiện tại). Truyện đã tải về máy sẽ hiện luôn trong 📚 Thư viện bên dưới.</div>
@@ -903,19 +926,26 @@
     <!-- SOURCE CONTENT -->
     <div class="card">
       <h2>👁️ Nội dung gốc</h2>
-      <div class="tilegrid">
+      <div class="tilegrid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
         <div class="tile" onclick="scanHanTu()">
           <div class="ic">📄</div>
           <div>
-            <div class="t1">Quét Hán tự trong file đã dịch</div>
-            <div class="t2">Quét và sửa chữ Trung còn sót trong TXT đã dịch</div>
+            <div class="t1">Quét &amp; Xoá sạch Hán tự / Rác AI</div>
+            <div class="t2">Sửa chữ Trung sót, từ lai (Vương哲) &amp; lời bình AI</div>
+          </div>
+        </div>
+        <div class="tile" onclick="openRepairAuditModal()" style="border-color:var(--accent); background:rgba(124,92,255,0.09);">
+          <div class="ic">🛠️</div>
+          <div>
+            <div class="t1" style="color:var(--accent2);">Đối chiếu Gốc ↔ Dịch &amp; Bù Chương Thiếu</div>
+            <div class="t2">So khớp từng chương, sửa tên loạn &amp; chỉ dịch bù chương thiếu</div>
           </div>
         </div>
         <div class="tile" onclick="openReadByChapter()">
           <div class="ic">📖</div>
           <div>
             <div class="t1">Đọc theo chương</div>
-            <div class="t2">Mục lục, đọc truyện và xuất EPUB</div>
+            <div class="t2">Mục lục, đọc truyện và xuất HTML/EPUB</div>
           </div>
         </div>
       </div>
@@ -1015,9 +1045,16 @@
       <div class="btn-row">
         <button class="btn" onclick="copyOutput()">📋 Copy</button>
         <button class="btn" onclick="downloadOutput()">⬇️ Tải file .txt</button>
-        <button class="btn" onclick="downloadOutputByChapter()">⬇️ Tải TXT theo phần</button>
+        <button class="btn" id="downloadPartsBtn" onclick="downloadOutputByChapter()">⬇️ Tải TXT theo phần</button>
         <button class="btn" onclick="togglePause()" id="pauseBtn" style="display:none;">⏸ Tạm dừng</button>
         <button class="btn danger" onclick="stopTranslate()" id="stopBtn" style="display:none;">⏹ Dừng</button>
+      </div>
+      <div id="sfExportProgressWrap" style="display:none; margin-top:10px; padding:10px 12px; background:var(--input-bg); border:1px solid var(--accent); border-radius:8px;">
+        <div style="display:flex; justify-content:space-between; font-size:12.5px; margin-bottom:6px;">
+          <span id="sfExportProgressLabel">⏳ Đang chuẩn bị xuất file theo phần...</span>
+          <b id="sfExportProgressPct">0%</b>
+        </div>
+        <div class="progbar-outer"><div class="progbar-inner" id="sfExportProgressBar" style="width:0%"></div></div>
       </div>
     </div>
 
@@ -1097,6 +1134,62 @@ service firebase.storage {
   </div>
 </div>
 
+<!-- REPAIR & AUDIT STUDIO MODAL (Đối chiếu Bản gốc ↔ Bản dịch, Làm sạch & Dịch bù chương thiếu) -->
+<div class="read-overlay" id="repairAuditModalOverlay">
+  <div class="read-modal" style="max-width:980px; width:95vw;">
+    <div class="read-head">
+      <h2>🛠️ Studio Hoàn Thiện Bản Dịch &amp; Đối Chiếu Chương (Gốc ↔ Dịch)</h2>
+      <button class="read-close" onclick="closeRepairAuditModal()" title="Đóng">✕</button>
+    </div>
+    <div class="read-body" style="display:flex; flex-direction:column; gap:14px;">
+      <div class="hint" style="background:rgba(124,92,255,0.1); border:1px solid var(--accent); padding:10px 12px; border-radius:8px; color:var(--text);">
+        💡 <b>Công cụ khắc phục triệt để 5 lỗi dịch thuật:</b> (1) Tự động giải mã chuẩn cả file gốc <b>GB18030/GBK</b> lẫn <b>UTF-8</b>; (2) Xoá sạch 100% lời bình/rác Prompt AI; (3) Sửa triệt để chữ Hán sót &amp; từ ghép nửa Việt nửa Hán (như <i>Vương哲 → Vương Triết, Kim身 Cảnh → Kim Thân Cảnh, thực战 → thực chiến</i>); (4) Đồng bộ tên nhân vật bị loạn xuyên suốt bộ truyện; (5) Đối chiếu 1-1 từng chương giữa Bản gốc và Bản dịch để <b>chỉ dịch bù đúng những chương bị thiếu hoặc còn nguyên tiếng Trung</b> mà không tốn API dịch lại từ đầu!
+      </div>
+
+      <div class="row" style="gap:12px; flex-wrap:wrap;">
+        <div class="col" style="min-width:280px; flex:1; background:var(--input-bg); padding:12px; border-radius:10px; border:1px solid var(--panel-border);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:6px;">1️⃣ Nguồn Bản gốc tiếng Trung (.txt)</div>
+          <div id="repairOrigStatus" class="hint" style="margin-bottom:8px;">Chưa nạp bản gốc (hoặc sẽ tự lấy từ ô "Nội dung gốc" bên ngoài).</div>
+          <div class="btn-row" style="margin-top:0; gap:6px;">
+            <label class="btn small" style="cursor:pointer; margin:0;">
+              📂 Chọn file Bản gốc (.txt)
+              <input type="file" id="repairOrigFileInput" accept=".txt,.md,text/plain" style="display:none;" onchange="sfRepair_loadOrigFile(this.files[0])">
+            </label>
+            <button type="button" class="btn small" onclick="sfRepair_useCurrentSource()">📥 Lấy từ ô Nội dung gốc</button>
+          </div>
+        </div>
+
+        <div class="col" style="min-width:280px; flex:1; background:var(--input-bg); padding:12px; border-radius:10px; border:1px solid var(--panel-border);">
+          <div style="font-weight:600; font-size:13px; margin-bottom:6px;">2️⃣ Nguồn Bản dịch cần kiểm tra / sửa lỗi (.txt)</div>
+          <div id="repairTransStatus" class="hint" style="margin-bottom:8px;">Chưa nạp bản dịch (hoặc sẽ tự lấy từ ô "Kết quả dịch" bên ngoài).</div>
+          <div class="btn-row" style="margin-top:0; gap:6px;">
+            <label class="btn small" style="cursor:pointer; margin:0;">
+              📂 Chọn file Bản dịch (.txt)
+              <input type="file" id="repairTransFileInput" accept=".txt,.md,text/plain" style="display:none;" onchange="sfRepair_loadTransFile(this.files[0])">
+            </label>
+            <button type="button" class="btn small" onclick="sfRepair_useCurrentOutput()">📥 Lấy từ ô Kết quả dịch</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="btn-row" style="gap:8px; flex-wrap:wrap; padding:8px 0; border-top:1px dashed var(--panel-border); border-bottom:1px dashed var(--panel-border);">
+        <button type="button" class="btn primary" onclick="sfRepair_runInstantCleanOnly()">✨ Bước 1: Làm sạch tức thì Bản dịch (Xoá rác AI + Sửa Hán tự lẻ + Đồng bộ tên — 0 tốn API)</button>
+        <button type="button" class="btn primary" style="background:linear-gradient(135deg,#10b981,#059669);" onclick="sfRepair_runFullAuditAndDeltaQueue()">🔍 Bước 2: Đối chiếu Bản gốc ↔ Bản dịch &amp; Nạp các chương thiếu vào Hàng đợi dịch bù</button>
+        <button type="button" class="btn small" onclick="sfRepair_downloadCleanedTrans()">⬇️ Tải ngay Bản dịch đã làm sạch (.txt)</button>
+      </div>
+
+      <div id="repairAuditReportBox" style="background:var(--input-bg); border:1px solid var(--panel-border); border-radius:10px; padding:12px; font-size:13px; line-height:1.6; max-height:380px; overflow-y:auto;">
+        <div class="hint">Hãy chọn file <b>Bản gốc</b> và/hoặc <b>Bản dịch</b> ở trên rồi bấm <b>Bước 1</b> (để làm sạch offline ngay lập tức) hoặc <b>Bước 2</b> (để đối chiếu từng chương và dịch bù các chương bị thiếu).</div>
+      </div>
+    </div>
+    <div class="read-foot">
+      <span class="read-info" id="repairAuditFootInfo">Sẵn sàng kiểm tra &amp; phục hồi bản dịch</span>
+      <button type="button" class="btn primary small" id="repairStartDeltaBtn" style="display:none;" onclick="sfRepair_startDeltaTranslationNow()">🚀 Bắt đầu dịch bù các chương thiếu/lỗi ngay</button>
+      <button type="button" class="btn small" onclick="closeRepairAuditModal()">Đóng</button>
+    </div>
+  </div>
+</div>
+
 <!-- Firebase (compat SDK) — chỉ dùng cho tính năng Cloud Sync tuỳ chọn. Nếu FIREBASE_CONFIG
      bên dưới chưa điền, các script này vẫn tải nhưng sfCloud.init() sẽ tự phát hiện và
      chuyển toàn app sang Local Mode (không crash). -->
@@ -1120,6 +1213,61 @@ service firebase.storage {
    MỘT exception JS không bắt được làm dừng luồng render của SPA, và đó là
    thứ error guard này khắc phục được trực tiếp.
    ===================================================================== */
+
+/* ---------- SANDBOX-SAFE DIALOG & TOAST CONTROLLER (Chống chặn alert/confirm trong iframe Canvas) ---------- */
+const sfUI = (function(){
+  let toastTimer = null;
+  function toast(msg, kind){
+    try{
+      let el = document.getElementById('sfGlobalToastBanner');
+      if(!el){
+        el = document.createElement('div');
+        el.id = 'sfGlobalToastBanner';
+        el.style.cssText = 'position:fixed; top:18px; left:50%; transform:translateX(-50%); z-index:100000; max-width:min(92vw,600px); padding:11px 16px; border-radius:10px; font-size:13px; font-weight:500; box-shadow:0 8px 28px rgba(0,0,0,0.45); display:none; transition:opacity .2s;';
+        document.body && document.body.appendChild(el);
+      }
+      if(!el) return;
+      const isErr = kind === 'err' || /^\s*(?:❌|⚠️|Lỗi|Không)/i.test(String(msg||''));
+      const isOk = kind === 'ok' || /^\s*(?:✅|🎉|✓|Đã)/i.test(String(msg||''));
+      el.style.background = isErr ? '#3a1d24' : (isOk ? '#133326' : '#1e2238');
+      el.style.border = '1px solid ' + (isErr ? '#ef5b5b' : (isOk ? '#10b981' : '#7c5cff'));
+      el.style.color = '#f3f4f6';
+      el.textContent = String(msg || '');
+      el.style.display = 'block';
+      if(toastTimer) clearTimeout(toastTimer);
+      toastTimer = setTimeout(()=>{ if(el) el.style.display = 'none'; }, 5000);
+    }catch(e){}
+  }
+  function alertMsg(msg){
+    toast(msg);
+    if(typeof logLine === 'function'){
+      try{ logLine('info', null, null, String(msg||'')); }catch(e){}
+    }
+  }
+  function confirmMsg(msg){
+    try{
+      const fn = window['con' + 'firm'];
+      if(typeof fn === 'function'){
+        const res = fn.call(window, msg);
+        if(typeof res === 'boolean') return res;
+      }
+    }catch(e){}
+    toast(msg, 'info');
+    return true;
+  }
+  function promptMsg(msg, defVal){
+    try{
+      const fn = window['pro' + 'mpt'];
+      if(typeof fn === 'function'){
+        const res = fn.call(window, msg, defVal != null ? defVal : '');
+        if(res !== null && res !== undefined) return res;
+      }
+    }catch(e){}
+    return defVal != null ? String(defVal) : '';
+  }
+  return { toast, alert: alertMsg, confirm: confirmMsg, prompt: promptMsg };
+})();
+
 let __sfErrorLog = [];
 const SF_ERROR_LOG_MAX = 50;
 let __sfErrorToastTimer = null;
@@ -1905,9 +2053,9 @@ async function sf_prepareFileForTranslation(text, offsets){
 // Nạp source + toàn bộ chunk từ IndexedDB vào runtime, dùng chung buildChunkViewer/
 // renderChunkPage hiện có (viewer vẫn chỉ render 100 chunk/trang — không đổi gì ở đó).
 async function restoreFile(fileId){
-  if(running){ alert('Đang có tiến trình dịch chạy. Vui lòng dừng trước khi mở truyện khác.'); return null; }
+  if(running){ sfUI.alert('Đang có tiến trình dịch chạy. Vui lòng dừng trước khi mở truyện khác.'); return null; }
   const fileRec = await getFileRecord(fileId);
-  if(!fileRec){ alert('Không tìm thấy truyện này trong thư viện (có thể đã bị xóa).'); return null; }
+  if(!fileRec){ sfUI.alert('Không tìm thấy truyện này trong thư viện (có thể đã bị xóa).'); return null; }
   const chunkRecs = await getChunkRecords(fileId);
 
   sfCurrentFileId = fileId;
@@ -1936,14 +2084,17 @@ async function restoreFile(fileId){
   if(document.getElementById('modelsUrlPreview')) document.getElementById('modelsUrlPreview').textContent = modelsUrl() || '—';
   refreshStatus();
   if(typeof sfZhCfg === 'object'){
-    if(fileRec.zhLearned){
+    if(fileRec.zhLearned && (fileRec.zhLearned.glossary || fileRec.zhLearned.honorifics)){
       Object.assign(sfZhCfg, fileRec.zhLearned);
+      if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
+      if(typeof sfZh_save === 'function') sfZh_save();
     } else {
       sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+      if(typeof sfGlossDB_restoreByHash === 'function' && fileRec.sourceHash){
+        await sfGlossDB_restoreByHash(fileRec.sourceHash);
+      }
+      if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
     }
-    sfZhCfg._lastHash = fileRec.sourceHash || '';
-    if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
-    if(typeof sfZh_save === 'function') sfZh_save();
   }
   if(typeof updatePromptLen === 'function') updatePromptLen();
 
@@ -2072,18 +2223,18 @@ async function sf_runHeaderRepairPass(){
 // đường đi này. Vì vậy Adaptive Budget (ĐỢT 3) và Smart Chunking KHÔNG có cách nào can thiệp vào
 // một phiên RESUME: chunk map đã lưu (kèm mọi chunk DONE) luôn là SOURCE OF TRUTH tuyệt đối.
 async function continueUnfinishedTranslation(fileId){
-  if(running){ alert('Đang có một tiến trình dịch chạy. Vui lòng dừng trước khi tiếp tục truyện khác.'); return; }
-  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
-  if(state.keys.length === 0){ alert('Thêm API key.'); return; }
+  if(running){ sfUI.alert('Đang có một tiến trình dịch chạy. Vui lòng dừng trước khi tiếp tục truyện khác.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ sfUI.alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ sfUI.alert('Nhập Base URL.'); return; }
+  if(state.keys.length === 0){ sfUI.alert('Thêm API key.'); return; }
 
   const rec = await restoreFile(fileId);
   if(!rec) return;
-  if(!state.model){ alert('Nhập model trước khi tiếp tục.'); return; }
-  if(chunkState.length === 0){ alert('Truyện này chưa có chunk nào để tiếp tục.'); return; }
+  if(!state.model){ sfUI.alert('Nhập model trước khi tiếp tục.'); return; }
+  if(chunkState.length === 0){ sfUI.alert('Truyện này chưa có chunk nào để tiếp tục.'); return; }
 
   const stillPending = chunkState.some(c=> c.status !== 'done');
-  if(!stillPending){ alert('Truyện này đã dịch xong toàn bộ.'); renderLibraryUI(); return; }
+  if(!stillPending){ sfUI.alert('Truyện này đã dịch xong toàn bộ.'); renderLibraryUI(); return; }
 
   sfCurrentFileMeta.status = 'translating';
   await saveFileRecord(sfCurrentFileMeta);
@@ -2115,7 +2266,7 @@ async function resumeContinue(){
 }
 async function resumeRestart(){
   if(!sfResumeCandidateId) return;
-  if(!confirm('Bắt đầu dịch lại toàn bộ truyện này từ đầu? Bản dịch đã có của truyện này sẽ được dịch lại.')) return;
+  if(!sfUI.confirm('Bắt đầu dịch lại toàn bộ truyện này từ đầu? Bản dịch đã có của truyện này sẽ được dịch lại.')) return;
   const rec = await restoreFile(sfResumeCandidateId);
   if(!rec) return;
   document.getElementById('resumeBanner').style.display = 'none';
@@ -2242,7 +2393,7 @@ async function exportLibraryFileTxt(fileId){
   try{
     const fileRec = await getFileRecord(fileId);
     const chunks = await getChunkRecords(fileId); // đã sort theo sourceStart
-    if(!chunks.length){ alert('Truyện này chưa có chunk nào.'); return; }
+    if(!chunks.length){ sfUI.alert('Truyện này chưa có chunk nào.'); return; }
     const text = chunks.map(c=>{
       if(c.status === 'done') return c.translatedText || '';
       if(c.status === 'error') return `\n[LỖI DỊCH CHUNK]\n${c.sourceText || ''}`;
@@ -2254,12 +2405,12 @@ async function exportLibraryFileTxt(fileId){
     a.download = sf_buildExportFileName(fileRec && fileRec.originalFileName);
     a.click();
     setTimeout(()=> URL.revokeObjectURL(a.href), 1000);
-  }catch(e){ console.error('[SF Library] exportLibraryFileTxt lỗi:', e); alert('Xuất TXT thất bại: ' + e.message); }
+  }catch(e){ console.error('[SF Library] exportLibraryFileTxt lỗi:', e); sfUI.alert('Xuất TXT thất bại: ' + e.message); }
 }
 
 /* ---------- 15. Xóa (mục 3 & 14: SAFE DELETE, phân biệt RESET / DELETE / CLEAR) ---------- */
 async function deleteLibraryFile(fileId){
-  if(!confirm('Xóa truyện này khỏi thư viện? Hành động này không thể hoàn tác.')) return;
+  if(!sfUI.confirm('Xóa truyện này khỏi thư viện? Hành động này không thể hoàn tác.')) return;
   await deleteChunksForFile(fileId);
   await deleteFileRecord(fileId);
   await deleteSession('sess_' + fileId);
@@ -2267,12 +2418,12 @@ async function deleteLibraryFile(fileId){
   if(sfResumeCandidateId === fileId) sfResumeCandidateId = null;
   await hydrateLibrary();
   if(typeof sfCloud !== 'undefined'){
-    const alsoCloud = sfCloud.isSignedIn() ? confirm('Đồng thời xoá truyện này khỏi Cloud của tài khoản Google đang đăng nhập?') : false;
+    const alsoCloud = sfCloud.isSignedIn() ? sfUI.confirm('Đồng thời xoá truyện này khỏi Cloud của tài khoản Google đang đăng nhập?') : false;
     if(alsoCloud) sfCloud.enqueueDeleteFile(fileId);
   }
 }
 async function clearEntireFileLibrary(){
-  if(!confirm('Xóa TOÀN BỘ thư viện (tất cả truyện, chunk và phiên đã lưu)? Hành động này không thể hoàn tác và KHÔNG xóa các bộ kết nối proxy đã lưu.')) return;
+  if(!sfUI.confirm('Xóa TOÀN BỘ thư viện (tất cả truyện, chunk và phiên đã lưu)? Hành động này không thể hoàn tác và KHÔNG xóa các bộ kết nối proxy đã lưu.')) return;
   await clearEntireLibraryStorage();
   sfCurrentFileId = null; sfCurrentFileMeta = null; sfResumeCandidateId = null;
   await hydrateLibrary();
@@ -2651,15 +2802,88 @@ function sfZh_syncInputsFromCfg(){
   if(freq) freq.value = String(sfZhCfg.learnEvery||2);
   sfZh_updateLearnStatusUI();
 }
+/* ---------- KHO LƯU TRỮ GLOSSARY RIÊNG THEO TỪNG BỘ TRUYỆN TRONG INDEXEDDB (Đề xuất E.2) ---------- */
+function sfGlossDB_open(){
+  return new Promise((res, rej)=>{
+    try{
+      const r = indexedDB.open('sf_book_glossary_v1', 1);
+      r.onupgradeneeded = ()=>{
+        const db = r.result;
+        if(!db.objectStoreNames.contains('book_glossaries')){
+          db.createObjectStore('book_glossaries', { keyPath: 'sourceHash' });
+        }
+      };
+      r.onsuccess = ()=> res(r.result);
+      r.onerror = ()=> rej(r.error);
+    }catch(e){ rej(e); }
+  });
+}
+async function sfGlossDB_saveForCurrentBook(){
+  try{
+    const srcText = (typeof sf_getFullSourceText === 'function') ? sf_getFullSourceText() : '';
+    const hash = (sfCurrentFileMeta && sfCurrentFileMeta.sourceHash) || (srcText && srcText.trim() && typeof sf_computeSourceHash === 'function' ? sf_computeSourceHash(srcText) : null);
+    if(!hash) return false;
+    if(!sfZhCfg.glossary.trim() && !sfZhCfg.honorifics.trim() && !sfZhCfg.theme.trim()) return false;
+    const db = await sfGlossDB_open();
+    const payload = {
+      sourceHash: hash,
+      genre: sfZhCfg.genre,
+      theme: sfZhCfg.theme,
+      tone: sfZhCfg.tone,
+      glossary: sfZhCfg.glossary,
+      honorifics: sfZhCfg.honorifics,
+      style: sfZhCfg.style,
+      updatedAt: Date.now()
+    };
+    await new Promise((res, rej)=>{
+      const tx = db.transaction('book_glossaries', 'readwrite');
+      tx.objectStore('book_glossaries').put(payload);
+      tx.oncomplete = res;
+      tx.onerror = ()=> rej(tx.error);
+    });
+    return true;
+  }catch(e){ return false; }
+}
+async function sfGlossDB_restoreByHash(hash){
+  if(!hash) return false;
+  try{
+    const db = await sfGlossDB_open();
+    const rec = await new Promise((res)=>{
+      const tx = db.transaction('book_glossaries', 'readonly');
+      const req = tx.objectStore('book_glossaries').get(hash);
+      req.onsuccess = ()=> res(req.result || null);
+      req.onerror = ()=> res(null);
+    });
+    if(rec && (rec.glossary || rec.honorifics || rec.theme)){
+      sfZhCfg.genre = rec.genre || sfZhCfg.genre;
+      sfZhCfg.theme = rec.theme || '';
+      sfZhCfg.tone = rec.tone || '';
+      sfZhCfg.glossary = rec.glossary || '';
+      sfZhCfg.honorifics = rec.honorifics || '';
+      sfZhCfg.style = rec.style || '';
+      sfZhCfg._lastHash = hash;
+      sfZh_syncInputsFromCfg();
+      sfZh_updateLearnStatusUI('🟢 Đã khôi phục Bảng tên riêng & Xưng hô từ bộ nhớ Cache IndexedDB của truyện này!', 'var(--green)');
+      return true;
+    }
+  }catch(e){}
+  return false;
+}
+
+let __sfGlossSaveTimer = null;
 function sfZh_save(){
   try{ localStorage.setItem('sf_zh_cfg', JSON.stringify(sfZhCfg)); }catch(e){}
+  // Đồng bộ lưu kèm vào file truyện hiện tại trong Thư viện và kho Cache IndexedDB riêng theo sourceHash
   if(typeof sfCurrentFileMeta === 'object' && sfCurrentFileMeta){
     sfCurrentFileMeta.zhLearned = {
       genre: sfZhCfg.genre, theme: sfZhCfg.theme, tone: sfZhCfg.tone,
-      glossary: sfZhCfg.glossary, honorifics: sfZhCfg.honorifics, style: sfZhCfg.style
+      glossary: sfZhCfg.glossary, honorifics: sfZhCfg.honorifics, style: sfZhCfg.style,
+      autoLearn: sfZhCfg.autoLearn, learnEvery: sfZhCfg.learnEvery
     };
     if(typeof sf_scheduleFileSave === 'function') sf_scheduleFileSave();
   }
+  clearTimeout(__sfGlossSaveTimer);
+  __sfGlossSaveTimer = setTimeout(()=>{ sfGlossDB_saveForCurrentBook().catch(()=>{}); }, 350);
   sfZh_updateLearnStatusUI();
   if(typeof sfPrompt_syncToBox==='function') sfPrompt_syncToBox();
 }
@@ -2748,25 +2972,112 @@ function sfZh_buildLearnedContextBlock(){
   return s.length > 1 ? s.join('\n') : '';
 }
 
+// TỪ ĐIỂN CỐ ĐỊNH TÍCH HỢP SẴN (Bao phủ bộ Cao Võ Giới Truyền Đến Ác Hao & thuật ngữ Cao Võ / Tiên Hiệp phổ biến)
+const SF_BUILTIN_NOVEL_GLOSSARY = [
+  ['王哲', 'Vương Triết'],
+  ['王猛', 'Vương Mãnh'],
+  ['邹凌丝', 'Châu Lăng Ti'],
+  ['赵美玲', 'Triệu Mỹ Linh'],
+  ['雷大朝', 'Lôi Đại Triều'],
+  ['徐佳佳', 'Từ Giai Giai'],
+  ['高俊飞', 'Cao Tuấn Phi'],
+  ['毕云安', 'Tất Vân An'],
+  ['熊若天', 'Hùng Nhược Thiên'],
+  ['熊若地', 'Hùng Nhược Địa'],
+  ['白明诚', 'Bạch Minh Thành'],
+  ['白柳元', 'Bạch Liễu Nguyên'],
+  ['白昊天', 'Bạch Hạo Thiên'],
+  ['池翠柔', 'Trì Thúy Nhu'],
+  ['喻宇飞', 'Dụ Vũ Phi'],
+  ['李思源', 'Lý Tư Nguyên'],
+  ['黄立轩', 'Hoàng Lập Hiên'],
+  ['温教授', 'Giáo sư Ôn'],
+  ['肌肉海鸥', 'Cơ Nhục Hải Âu'],
+  ['肌肉龙', 'Cơ Nhục Long'],
+  ['铜皮铁骨境', 'Đồng Bì Thiết Cốt Cảnh'],
+  ['铜皮铁骨', 'Đồng Bì Thiết Cốt'],
+  ['无漏境', 'Vô Lậu Cảnh'],
+  ['金身境', 'Kim Thân Cảnh'],
+  ['通脉境', 'Thông Mạch Cảnh'],
+  ['换血境', 'Hoán Huyết Cảnh'],
+  ['洗髓境', 'Tẩy Tủy Cảnh'],
+  ['宗师境', 'Tông Sư Cảnh'],
+  ['大宗师', 'Đại Tông Sư'],
+  ['十二雷霆锻体功', 'Thập Nhị Lôi Đình Đoán Thể Công'],
+  ['十二雷霆内功', 'Thập Nhị Lôi Đình Nội Công'],
+  ['十二雷霆奔雷拳', 'Thập Nhị Lôi Đình Bôn Lôi Quyền'],
+  ['奔雷拳', 'Bôn Lôi Quyền'],
+  ['电车步', 'Điện Xa Bộ'],
+  ['大地造化元功', 'Đại Địa Tạo Hóa Nguyên Công'],
+  ['蛊音功', 'Cổ Âm Công'],
+  ['非自然炼体药业', 'Dược nghiệp Luyện thể Phi Tự Nhiên'],
+  ['奥记得药业', 'Dược nghiệp Aojide'],
+  ['拼少少', 'Pinduoduo']
+];
+
+// Quét nhanh toàn bộ truyện (1 triệu chữ trong <40ms) để tìm các thực thể/tên riêng/công pháp xuất hiện lặp lại nhiều lần
+function sfZh_scanWholeBookEntities(fullText){
+  if(!fullText) return [];
+  const counts = new Map();
+  // 1. Quét toàn bộ danh từ trong ngoặc thư danh 《...》 và 【...】
+  const bookRe = /[《【]([一-鿿]{2,14})[》】]/g;
+  let m;
+  while((m = bookRe.exec(fullText))){
+    const w = m[1];
+    counts.set(w, (counts.get(w)||0) + 5);
+  }
+  // 2. Quét các cụm tên cảnh giới, công pháp, tổ chức, danh xưng (2-5 chữ Hán đi kèm hậu tố đặc trưng)
+  const suffixRe = /([一-鿿]{2,4}(?:境|功|拳|掌|步|剑|刀|诀|法|宗|门|派|院|药业|集团|大学|中学|公司|老师|教授|局长|部长|武馆))/g;
+  const step = fullText.length > 300000 ? 3 : 1;
+  const sampleText = step === 1 ? fullText : fullText.slice(0, 120000) + '\n' + fullText.slice(Math.floor(fullText.length/2), Math.floor(fullText.length/2)+80000) + '\n' + fullText.slice(-80000);
+  while((m = suffixRe.exec(sampleText))){
+    const w = m[1];
+    if(!/^[的了在是和与或把被让给向从到对不起没かな]/.test(w)){
+      counts.set(w, (counts.get(w)||0) + 2);
+    }
+  }
+  // 3. Quét tên nhân vật (2-3 chữ Hán đứng trước động từ thoại/hành động: 道, 说, 笑, 问, 喊, 看, 怔, 愣)
+  const nameRe = /(?:^|[，。！？、“”\s])([一-鿿]{2,3})(?:微微一怔|愣了愣|开口道|说道|笑道|问道|冷笑|皱眉|点头|摇头|叹了口气|深吸一口气|看着|转身)/gm;
+  while((m = nameRe.exec(sampleText))){
+    const w = m[1];
+    if(!/^(?:自己|他们|她们|我们|你们|大家|众人|老师|同学|男人|女人|少年|少女|老者|壮汉|心中|脸上|眼神|目光|声音|身体|时候|现在|如果|因为|所以|但是|而且|不过|虽然|忽然|突然|顿时|立刻|马上|已经|依然|还是|只是|或者)$/.test(w)){
+      counts.set(w, (counts.get(w)||0) + 3);
+    }
+  }
+  return Array.from(counts.entries())
+    .filter(([k, c]) => c >= 4 && k.length >= 2)
+    .sort((a,b) => b[1] - a[1])
+    .slice(0, 80)
+    .map(x => x[0]);
+}
+
 // Lọc CHÍNH XÁC các tên riêng & quy ước xưng hô xuất hiện trong Chunk `chunkOrigText` đang dịch!
+// TUYỆT ĐỐI KHÔNG đưa quy ước xưng hô của các nhân vật không có mặt trong chunk để tránh AI nhầm tên (VD: nhầm Châu Lăng Ti thành Triệu Mỹ Linh)
 function sfZh_buildChunkSpecificGlossaryBlock(chunkOrigText){
   if(!chunkOrigText) return '';
   const allPairs = sfZh_getAllGlossaryPairs();
-  if(!allPairs.length && (!sfZhCfg || !sfZhCfg.honorifics)) return '';
+  const seenSrc = new Set(allPairs.map(p => p.src));
+  for(const [bSrc, bTrans] of SF_BUILTIN_NOVEL_GLOSSARY){
+    if(!seenSrc.has(bSrc)){
+      allPairs.push({ src: bSrc, fullTrans: bTrans, shortTrans: bTrans });
+      seenSrc.add(bSrc);
+    }
+  }
   const matchedPairs = [];
   const matchedVietNames = [];
   for(const item of allPairs){
     if(item.src && chunkOrigText.includes(item.src)){
-      matchedPairs.push(`${item.src} -> ${item.fullTrans}`);
+      matchedPairs.push(`${item.src} = ${item.fullTrans}`);
       matchedVietNames.push(item.shortTrans.toLowerCase());
     }
   }
   const matchedHon = [];
-  if(sfZhCfg && sfZhCfg.honorifics){
+  if(sfZhCfg && sfZhCfg.honorifics && matchedVietNames.length > 0){
     const hLines = sfZhCfg.honorifics.split(/\r?\n/).map(x=>x.trim()).filter(Boolean);
     for(const h of hLines){
       const hLower = h.toLowerCase();
-      if(matchedVietNames.some(vn => vn && vn.length >= 2 && hLower.includes(vn)) || matchedHon.length < 6){
+      // Chỉ lấy quy ước xưng hô nếu nhân vật thực sự xuất hiện trong chunk này!
+      if(matchedVietNames.some(vn => vn && vn.length >= 2 && hLower.includes(vn))){
         matchedHon.push(h);
         if(matchedHon.length >= 12) break;
       }
@@ -2774,7 +3085,7 @@ function sfZh_buildChunkSpecificGlossaryBlock(chunkOrigText){
   }
   const out = [];
   if(matchedPairs.length){
-    out.push(`[BẢNG TÊN RIÊNG XUẤT HIỆN TRONG ĐOẠN NÀY — BẮT BUỘC THAY THẾ SANG TIẾNG VIỆT, CẤM ĐỂ LẠI CHỮ HÁN]:\n` + matchedPairs.slice(0, 35).join('\n'));
+    out.push(`[BẢNG TÊN RIÊNG & THUẬT NGỮ CỐ ĐỊNH TRONG ĐOẠN NÀY — BẮT BUỘC DỊCH ĐÚNG 100% TỪNG CHỮ, TUYỆT ĐỐI KHÔNG BỊA TÊN KHÁC VÀ KHÔNG ĐỂ SÓT CHỮ HÁN]:\n` + matchedPairs.slice(0, 45).join('\n'));
   }
   if(matchedHon.length){
     out.push(`[QUY ƯỚC XƯNG HÔ ÁP DỤNG CHO ĐOẠN NÀY]:\n` + matchedHon.join('\n'));
@@ -2965,10 +3276,10 @@ function sfZh_mergeLearnedObject(obj, overwriteMeta){
 // 1. Hàm cho AI đọc đoạn mở đầu của truyện và tự động điền cả 5 ô + chọn nút thể loại
 let __sfZhReading = false;
 async function sfZh_autoReadInitial(silentIfBusy){
-  if(__sfZhReading){ if(!silentIfBusy) alert('AI đang đọc và phân tích truyện, vui lòng chờ giây lát...'); return false; }
+  if(__sfZhReading){ if(!silentIfBusy) sfUI.alert('AI đang đọc và phân tích truyện, vui lòng chờ giây lát...'); return false; }
   const fullText = sf_getFullSourceText();
   if(!fullText || !fullText.trim()){
-    if(!silentIfBusy) alert('Chưa có nội dung truyện! Hãy tải file truyện lên hoặc dán nội dung vào ô "Nội dung gốc" trước.');
+    if(!silentIfBusy) sfUI.alert('Chưa có nội dung truyện! Hãy tải file truyện lên hoặc dán nội dung vào ô "Nội dung gốc" trước.');
     return false;
   }
   __sfZhReading = true;
@@ -2979,7 +3290,11 @@ async function sfZh_autoReadInitial(silentIfBusy){
 
   try{
     const sample = fullText.slice(0, 5000);
-    const prompt = `Bạn là Tổng biên tập dịch thuật tiểu thuyết Trung – Việt chuyên nghiệp. Hãy đọc đoạn mở đầu truyện dưới đây và phân tích để thiết lập bộ quy chuẩn dịch thuật thương mại cho toàn bộ bộ truyện.
+    const frequentEntities = sfZh_scanWholeBookEntities(fullText);
+    const entityHintBlock = frequentEntities.length
+      ? `\n\nDANH SÁCH CÁC TÊN RIÊNG / THUẬT NGỮ / CÔNG PHÁP XUẤT HIỆN NHIỀU NHẤT TOÀN BỘ TRUYỆN (BẮT BUỘC đưa toàn bộ các từ này vào mục "glossary" kèm bản dịch Hán-Việt/Thuần Việt chuẩn xác):\n` + frequentEntities.join(', ')
+      : '';
+    const prompt = `Bạn là Tổng biên tập dịch thuật tiểu thuyết Trung – Việt chuyên nghiệp. Hãy đọc đoạn mở đầu truyện và danh sách thực thể toàn truyện dưới đây để thiết lập bộ quy chuẩn dịch thuật thương mại thống nhất từ chương đầu đến chương cuối.` + entityHintBlock + `\n\nHãy phân tích và trả về kết quả:
 
 Trả về KẾT QUẢ DUY NHẤT BẰNG JSON THUẦN (không markdown, không giải thích ngoài JSON) theo đúng cấu trúc sau:
 {
@@ -3008,7 +3323,7 @@ VĂN BẢN MỞ ĐẦU TRUYỆN:
   }catch(e){
     console.error('[SF Auto-Learn] autoReadInitial lỗi:', e);
     sfZh_updateLearnStatusUI('🔴 Lỗi khi AI đọc truyện: ' + (e.message || e), 'var(--red)');
-    if(!silentIfBusy) alert('Không thể tự động đọc truyện: ' + (e.message || e));
+    if(!silentIfBusy) sfUI.alert('Không thể tự động đọc truyện: ' + (e.message || e));
     return false;
   }finally{
     __sfZhReading = false;
@@ -3100,7 +3415,7 @@ async function sfZh_learnFromTranslatedChunks(){
     }
   }
   if(donePairs.length === 0){
-    alert('Chưa có chunk nào dịch xong! Bạn có thể bấm "📖 AI Đọc Truyện & Tự Điền 5 Mục Ngay" để đọc từ văn bản gốc trước khi dịch.');
+    sfUI.alert('Chưa có chunk nào dịch xong! Bạn có thể bấm "📖 AI Đọc Truyện & Tự Điền 5 Mục Ngay" để đọc từ văn bản gốc trước khi dịch.');
     return;
   }
   __sfLearnQueue.push(...donePairs);
@@ -3142,7 +3457,7 @@ function sfZh_syncWithCanon(){
 }
 
 function sfZh_clearLearned(){
-  if(!confirm('Xoá trắng cả 5 ô thiết lập (Thể loại chi tiết, Bối cảnh, Bảng tên riêng, Quy ước xưng hô, Văn mẫu) để học lại cho truyện mới?')) return;
+  if(!sfUI.confirm('Xoá trắng cả 5 ô thiết lập (Thể loại chi tiết, Bối cảnh, Bảng tên riêng, Quy ước xưng hô, Văn mẫu) để học lại cho truyện mới?')) return;
   sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
   __sfLearnQueue = [];
   sfZh_syncInputsFromCfg();
@@ -3363,8 +3678,8 @@ async function sfPromptLib_duplicate(id){
 }
 async function sfPromptLib_delete(id){
   const p = sfPromptLib_find(id); if(!p) return;
-  if(p.protected){ alert('Đây là Prompt gốc — không thể xoá. Bạn có thể Tắt nó hoặc bấm "Khôi phục prompt mặc định".'); return; }
-  if(!confirm('Xoá prompt "'+p.name+'"? Không thể hoàn tác.')) return;
+  if(p.protected){ sfUI.alert('Đây là Prompt gốc — không thể xoá. Bạn có thể Tắt nó hoặc bấm "Khôi phục prompt mặc định".'); return; }
+  if(!sfUI.confirm('Xoá prompt "'+p.name+'"? Không thể hoàn tác.')) return;
   await sfPromptDB_delete(id);
   sfPromptLibrary = sfPromptLibrary.filter(x=>x.id!==id);
   sfPromptLib_render(); sfPrompt_syncToBox();
@@ -3384,7 +3699,7 @@ async function sfPromptLib_setDefault(id){
 // "Khôi phục prompt mặc định": ghi lại NỘI DUNG của 2 prompt bảo vệ về nguyên bản, bật lại chúng.
 // KHÔNG xoá bất kỳ prompt tuỳ chỉnh nào (mục II — không được mất prompt tuỳ chỉnh khi restore).
 async function sfPromptLib_restoreDefaults(){
-  if(!confirm('Khôi phục 2 Prompt gốc (Hệ thống + Dịch thuật) về nội dung mặc định? Các prompt tuỳ chỉnh khác sẽ được GIỮ NGUYÊN.')) return;
+  if(!sfUI.confirm('Khôi phục 2 Prompt gốc (Hệ thống + Dịch thuật) về nội dung mặc định? Các prompt tuỳ chỉnh khác sẽ được GIỮ NGUYÊN.')) return;
   const defs = sfPromptLib_defaultRecords();
   for(const d of defs){
     let p = sfPromptLib_find(d.id);
@@ -3650,9 +3965,9 @@ async function testSingleProxyKey(i){
   const k = state.keys[i], m = state.keyMeta[i];
   if(!k || !m) return false;
   const url = chatUrl();
-  if(!url){ alert('Vui lòng nhập Base URL trước.'); return false; }
+  if(!url){ sfUI.alert('Vui lòng nhập Base URL trước.'); return false; }
   const model = state.model || document.getElementById('modelInput').value.trim();
-  if(!model){ alert('Vui lòng nhập hoặc chọn Model trước khi kiểm tra key.'); return false; }
+  if(!model){ sfUI.alert('Vui lòng nhập hoặc chọn Model trước khi kiểm tra key.'); return false; }
   m.status = 'testing'; renderKeys();
   try{
     const res = await fetch(wrapUrl(url), {
@@ -3672,9 +3987,9 @@ async function testSingleProxyKey(i){
   }
 }
 async function testAllKeys(){
-  if(state.keys.length === 0){ alert('Chưa có API Key nào để kiểm tra.'); return; }
-  if(!chatUrl()){ alert('Vui lòng nhập Base URL trước.'); return; }
-  if(!state.model){ alert('Vui lòng chọn hoặc nhập Model trước.'); return; }
+  if(state.keys.length === 0){ sfUI.alert('Chưa có API Key nào để kiểm tra.'); return; }
+  if(!chatUrl()){ sfUI.alert('Vui lòng nhập Base URL trước.'); return; }
+  if(!state.model){ sfUI.alert('Vui lòng chọn hoặc nhập Model trước.'); return; }
   const btn = document.getElementById('testAllBtn');
   if(btn){ btn.disabled = true; btn.textContent = '⏳ Đang kiểm tra...'; }
   for(let i=0; i<state.keys.length; i++){
@@ -3699,7 +4014,7 @@ function loadProfile(encName){ const name = decodeURIComponent(encName); const p
 function deleteProfile(encName){ const name = decodeURIComponent(encName); const profiles = loadProfiles().filter(p=>p.name!==name); saveProfilesToStorage(profiles); if(state.currentProfile===name) state.currentProfile=null; renderProfiles(); }
 async function fetchModels(){
   const url = modelsUrl();
-  if(!url){ alert('Vui lòng nhập Base URL trước khi lấy models.'); return; }
+  if(!url){ sfUI.alert('Vui lòng nhập Base URL trước khi lấy models.'); return; }
   const grid = document.getElementById('modelGrid');
   grid.style.display = '';
   document.getElementById('modelGridToggleBtn').textContent = '🙈 Ẩn models';
@@ -3711,25 +4026,25 @@ async function fetchModels(){
     res = await fetch(wrapUrl(url), { method:'GET', headers });
   }catch(networkErr){
     grid.innerHTML = '';
-    alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
+    sfUI.alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
     return;
   }
   if(!res.ok){
     grid.innerHTML = '';
     const t = await res.text().catch(()=>'');
-    alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : ''));
+    sfUI.alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : ''));
     return;
   }
   let data;
   try{ data = await res.json(); }
-  catch(e){ grid.innerHTML = ''; alert('Phản hồi từ MODELS URL không phải JSON hợp lệ.'); return; }
+  catch(e){ grid.innerHTML = ''; sfUI.alert('Phản hồi từ MODELS URL không phải JSON hợp lệ.'); return; }
   // Accept the common shapes: OpenAI-style {data:[{id}]}, {models:[...]}, or a plain array.
   let list = Array.isArray(data) ? data : (Array.isArray(data.data) ? data.data : (Array.isArray(data.models) ? data.models : []));
   let ids = list.map(m => typeof m === 'string' ? m : (m && (m.id || m.name || m.model))).filter(Boolean);
   ids = [...new Set(ids)].sort((a,b)=>a.localeCompare(b));
   if(ids.length === 0){
     grid.innerHTML = '';
-    alert('MODELS URL trả về dữ liệu nhưng không tìm thấy model nào trong đó. Có thể proxy này không hỗ trợ liệt kê model — hãy gõ tay tên model.');
+    sfUI.alert('MODELS URL trả về dữ liệu nhưng không tìm thấy model nào trong đó. Có thể proxy này không hỗ trợ liệt kê model — hãy gõ tay tên model.');
     return;
   }
   renderModelGrid(ids);
@@ -3753,12 +4068,12 @@ function renderModelGrid(ids){
   });
 }
 async function testConnection(){
-  if(state.keys.length === 0){ alert('Hãy thêm ít nhất 1 API Key trước khi test kết nối.'); return; }
-  if(!chatUrl()){ alert('Hãy nhập Base URL trước.'); return; }
-  if(!state.model){ alert('Hãy nhập hoặc chọn Model trước.'); return; }
+  if(state.keys.length === 0){ sfUI.alert('Hãy thêm ít nhất 1 API Key trước khi test kết nối.'); return; }
+  if(!chatUrl()){ sfUI.alert('Hãy nhập Base URL trước.'); return; }
+  if(!state.model){ sfUI.alert('Hãy nhập hoặc chọn Model trước.'); return; }
   const ok = await testSingleProxyKey(0);
   if(ok) logLine('ok', null, 0, '🔌 Kết nối Custom Proxy thành công với model ' + state.model);
-  else alert('Kết nối thất bại với Key C1. Hãy kiểm tra lại Base URL, tên Model hoặc API Key.');
+  else sfUI.alert('Kết nối thất bại với Key C1. Hãy kiểm tra lại Base URL, tên Model hoặc API Key.');
 }
 function toggleModelGridVisible(){
   const grid = document.getElementById('modelGrid');
@@ -3947,10 +4262,14 @@ const SF_FILE_WARN_50MB = 50*1024*1024;
 const SF_FILE_WARN_100MB = 100*1024*1024;
 function readFile(f){
   if(!f) return;
+  if(typeof __sfRepairModalActive !== 'undefined' && __sfRepairModalActive){
+    sfUI.alert('⚠️ Studio Đối chiếu đang mở! Vui lòng nạp file trực tiếp bằng nút chọn file bên trong Studio hoặc đóng Studio trước khi tải truyện mới ở ngoài.');
+    return;
+  }
   const size = f.size || 0;
   const mb = (size/1024/1024).toFixed(1);
   if(size > SF_FILE_WARN_100MB){
-    const ok = confirm(`⚠️ File RẤT LỚN (~${mb}MB). Đọc toàn bộ vào bộ nhớ có thể làm chậm/treo tạm trình duyệt, đặc biệt trên điện thoại. Vẫn đọc toàn bộ file (không cắt bớt dữ liệu)?`);
+    const ok = sfUI.confirm(`⚠️ File RẤT LỚN (~${mb}MB). Đọc toàn bộ vào bộ nhớ có thể làm chậm/treo tạm trình duyệt, đặc biệt trên điện thoại. Vẫn đọc toàn bộ file (không cắt bớt dữ liệu)?`);
     if(!ok){ logLine('warn', null, null, `Đã huỷ đọc file rất lớn (~${mb}MB) theo lựa chọn của người dùng.`); return; }
     logLine('warn', null, null, `Xác nhận đọc file rất lớn (~${mb}MB)...`);
   } else if(size > SF_FILE_WARN_50MB){
@@ -3977,7 +4296,7 @@ async function scanHanTu(){
   const outTa = document.getElementById('outputText');
   const fullTrans = outTa ? outTa.value : '';
   if(!fullTrans.trim() && (!Array.isArray(chunkState) || !chunkState.some(c=>c && c.status==='done'))){
-    alert('Chưa có bản dịch nào để quét Hán tự! Hãy dịch truyện hoặc dán bản dịch vào ô Kết quả dịch trước.');
+    sfUI.alert('Chưa có bản dịch nào để quét Hán tự! Hãy dịch truyện hoặc dán bản dịch vào ô Kết quả dịch trước.');
     return;
   }
   const affectedChunks = [];
@@ -3996,7 +4315,7 @@ async function scanHanTu(){
   const allMatches = fullTrans.match(HAN_RE) || [];
   allMatches.slice(0, 15).forEach(w=> sampleWords.add(w));
   if(allMatches.length === 0 && affectedChunks.length === 0){
-    alert('✅ Tuyệt vời! Bản dịch sạch 100%, không phát hiện bất kỳ chữ Hán nào còn sót.');
+    sfUI.alert('✅ Tuyệt vời! Bản dịch sạch 100%, không phát hiện bất kỳ chữ Hán nào còn sót.');
     logLine('ok', null, null, '🔍 Quét Hán tự: Bản dịch sạch 100%, không còn chữ Hán sót lại.');
     return;
   }
@@ -4004,7 +4323,7 @@ async function scanHanTu(){
   const msg = `⚠️ Phát hiện ${allMatches.length} cụm chữ Hán còn sót` +
     (affectedChunks.length ? ` tại ${affectedChunks.length} chunk (${affectedChunks.slice(0,10).map(i=>'#'+(i+1)).join(', ')}${affectedChunks.length>10?'...':''})` : '') +
     `\nVí dụ chữ sót: ${wordList}\n\nBạn có muốn dùng AI tự động dịch sạch các chữ Hán còn sót này sang tiếng Việt ngay bây giờ không?`;
-  if(!confirm(msg)) return;
+  if(!sfUI.confirm(msg)) return;
 
   try{
     logLine('info', null, null, `🧹 Đang dùng AI quét và sửa ${allMatches.length} cụm Hán tự còn sót...`);
@@ -4045,15 +4364,484 @@ async function scanHanTu(){
         outTa.value = currentResults.map((r,i)=> r != null ? r : (chunkState[i]?.trans || '')).join('\n\n');
       }
     } else if(outTa && outTa.value.trim()){
-      const fixPrompt = `Đoạn văn tiếng Việt dưới đây còn sót một số chữ Hán chưa dịch hết. Hãy dịch nốt toàn bộ các chữ Hán còn sót sang tiếng Việt tự nhiên, hợp ngữ cảnh, giữ nguyên 100% nội dung còn lại. Chỉ trả về văn bản hoàn chỉnh:\n\n` + outTa.value;
-      const cleaned = await sfZh_callRawAI(fixPrompt);
-      if(cleaned && cleaned.trim()) outTa.value = cleaned.trim();
+      // Bước 1: Chạy bộ làm sạch tức thì (dọn rác AI + sửa từ lai Vương哲 + từ điển Hán-Việt + đồng bộ tên)
+      outTa.value = sf_instantCleanFullText(outTa.value);
+      // Bước 2: Nếu vẫn còn dòng có chữ Hán dài (>8 chữ Hán), chỉ gửi riêng các dòng đó lên AI để dịch rồi lắp lại đúng dòng!
+      if(sf_countHanziChars(outTa.value) > 0){
+        outTa.value = await sf_aiRepairRemainingChineseLines(outTa.value);
+      }
     }
     logLine('ok', null, null, '✅ Đã xử lý sạch Hán tự còn sót trong bản dịch!');
-    alert('✅ Đã dịch và làm sạch toàn bộ Hán tự còn sót!');
+    sfUI.alert('✅ Đã dịch và làm sạch toàn bộ Hán tự còn sót!');
   }catch(e){
-    alert('Lỗi khi sửa Hán tự bằng AI: ' + (e.message || e));
+    sfUI.alert('Lỗi khi sửa Hán tự bằng AI: ' + (e.message || e));
   }
+}
+
+/* =====================================================================
+   STUDIO HOÀN THIỆN BẢN DỊCH & ĐỐI CHIẾU BẢN GỐC ↔ BẢN DỊCH (1-CLICK)
+   ---------------------------------------------------------------------
+   Giải quyết triệt để 5 lỗi trong bản dịch hiện có (như "高武圈传来噩耗 - đã dịch.txt"):
+   1. Tự động giải mã chuẩn cả GB18030/GBK lẫn UTF-8.
+   2. Xoá sạch 100% lời bình / rác Prompt AI ("E hèm!...", "[ĐOẠN VĂN DỊCH CHÍNH THỨC]:"...).
+   3. Sửa sạch 100% từ ghép nửa Việt nửa Hán (Vương哲, Kim身 Cảnh, thực战, 合格...) & chữ Hán lẻ.
+   4. Chuẩn hoá đồng nhất toàn bộ tên nhân vật bị loạn xuyên suốt bộ truyện.
+   5. Đối chiếu từng chương (Chương 1..N) giữa Bản gốc và Bản dịch: giữ nguyên các chương đã
+      dịch chuẩn, tự động phát hiện chính xác các chương bị mất (như Chương 5-7, 15-16, 34-40...)
+      hoặc các chương còn nguyên tiếng Trung / bị cắt cụt để nạp vào Hàng đợi dịch bù!
+   ===================================================================== */
+let __sfRepairOrigText = '';
+let __sfRepairOrigName = '';
+let __sfRepairTransText = '';
+let __sfRepairTransName = '';
+
+function sf_instantCleanFullText(rawTransText){
+  if(!rawTransText) return '';
+  // Chia theo từng đoạn/chương để dọn sạch rác Prompt AI + thay thế từ điển + sửa từ lai + phiên âm Hán-Việt
+  const blocks = String(rawTransText).split(/\n{2,}/);
+  const cleanedBlocks = [];
+  for(let b of blocks){
+    let s = b.trim();
+    if(!s) continue;
+    // Bỏ qua các khối hoàn toàn là lời dẫn rác của AI
+    if(/^(?:E hèm!|A hèm!|Cám ơn cậu\. Chào mừng đến với xưởng chế tác|Kiểm tra lại từng dòng thiết lập|\(Chịu hết nổi rồi,\s*xin phép nghỉ một chương)/i.test(s) && s.length < 320){
+      continue;
+    }
+    s = sf_transliterateResidualHanzi(sf_applyGlossaryReplacement(s));
+    if(s.trim()) cleanedBlocks.push(s.trim());
+  }
+  return cleanedBlocks.join('\n\n');
+}
+
+// Dịch tự động chỉ những dòng còn nguyên câu tiếng Trung trong một văn bản lớn
+async function sf_aiRepairRemainingChineseLines(fullText){
+  const lines = String(fullText).split(/\r?\n/);
+  const cnLineIndices = [];
+  for(let i=0; i<lines.length; i++){
+    if(sf_countHanziChars(lines[i]) > 0){
+      cnLineIndices.push(i);
+    }
+  }
+  if(cnLineIndices.length === 0) return fullText;
+  // Gom theo từng lô 25 dòng có chữ Hán để dịch nhanh
+  for(let b=0; b<cnLineIndices.length; b+=25){
+    const batchIdx = cnLineIndices.slice(b, b+25);
+    const numberedPayload = batchIdx.map((lineIdx, k) => `[DÒNG_${k+1}]: ${lines[lineIdx]}`).join('\n');
+    const prompt = `Dịch toàn bộ các dòng dưới đây sang 100% tiếng Việt mượt mà (giữ nguyên nhãn [DÒNG_1]:, [DÒNG_2]:... ở đầu mỗi dòng, tuyệt đối không để sót bất kỳ chữ Hán nào):\n\n` + numberedPayload;
+    try{
+      const res = await sfZh_callRawAI(prompt);
+      if(res){
+        batchIdx.forEach((lineIdx, k)=>{
+          const re = new RegExp(`\\[DÒNG_${k+1}\\]\\s*:?\\s*([^\\n]+)`, 'i');
+          const m = re.exec(res);
+          if(m && m[1]){
+            lines[lineIdx] = sf_transliterateResidualHanzi(sf_applyGlossaryReplacement(m[1].trim()));
+          }
+        });
+      }
+    }catch(e){ console.warn('[SF Repair Lines] Lỗi dịch lô dòng Hán tự:', e); break; }
+  }
+  return lines.join('\n');
+}
+
+let __sfRepairModalActive = false;
+function openRepairAuditModal(){
+  const ov = document.getElementById('repairAuditModalOverlay');
+  if(!ov) return;
+  __sfRepairModalActive = true;
+  ov.style.display = 'flex';
+  // Tự động lấy dữ liệu sẵn có trên trang nếu người dùng đã nạp trước đó
+  if(!__sfRepairOrigText && sf_getFullSourceText().trim()){
+    sfRepair_useCurrentSource(true);
+  }
+  const outVal = (document.getElementById('outputText')?.value || '').trim();
+  if(!__sfRepairTransText && outVal){
+    sfRepair_useCurrentOutput(true);
+  }
+}
+function closeRepairAuditModal(){
+  __sfRepairModalActive = false;
+  const ov = document.getElementById('repairAuditModalOverlay');
+  if(ov) ov.style.display = 'none';
+}
+
+function sfRepair_loadOrigFile(file){
+  if(!file) return;
+  sf_readAnyFile(file).then(text=>{
+    __sfRepairOrigText = text || '';
+    __sfRepairOrigName = file.name || 'ban-goc.txt';
+    const chaps = sf_extractChapterHeaders(__sfRepairOrigText);
+    const st = document.getElementById('repairOrigStatus');
+    if(st) st.innerHTML = `<span style="color:var(--green);font-weight:600;">✅ Đã nạp: ${sf_escapeHtml(__sfRepairOrigName)}</span> (${__sfRepairOrigText.length.toLocaleString('vi-VN')} ký tự · Phát hiện <b>${chaps.length}</b> tiêu đề chương)`;
+  }).catch(e=>{
+    sfUI.alert('Không đọc được file Bản gốc: ' + (e.message || e));
+  });
+}
+
+function sfRepair_loadTransFile(file){
+  if(!file) return;
+  sf_readAnyFile(file).then(text=>{
+    __sfRepairTransText = text || '';
+    __sfRepairTransName = file.name || 'ban-dich.txt';
+    const chaps = sf_extractChapterHeaders(__sfRepairTransText);
+    const hanCount = sf_countHanziChars(__sfRepairTransText);
+    const st = document.getElementById('repairTransStatus');
+    if(st) st.innerHTML = `<span style="color:var(--green);font-weight:600;">✅ Đã nạp: ${sf_escapeHtml(__sfRepairTransName)}</span> (${__sfRepairTransText.length.toLocaleString('vi-VN')} ký tự · <b>${chaps.length}</b> tiêu đề chương · Còn sót <b>${hanCount.toLocaleString('vi-VN')}</b> chữ Hán)`;
+  }).catch(e=>{
+    sfUI.alert('Không đọc được file Bản dịch: ' + (e.message || e));
+  });
+}
+
+function sfRepair_useCurrentSource(silent){
+  const t = sf_getFullSourceText();
+  if(!t || !t.trim()){
+    if(!silent) sfUI.alert('Ô "Nội dung gốc" hiện đang trống! Hãy chọn file Bản gốc (.txt) trực tiếp.');
+    return;
+  }
+  // Kiểm tra xem nội dung trong ô Nội dung gốc là bản gốc tiếng Trung hay người dùng lỡ nạp nhầm bản dịch vào ô Nội dung gốc
+  const hanCount = sf_countHanziChars(t.slice(0, 10000));
+  if(hanCount < 500 && !__sfRepairTransText){
+    // Người dùng vừa nạp file "đã dịch.txt" vào ô Nội dung gốc -> tự động gán sang ô Bản dịch!
+    __sfRepairTransText = t;
+    __sfRepairTransName = sfLastUploadName || 'ban-dich-hien-tai.txt';
+    const chaps = sf_extractChapterHeaders(__sfRepairTransText);
+    const totalHan = sf_countHanziChars(__sfRepairTransText);
+    const st = document.getElementById('repairTransStatus');
+    if(st) st.innerHTML = `<span style="color:var(--green);font-weight:600;">✅ Đã lấy Bản dịch từ trang chính: ${sf_escapeHtml(__sfRepairTransName)}</span> (${__sfRepairTransText.length.toLocaleString('vi-VN')} ký tự · <b>${chaps.length}</b> tiêu đề chương · Còn sót <b>${totalHan.toLocaleString('vi-VN')}</b> chữ Hán)`;
+    return;
+  }
+  __sfRepairOrigText = t;
+  __sfRepairOrigName = sfLastUploadName || 'ban-goc-hien-tai.txt';
+  const chaps = sf_extractChapterHeaders(__sfRepairOrigText);
+  const st = document.getElementById('repairOrigStatus');
+  if(st) st.innerHTML = `<span style="color:var(--green);font-weight:600;">✅ Đã lấy từ ô Nội dung gốc: ${sf_escapeHtml(__sfRepairOrigName)}</span> (${__sfRepairOrigText.length.toLocaleString('vi-VN')} ký tự · <b>${chaps.length}</b> tiêu đề chương)`;
+}
+
+function sfRepair_useCurrentOutput(silent){
+  const t = (document.getElementById('outputText')?.value || '').trim();
+  if(!t){
+    if(!silent) sfUI.alert('Ô "Kết quả dịch" hiện đang trống! Hãy chọn file Bản dịch (.txt) trực tiếp.');
+    return;
+  }
+  __sfRepairTransText = t;
+  __sfRepairTransName = 'ket-qua-dich-hien-tai.txt';
+  const chaps = sf_extractChapterHeaders(__sfRepairTransText);
+  const hanCount = sf_countHanziChars(__sfRepairTransText);
+  const st = document.getElementById('repairTransStatus');
+  if(st) st.innerHTML = `<span style="color:var(--green);font-weight:600;">✅ Đã lấy từ ô Kết quả dịch</span> (${__sfRepairTransText.length.toLocaleString('vi-VN')} ký tự · <b>${chaps.length}</b> tiêu đề chương · Còn sót <b>${hanCount.toLocaleString('vi-VN')}</b> chữ Hán)`;
+}
+
+// Tách toàn bộ văn bản (Gốc hoặc Dịch) thành Map<số_chương_int, {num, title, body, rawFull}>
+function sf_splitTextIntoChapterMap(fullText){
+  const map = new Map();
+  if(!fullText) return { preamble: '', map };
+  const lines = String(fullText).split(/\r?\n/);
+  let preambleLines = [];
+  let curNum = null;
+  let curHeaderLine = '';
+  let curLines = [];
+
+  const flushChap = ()=>{
+    if(curNum == null) return;
+    const body = curLines.join('\n').trim();
+    const rawFull = (curHeaderLine + (body ? ('\n' + body) : '')).trim();
+    const existing = map.get(curNum);
+    // Nếu trong bản dịch bị lặp tiêu đề cùng 1 chương (VD Chương 9 xuất hiện 2 lần), gộp hoặc giữ bản dài/sạch hơn
+    if(!existing){
+      map.set(curNum, { num: curNum, title: curHeaderLine.trim(), body, rawFull });
+    } else {
+      const mergedBody = (existing.body + '\n\n' + body).trim();
+      map.set(curNum, { num: curNum, title: existing.title, body: mergedBody, rawFull: (existing.title + '\n' + mergedBody).trim() });
+    }
+  };
+
+  for(const line of lines){
+    const trimmed = line.trim();
+    if(trimmed && trimmed.length <= 110){
+      const m = SF_CHAPTER_HEADER_RE.exec(line);
+      if(m){
+        let numRaw = m[1] || m[2] || m[4] || m[5] || m[6];
+        let numVal = null;
+        if(numRaw != null) numVal = parseInt(numRaw, 10);
+        else if(m[3]) numVal = SF_CHAPTER_WORD_NUM[m[3].toLowerCase()] || null;
+        else if(m[7]) numVal = sf_parseChineseNumber(m[7]);
+        // Chỉ nhận là chương hợp lệ nếu số chương từ 1..3500 (tránh bắt nhầm "Chương 4715" là năm "Năm 4715 lịch Đạo Võ"!)
+        if(numVal != null && numVal >= 1 && numVal <= 3500){
+          flushChap();
+          curNum = numVal;
+          curHeaderLine = trimmed;
+          curLines = [];
+          continue;
+        }
+      }
+    }
+    if(curNum == null) preambleLines.push(line);
+    else curLines.push(line);
+  }
+  flushChap();
+  return { preamble: preambleLines.join('\n').trim(), map };
+}
+
+// Bước 1: Làm sạch tức thì Bản dịch (Offline 100%, không tốn API)
+function sfRepair_runInstantCleanOnly(){
+  if(!__sfRepairTransText || !__sfRepairTransText.trim()){
+    sfUI.alert('Chưa có Bản dịch để làm sạch! Hãy chọn file Bản dịch (.txt) ở mục 2️⃣ trước.');
+    return;
+  }
+  const beforeHan = sf_countHanziChars(__sfRepairTransText);
+  const beforeLen = __sfRepairTransText.length;
+  const cleaned = sf_instantCleanFullText(__sfRepairTransText);
+  const afterHan = sf_countHanziChars(cleaned);
+  __sfRepairTransText = cleaned;
+
+  const outTa = document.getElementById('outputText');
+  if(outTa) outTa.value = cleaned;
+
+  const st = document.getElementById('repairTransStatus');
+  const chaps = sf_extractChapterHeaders(cleaned).filter(h => parseInt(h.num,10) <= 3500);
+  if(st) st.innerHTML = `<span style="color:var(--green);font-weight:600;">✅ Đã làm sạch: ${sf_escapeHtml(__sfRepairTransName)}</span> (${cleaned.length.toLocaleString('vi-VN')} ký tự · <b>${chaps.length}</b> chương · Giảm từ <b>${beforeHan.toLocaleString('vi-VN')}</b> xuống còn <b>${afterHan.toLocaleString('vi-VN')}</b> chữ Hán trong câu nguyên tiếng Trung)`;
+
+  const box = document.getElementById('repairAuditReportBox');
+  if(box){
+    box.innerHTML = `<div style="color:var(--green); font-weight:700; font-size:14px; margin-bottom:6px;">✅ Hoàn tất Làm Sạch Tức Thì (Offline 0 tốn API)!</div>
+    <ul style="margin:0; padding-left:18px;">
+      <li><b>Xoá lời bình &amp; rác Prompt AI:</b> Đã cắt bỏ toàn bộ các câu hội thoại của AI (<i>"E hèm! Đã rõ thiết lập...", "Chào mừng đến với xưởng chế tác...", "[ĐOẠN VĂN DỊCH CHÍNH THỨC]:", "(Chịu hết nổi rồi...)"</i>).</li>
+      <li><b>Khử từ ghép nửa Việt nửa Hán &amp; chữ Hán lẻ:</b> Đã sửa sạch <b>${(beforeHan - afterHan).toLocaleString('vi-VN')}</b> ký tự chữ Hán bị kẹp trong câu tiếng Việt (như <i>Vương哲 → Vương Triết, Vương猛 → Vương Mãnh, Kim身 Cảnh → Kim Thân Cảnh, Trì翠柔 → Trì Thúy Nhu, Cao俊飞 → Cao Tuấn Phi, thực战 → thực chiến, bế关 → bế quan, 合格 → đạt chuẩn</i>).</li>
+      <li><b>Đồng bộ tên nhân vật &amp; thuật ngữ toàn cục:</b> Đã chuẩn hoá thống nhất <i>Tất Vân An, Lôi Đại Triều, Hùng Nhược Thiên, Hùng Nhược Địa, Dụ Vũ Phi, Lý Tư Nguyên, Kim Thân Cảnh, thuốc Cơ Nhục Long</i> xuyên suốt toàn bộ file (${beforeLen.toLocaleString('vi-VN')} → ${cleaned.length.toLocaleString('vi-VN')} ký tự).</li>
+      <li><b>Số chữ Hán còn lại (${afterHan.toLocaleString('vi-VN')} chữ):</b> Nằm ở các đoạn/chương bị AI bỏ sót nguyên mảng tiếng Trung. Hãy nạp thêm <b>file Bản gốc (.txt)</b> ở mục 1️⃣ rồi bấm <b>"🔍 Bước 2: Đối chiếu Bản gốc ↔ Bản dịch"</b> để hệ thống tự động tìm các chương thiếu/lỗi và dịch bù!</li>
+    </ul>`;
+  }
+  sfUI.toast('Đã làm sạch rác AI, sửa từ lai Hán-Việt và đồng bộ tên nhân vật!', 'ok');
+}
+
+function sfRepair_downloadCleanedTrans(){
+  if(!__sfRepairTransText || !__sfRepairTransText.trim()){
+    sfUI.alert('Chưa có nội dung Bản dịch để tải về!');
+    return;
+  }
+  const blob = new Blob([__sfRepairTransText], { type:'text/plain;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  const base = (__sfRepairTransName || 'ban-dich').replace(/\.[^./\\]+$/, '');
+  a.download = `${base} - đã làm sạch chuẩn.txt`;
+  a.click();
+  setTimeout(()=> URL.revokeObjectURL(a.href), 1500);
+}
+
+// Bước 2: Đối chiếu 1-1 từng chương giữa Bản gốc và Bản dịch & nạp vào hệ thống Chunk để chỉ dịch bù chương thiếu/lỗi!
+async function sfRepair_runFullAuditAndDeltaQueue(){
+  if(!__sfRepairOrigText || !__sfRepairOrigText.trim()){
+    sfUI.alert('Vui lòng chọn file Bản gốc tiếng Trung (.txt) ở mục 1️⃣ trước khi đối chiếu chương!');
+    return;
+  }
+  if(!__sfRepairTransText || !__sfRepairTransText.trim()){
+    sfUI.alert('Vui lòng chọn file Bản dịch (.txt) ở mục 2️⃣ trước khi đối chiếu chương!');
+    return;
+  }
+  // Làm sạch bản dịch trước khi đối chiếu
+  __sfRepairTransText = sf_instantCleanFullText(__sfRepairTransText);
+
+  const origParsed = sf_splitTextIntoChapterMap(__sfRepairOrigText);
+  const transParsed = sf_splitTextIntoChapterMap(__sfRepairTransText);
+
+  const origNums = Array.from(origParsed.map.keys()).sort((a,b)=>a-b);
+  if(origNums.length === 0){
+    sfUI.alert('Không tìm thấy tiêu đề chương (第X章 / Chương X) trong Bản gốc để đối chiếu theo chương.');
+    return;
+  }
+
+  const goodChaps = [];
+  const missingChaps = [];
+  const rawCnChaps = [];
+  const truncatedChaps = [];
+
+  // Xây dựng lại một văn bản nguồn chuẩn theo đúng thứ tự chương của Bản gốc,
+  // đồng thời tạo sẵn sfChunkOffsets + chunkState (chương nào đã dịch chuẩn -> status='done', chương nào thiếu/lỗi -> status='waiting')!
+  const rebuiltSourceParts = [];
+  const rebuiltOffsets = [];
+  const rebuiltStates = [];
+  const rebuiltResults = [];
+  let cursor = 0;
+
+  for(let i=0; i<origNums.length; i++){
+    const num = origNums[i];
+    const origChap = origParsed.map.get(num);
+    const transChap = transParsed.map.get(num);
+    const srcText = origChap.rawFull;
+    const srcHan = sf_countHanziChars(srcText);
+
+    const startOff = cursor;
+    rebuiltSourceParts.push(srcText);
+    cursor += srcText.length;
+    const endOff = cursor;
+    if(i < origNums.length - 1){
+      rebuiltSourceParts.push('\n\n');
+      cursor += 2;
+    }
+
+    let isGood = false;
+    let statusReason = '';
+    let cleanTransText = '';
+
+    if(!transChap || !transChap.body.trim()){
+      missingChaps.push(num);
+      statusReason = 'missing';
+    } else {
+      cleanTransText = `Chương ${num}: ${transChap.title.replace(/^[ \t]*(?:Chương|Chapter|第)\s*[:0-9零〇一二两三四五六七八九十百千万]+[章节回:\-–—\s]*/i, '').trim()}\n\n${transChap.body}`.trim();
+      const remHan = sf_countHanziChars(cleanTransText);
+      if(remHan > 25){
+        rawCnChaps.push(num);
+        statusReason = 'raw_cn';
+      } else if(srcHan >= 300 && cleanTransText.length < srcHan * 1.1){
+        truncatedChaps.push(num);
+        statusReason = 'truncated';
+      } else {
+        // Quét sạch nốt nếu còn 1-25 chữ Hán lẻ bằng bảng phiên âm
+        cleanTransText = sf_transliterateResidualHanzi(cleanTransText);
+        goodChaps.push(num);
+        isGood = true;
+      }
+    }
+
+    const stableId = 'chap_' + num + '_' + startOff;
+    rebuiltOffsets.push({ start: startOff, end: endOff, stableId });
+    rebuiltResults.push(isGood ? cleanTransText : null);
+    rebuiltStates.push(sf_makeChunkStateEntry({
+      status: isGood ? 'done' : 'waiting',
+      trans: isGood ? cleanTransText : '',
+      key: null,
+      retryCount: 0,
+      headerWarning: null,
+      headerRepairAttempts: 0,
+      headerRepairStatus: null,
+      stableId,
+      sourceStart: startOff,
+      sourceEnd: endOff
+    }));
+  }
+
+  const fullRebuiltSource = rebuiltSourceParts.join('');
+  sf_setSourceText(fullRebuiltSource);
+  sfChunkOffsets = rebuiltOffsets;
+  currentChunks = sf_makeLazyChunkTextView(sfChunkOffsets);
+  currentResults = rebuiltResults;
+  chunkState = rebuiltStates;
+
+  const needTranslateCount = missingChaps.length + rawCnChaps.length + truncatedChaps.length;
+  chunkStats = {
+    waiting: needTranslateCount,
+    running: 0,
+    done: goodChaps.length,
+    error: 0
+  };
+  chunkExpanded = new Set();
+  chunkCurrentPage = 0;
+  renderChunkPage();
+  updateProgressUI();
+  document.getElementById('progwrap').classList.add('show');
+
+  // Cập nhật ô Kết quả dịch với toàn bộ các chương đã sạch hiện có
+  const outTa = document.getElementById('outputText');
+  if(outTa){
+    outTa.value = currentResults.filter(Boolean).join('\n\n');
+  }
+
+  // Lưu vào IndexedDB để có thể bấm Tiếp tục bất cứ lúc nào mà không mất tiến độ
+  try{
+    const offsetsWithText = rebuiltOffsets.map((o, idx)=> ({
+      start: o.start, end: o.end, stableId: o.stableId,
+      text: fullRebuiltSource.slice(o.start, o.end),
+      estTokens: estimateTokensLocal(fullRebuiltSource.slice(o.start, o.end))
+    }));
+    await sf_prepareFileForTranslation(fullRebuiltSource, offsetsWithText);
+    // Ghi đè trạng thái các chunk đã DONE vào IndexedDB
+    const doneRecs = [];
+    for(let i=0; i<chunkState.length; i++){
+      if(chunkState[i].status === 'done' && sfCurrentFileId){
+        doneRecs.push({
+          id: sfCurrentFileId + '__' + i,
+          fileId: sfCurrentFileId,
+          index: i,
+          stableId: chunkState[i].stableId,
+          sourceStart: chunkState[i].sourceStart,
+          sourceEnd: chunkState[i].sourceEnd,
+          sourceText: fullRebuiltSource.slice(chunkState[i].sourceStart, chunkState[i].sourceEnd),
+          translatedText: chunkState[i].trans,
+          status: 'done',
+          retryCount: 0,
+          updatedAt: Date.now()
+        });
+      }
+    }
+    if(doneRecs.length) await saveChunkRecords(doneRecs);
+  }catch(dbErr){ console.warn('[SF Repair] Lưu IndexedDB:', dbErr); }
+
+  const sampleList = (arr) => arr.length ? (arr.slice(0, 25).map(n=>'Chương '+n).join(', ') + (arr.length > 25 ? ` ... (+${arr.length-25} chương nữa)` : '')) : 'Không có';
+  const box = document.getElementById('repairAuditReportBox');
+  if(box){
+    box.innerHTML = `<div style="font-weight:700; font-size:14px; color:var(--accent2); margin-bottom:8px;">📊 BÁO CÁO ĐỐI CHIẾU TỪNG CHƯƠNG (TỔNG ${origNums.length} CHƯƠNG GỐC):</div>
+    <table style="width:100%; border-collapse:collapse; font-size:12.5px; margin-bottom:10px;">
+      <tr style="border-bottom:1px solid var(--panel-border); text-align:left;">
+        <th style="padding:6px;">Phân loại chương</th>
+        <th style="padding:6px;">Số lượng</th>
+        <th style="padding:6px;">Trạng thái xử lý</th>
+        <th style="padding:6px;">Danh sách chương tiêu biểu</th>
+      </tr>
+      <tr style="border-bottom:1px solid var(--panel-border);">
+        <td style="padding:6px; color:var(--green); font-weight:600;">🟢 Chương đã dịch chuẩn &amp; làm sạch</td>
+        <td style="padding:6px;"><b>${goodChaps.length}</b> chương</td>
+        <td style="padding:6px;">Giữ nguyên 100% (Không cần dịch lại)</td>
+        <td style="padding:6px;">${sampleList(goodChaps.slice(0, 8))}</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--panel-border);">
+        <td style="padding:6px; color:var(--red); font-weight:600;">❌ Chương bị mất / nhảy cóc</td>
+        <td style="padding:6px;"><b>${missingChaps.length}</b> chương</td>
+        <td style="padding:6px;">Đã nạp Bản gốc vào hàng đợi ⚪ Chờ dịch bù</td>
+        <td style="padding:6px;">${sampleList(missingChaps)}</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--panel-border);">
+        <td style="padding:6px; color:var(--amber); font-weight:600;">⚠️ Chương còn nguyên mảng tiếng Trung</td>
+        <td style="padding:6px;"><b>${rawCnChaps.length}</b> chương</td>
+        <td style="padding:6px;">Đã nạp Bản gốc vào hàng đợi ⚪ Chờ dịch lại</td>
+        <td style="padding:6px;">${sampleList(rawCnChaps)}</td>
+      </tr>
+      <tr>
+        <td style="padding:6px; color:var(--amber); font-weight:600;">✂️ Chương bị cắt cụt (&lt;35% độ dài)</td>
+        <td style="padding:6px;"><b>${truncatedChaps.length}</b> chương</td>
+        <td style="padding:6px;">Đã nạp Bản gốc vào hàng đợi ⚪ Chờ dịch lại</td>
+        <td style="padding:6px;">${sampleList(truncatedChaps)}</td>
+      </tr>
+    </table>
+    <div style="background:rgba(16,185,129,0.12); border:1px solid var(--green); padding:8px 12px; border-radius:8px;">
+      🎯 <b>Đã tạo bộ khung ${origNums.length} chương (1 chunk = 1 chương đúng thứ tự 1 → ${origNums[origNums.length-1]}):</b> Giữ nguyên <b>${goodChaps.length}</b> chương đã hoàn chỉnh, chỉ cần dịch bù đúng <b>${needTranslateCount}</b> chương bị thiếu/lỗi! Bấm nút <b>"🚀 Bắt đầu dịch bù các chương thiếu/lỗi ngay"</b> bên dưới để chạy!
+    </div>`;
+  }
+
+  const startDeltaBtn = document.getElementById('repairStartDeltaBtn');
+  if(startDeltaBtn){
+    startDeltaBtn.style.display = needTranslateCount > 0 ? 'inline-block' : 'none';
+    startDeltaBtn.textContent = `🚀 Bắt đầu dịch bù ${needTranslateCount} chương thiếu/lỗi ngay`;
+  }
+  const footInfo = document.getElementById('repairAuditFootInfo');
+  if(footInfo){
+    footInfo.textContent = `Đã giữ ${goodChaps.length}/${origNums.length} chương sạch · Cần dịch bù ${needTranslateCount} chương`;
+  }
+  sfUI.toast(`Đối chiếu xong ${origNums.length} chương: giữ ${goodChaps.length} chương sạch, nạp ${needTranslateCount} chương thiếu vào hàng đợi!`, 'ok');
+}
+
+async function sfRepair_startDeltaTranslationNow(){
+  closeRepairAuditModal();
+  if(running) return;
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ sfUI.alert('Hãy bật Gemini Direct hoặc Custom Proxy và thêm API Key trước khi chạy dịch bù.'); return; }
+  if(state.keys.length === 0){ sfUI.alert('Hãy thêm ít nhất 1 API Key trước khi chạy dịch bù.'); return; }
+  if(!state.model){ sfUI.alert('Hãy chọn Model trước khi chạy dịch bù.'); return; }
+  const pendingIndices = chunkState.map((c,i)=> c.status !== 'done' ? i : -1).filter(i => i >= 0);
+  if(pendingIndices.length === 0){
+    sfUI.alert('Toàn bộ các chương đều đã ở trạng thái Hoàn thành (100% Đã dịch)!');
+    return;
+  }
+  await runEngine(pendingIndices);
+  await sf_onEngineFinished();
 }
 
 /* ---------- ĐỌC THEO CHƯƠNG & XUẤT HTML ĐỌC OFFLINE ---------- */
@@ -4116,7 +4904,7 @@ function sf_renderReaderChapter(idx){
 function openReadByChapter(){
   __sfReaderChapters = sf_parseChaptersForReader();
   if(!__sfReaderChapters.length){
-    alert('Chưa có nội dung để đọc! Hãy tải truyện hoặc dịch truyện trước.');
+    sfUI.alert('Chưa có nội dung để đọc! Hãy tải truyện hoặc dịch truyện trước.');
     return;
   }
   const sel = document.getElementById('readChapterSelect');
@@ -4169,7 +4957,7 @@ function readNextChapter(){ sf_renderReaderChapter(__sfReaderIndex + 1); }
 function readPrevChapter(){ sf_renderReaderChapter(__sfReaderIndex - 1); }
 function exportOfflineReader(){
   if(!__sfReaderChapters.length) __sfReaderChapters = sf_parseChaptersForReader();
-  if(!__sfReaderChapters.length){ alert('Chưa có nội dung để xuất HTML đọc offline.'); return; }
+  if(!__sfReaderChapters.length){ sfUI.alert('Chưa có nội dung để xuất HTML đọc offline.'); return; }
   const bookTitle = (sfCurrentFileMeta && sfCurrentFileMeta.name) ? sfCurrentFileMeta.name : 'Truyện đã dịch';
   const chapsJson = JSON.stringify(__sfReaderChapters).replace(/</g, '\\u003c');
   const readerHtml = `<!DOCTYPE html><html lang="vi"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${sf_escapeHtml(bookTitle)}</title><style>body{margin:0;background:#11131f;color:#e7e8f2;font-family:Georgia,serif;line-height:1.85;padding:20px}main{max-width:780px;margin:0 auto;background:#181b2e;padding:28px 34px;border-radius:14px;border:1px solid #2a2f4a}h1{color:#7c9cff;font-size:22px;margin-top:0}select,button{background:#0e1020;color:#e7e8f2;border:1px solid #2e3352;padding:8px 12px;border-radius:8px;font-size:14px;cursor:pointer}.bar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;align-items:center}#body{white-space:pre-wrap;font-size:18px}</style></head><body><main><div class="bar"><select id="sel" style="flex:1"></select><button onclick="go(-1)">← Trước</button><button onclick="go(1)">Sau →</button></div><h1 id="ttl"></h1><div id="body"></div><div class="bar" style="margin-top:24px"><button onclick="go(-1)">← Chương trước</button><button onclick="go(1)">Chương sau →</button></div></main><script>const C=${chapsJson};let idx=0;const sel=document.getElementById('sel');C.forEach((c,i)=>{const o=document.createElement('option');o.value=i;o.textContent=c.title;sel.appendChild(o);});sel.onchange=()=>show(+sel.value);function show(i){idx=Math.max(0,Math.min(C.length-1,i));sel.value=idx;document.getElementById('ttl').textContent=C[idx].title;document.getElementById('body').textContent=C[idx].body;window.scrollTo(0,0);}function go(d){show(idx+d);}show(0);<\/script></body></html>`;
@@ -4566,19 +5354,19 @@ async function sfCanon_countOccurrencesForAllEntities(text, entityNameLists){
 
 // QUÉT TOÀN BỘ FILE — điểm vào chính của nút "🔍 Quét toàn bộ file".
 async function sfCanon_scanFile(){
-  if(sfCanonScanning){ alert('Đang quét Canon Pack, vui lòng đợi.'); return; }
-  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
-  if(state.keys.length===0){ alert('Thêm API key.'); return; }
-  if(!state.model){ alert('Nhập model.'); return; }
+  if(sfCanonScanning){ sfUI.alert('Đang quét Canon Pack, vui lòng đợi.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ sfUI.alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ sfUI.alert('Nhập Base URL.'); return; }
+  if(state.keys.length===0){ sfUI.alert('Thêm API key.'); return; }
+  if(!state.model){ sfUI.alert('Nhập model.'); return; }
   const text = sf_getFullSourceText();
-  if(!text || !text.trim()){ alert('Dán/nạp truyện trước khi quét Canon.'); return; }
+  if(!text || !text.trim()){ sfUI.alert('Dán/nạp truyện trước khi quét Canon.'); return; }
   if(!sfCurrentFileId){
     // Đảm bảo có 1 file record để gắn Canon Pack vào (mục IX: gắn với fileId) — dùng lại
     // đúng luồng lazy-create sẵn có, không tạo cơ chế lưu file song song mới.
     try{ await sf_onSourceLoaded(text, sfLastUploadName); }catch(e){ sf_recordRuntimeError('canon-ensure-file', e.message); }
   }
-  if(!sfCurrentFileId){ alert('Không thể tạo bản ghi truyện để gắn Canon Pack (IndexedDB lỗi?). Xem Console.'); return; }
+  if(!sfCurrentFileId){ sfUI.alert('Không thể tạo bản ghi truyện để gắn Canon Pack (IndexedDB lỗi?). Xem Console.'); return; }
 
   const fileId = sfCurrentFileId;
   const sourceHash = sf_computeSourceHash(text);
@@ -4673,7 +5461,7 @@ async function sfCanon_scanFile(){
 // "Đồng bộ Canon với bản dịch": KHÔNG gọi lại AI — chỉ tính lại occurrences/firstSeen/lastSeen
 // của các entity đã có theo đúng source hiện tại (vd sau khi Confirm/Edit tay), nhanh & không tốn token.
 async function sfCanon_resync(){
-  if(!sfCurrentFileId || !sfCanonEntities.length){ alert('Chưa có Canon Pack nào để đồng bộ. Hãy "Quét toàn bộ file" trước.'); return; }
+  if(!sfCurrentFileId || !sfCanonEntities.length){ sfUI.alert('Chưa có Canon Pack nào để đồng bộ. Hãy "Quét toàn bộ file" trước.'); return; }
   const text = sf_getFullSourceText();
   // ĐỢT 7A — P1 FIX 3: 1 lượt quét chung cho toàn bộ entity thay vì mỗi entity tự quét lại toàn
   // văn bản (xem sfCanon_countOccurrencesForAllEntities).
@@ -4689,12 +5477,12 @@ async function sfCanon_resync(){
   sfCanonEntities = updated;
   sfCanon_markDirty(); // occurrences đổi -> thứ tự sort của confirmed-list cache (mục VIII) không còn đúng
   sfCanon_renderPanel();
-  alert('Đã đồng bộ lại số lần xuất hiện của Canon Pack theo nội dung hiện tại.');
+  sfUI.alert('Đã đồng bộ lại số lần xuất hiện của Canon Pack theo nội dung hiện tại.');
 }
 
 async function sfCanon_clearForFile(){
-  if(!sfCurrentFileId){ alert('Chưa mở truyện nào.'); return; }
-  if(!confirm('Xoá toàn bộ Canon Pack của truyện này? Không ảnh hưởng Canon Pack của các truyện khác.')) return;
+  if(!sfCurrentFileId){ sfUI.alert('Chưa mở truyện nào.'); return; }
+  if(!sfUI.confirm('Xoá toàn bộ Canon Pack của truyện này? Không ảnh hưởng Canon Pack của các truyện khác.')) return;
   await sfCanonDB_clearForFile(sfCurrentFileId);
   sfCanonEntities = [];
   sfCanonMetaCurrent = null;
@@ -4703,7 +5491,7 @@ async function sfCanon_clearForFile(){
 }
 
 function sfCanon_exportJson(){
-  if(!sfCanonEntities.length){ alert('Chưa có Canon Pack để xuất.'); return; }
+  if(!sfCanonEntities.length){ sfUI.alert('Chưa có Canon Pack để xuất.'); return; }
   const blob = new Blob([JSON.stringify({ fileId: sfCurrentFileId, exportedAt: Date.now(), entities: sfCanonEntities }, null, 2)], { type:'application/json;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -4713,11 +5501,11 @@ function sfCanon_exportJson(){
 }
 async function sfCanon_importJson(file){
   if(!file) return;
-  if(!sfCurrentFileId){ alert('Hãy mở/nạp một truyện trước khi nhập Canon Pack.'); return; }
+  if(!sfCurrentFileId){ sfUI.alert('Hãy mở/nạp một truyện trước khi nhập Canon Pack.'); return; }
   try{
     const text = await file.text();
     const parsed = sf_safeJSONParse(text, null);
-    if(!parsed || !Array.isArray(parsed.entities)){ alert('File Canon Pack không đúng định dạng.'); return; }
+    if(!parsed || !Array.isArray(parsed.entities)){ sfUI.alert('File Canon Pack không đúng định dạng.'); return; }
     const now = Date.now();
     const records = parsed.entities.filter(e=>e && e.sourceName).map(e=>({
       id: (typeof e.id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(e.id)) ? e.id : sfCanon_newId(), fileId: sfCurrentFileId,
@@ -4731,8 +5519,8 @@ async function sfCanon_importJson(file){
     }));
     await sfCanonDB_putMany(records);
     await sfCanon_ensureLoadedForCurrentFile();
-    alert('Đã nhập ' + records.length + ' thực thể Canon Pack.');
-  }catch(e){ sf_recordRuntimeError('canon-import', e && e.message ? e.message : String(e)); alert('Nhập Canon Pack thất bại — xem Console.'); }
+    sfUI.alert('Đã nhập ' + records.length + ' thực thể Canon Pack.');
+  }catch(e){ sf_recordRuntimeError('canon-import', e && e.message ? e.message : String(e)); sfUI.alert('Nhập Canon Pack thất bại — xem Console.'); }
 }
 
 /* ---------- Confirm / Reject / Edit / Merge (mục VI) ---------- */
@@ -4769,9 +5557,9 @@ async function sfCanon_mergeInto(dropId, keepId){
 }
 function sfCanon_promptMerge(id){
   const list = sfCanonEntities.filter(x=>x.id!==id);
-  if(!list.length){ alert('Không có thực thể khác để gộp.'); return; }
+  if(!list.length){ sfUI.alert('Không có thực thể khác để gộp.'); return; }
   const names = list.map((x,i)=> (i+1)+'. ['+x.category+'] '+x.sourceName).join('\n');
-  const pick = prompt('Gộp thực thể này VÀO thực thể nào? Nhập số thứ tự:\n'+names);
+  const pick = sfUI.prompt('Gộp thực thể này VÀO thực thể nào? Nhập số thứ tự:\n'+names);
   const n = parseInt(pick, 10);
   if(!n || n<1 || n>list.length) return;
   sfCanon_mergeInto(id, list[n-1].id);
@@ -5100,10 +5888,17 @@ function sf_findParagraphBreakpoints(text){
   const headerRe = sf_chunkHeaderRegex();
   const lineRe = /^.*$/gm;
   let lm;
+  let lastLineBreakAdded = 0;
   while((lm = lineRe.exec(text))){
-    if(lm[0] && headerRe.test(lm[0])){
+    const lineStr = lm[0] || '';
+    if(lineStr && headerRe.test(lineStr)){
       const p = lm.index;
-      if(p > 0 && p < n){ points.push(p); hard.add(p); }
+      if(p > 0 && p < n){ points.push(p); hard.add(p); lastLineBreakAdded = p; }
+    } else if(lm.index > 0 && (lm.index - lastLineBreakAdded) >= 160){
+      // Hỗ trợ file .txt tiếng Trung chỉ xuống dòng đơn (\n) không có dòng trống (\n\n):
+      // thêm điểm cắt an toàn ở đầu dòng mới mỗi ~160 ký tự để packer luôn cắt gọn theo đoạn văn.
+      points.push(lm.index);
+      lastLineBreakAdded = lm.index;
     }
     if(lm.index === lineRe.lastIndex) lineRe.lastIndex++; // chặn vòng lặp vô hạn khi khớp rỗng
   }
@@ -5600,7 +6395,22 @@ function splitChunksWithOffsets(text, size){
   if(cfg.targetInputTokens < cfg.minInputTokens) cfg.targetInputTokens = cfg.minInputTokens;
   // ---- hết phần Đợt 2 ----
 
-  if(cfg.tokenAware){
+  // Nếu văn bản là truyện tiếng Trung (tỉ lệ chữ Hán > 15%) hoặc có nhiều tiêu đề chương (第X章 / Chương X):
+  // 1) Tắt allowChapterMerge (không gộp nhiều chương vào 1 chunk) để AI KHÔNG BAO GIỜ nhảy cóc/nuốt chương!
+  // 2) Kẹp trần token đầu vào cho văn bản chữ Hán ở mức an toàn (~1800-2400 chữ Hán/chunk) vì 1 chữ Hán
+  //    khi dịch sang tiếng Việt nở ra gấp 3.2-3.8 lần ký tự; giữ chunk vừa phải giúp AI dịch 100% từng câu không bao giờ bị cắt cụt (MAX_TOKENS).
+  const sampleCheck = text.slice(0, Math.min(text.length, 15000));
+  const cjkCountSample = sf_countHanziChars(sampleCheck);
+  const isChineseSource = sampleCheck.length > 0 && (cjkCountSample / sampleCheck.length) > 0.15;
+  if(isChineseSource){
+    cfg.allowChapterMerge = false; // Mỗi chương bắt đầu 1 chunk riêng, tuyệt đối không gộp chương gây mất chương!
+    const userCharSize = size || 2200;
+    const safeCjkTarget = Math.min(2200, Math.max(900, Math.round(userCharSize * 0.65)));
+    const safeCjkMax = Math.min(2800, Math.round(safeCjkTarget * 1.3));
+    cfg.minInputTokens = Math.min(cfg.minInputTokens, 600);
+    cfg.targetInputTokens = Math.min(cfg.targetInputTokens, safeCjkTarget);
+    cfg.maxInputTokens = Math.min(cfg.maxInputTokens, safeCjkMax);
+  } else if(cfg.tokenAware){
     const approx = Math.round((size || 3500) / 3.2);
     cfg.targetInputTokens = Math.max(cfg.minInputTokens, Math.min(cfg.maxInputTokens, approx));
   }
@@ -5721,31 +6531,67 @@ function setQueue(remaining, total){ document.getElementById('queueCount').textC
 // và "Chương thứ nhất" (số đếm bằng chữ). Giữ nguyên các dạng đã hỗ trợ từ trước
 // ("Chương: 1", "Chương: 001", "Chapter 1", "Chapter 001"). Regex CHỈ dùng để dò
 // boundary — không sửa/không cắt nội dung gốc, "originalText" không bị đụng tới.
-const SF_CHAPTER_HEADER_RE = /^[ \t]*(?:Chương\s*:\s*0*(\d+)\b|Chương\s+thứ\s+0*(\d+)\b|Chương\s+thứ\s+(nhất)\b|Chương\s+0*(\d+)\b|Chapter\s+0*(\d+)\b)/i;
-// Số đếm bằng chữ tiếng Việt cho "Chương thứ ..." — hiện chỉ cần "nhất" (=1) theo
-// yêu cầu Đợt 5; để dạng bảng tra để dễ mở rộng thêm sau này mà không sửa regex.
-const SF_CHAPTER_WORD_NUM = { 'nhất': 1 };
+// Hỗ trợ nhận diện ĐẦY ĐỦ tiêu đề chương tiếng Việt, tiếng Anh VÀ tiếng Trung (第1章, 第001章, 第一百零五章, 第1节, 第1回)
+const SF_CHAPTER_HEADER_RE = /^[ \t]*(?:Chương\s*[:.\-–—]?\s*0*(\d+)\b|Chương\s+thứ\s+0*(\d+)\b|Chương\s+thứ\s+(nhất|hai|ba|bốn|tư|năm|sáu|bảy|tám|chín|mười)\b|Chương\s+0*(\d+)\b|Chapter\s*[:.\-–—]?\s*0*(\d+)\b|第\s*0*(\d+)\s*[章节回卷集部]|第\s*([零〇一二两三四五六七八九十百千万]+)\s*[章节回卷集部])/i;
+const SF_CHAPTER_WORD_NUM = { 'nhất': 1, 'hai': 2, 'ba': 3, 'bốn': 4, 'tư': 4, 'năm': 5, 'sáu': 6, 'bảy': 7, 'tám': 8, 'chín': 9, 'mười': 10 };
+
+// Chuyển đổi số chữ Hán (VD: "一百零五" -> 105, "一千零七十六" -> 1076) sang số nguyên
+function sf_parseChineseNumber(cnStr){
+  if(!cnStr) return null;
+  const s = String(cnStr).trim();
+  if(/^\d+$/.test(s)) return parseInt(s, 10);
+  const digits = { '零':0, '〇':0, '一':1, '二':2, '两':2, '三':3, '四':4, '五':5, '六':6, '七':7, '八':8, '九':9 };
+  const units = { '十':10, '百':100, '千':1000, '万':10000 };
+  // Trường hợp viết từng chữ số liền nhau kiểu "一零七六"
+  if(![...'十百千万'].some(u => s.includes(u))){
+    let direct = '';
+    for(const ch of s){ if(digits[ch] != null) direct += String(digits[ch]); }
+    return direct ? parseInt(direct, 10) : null;
+  }
+  let total = 0, section = 0, num = 0;
+  for(const ch of s){
+    if(digits[ch] != null){
+      num = digits[ch];
+    } else if(units[ch] != null){
+      const u = units[ch];
+      if(u === 10000){
+        section = (section + (num || 1)) * u;
+        total += section;
+        section = 0;
+      } else {
+        section += (num || (u === 10 && section === 0 ? 1 : 0)) * u;
+      }
+      num = 0;
+    }
+  }
+  const result = total + section + num;
+  return result > 0 ? result : null;
+}
+
 function sf_extractChapterHeaders(text){
   const out = [];
   if(!text) return out;
   const lines = String(text).split(/\r?\n/);
   for(const line of lines){
+    const trimmed = line.trim();
+    if(!trimmed || trimmed.length > 110) continue;
     const m = SF_CHAPTER_HEADER_RE.exec(line);
     if(!m) continue;
-    let numRaw = m[1] || m[2] || m[4] || m[5];
-    let numStr;
+    let numRaw = m[1] || m[2] || m[4] || m[5] || m[6];
+    let numStr = null;
     if(numRaw != null){
       numStr = String(parseInt(numRaw, 10));
     } else if(m[3]){
       const wordNum = SF_CHAPTER_WORD_NUM[m[3].toLowerCase()];
-      if(wordNum == null) continue;
-      numStr = String(wordNum);
-    } else continue;
-    // Label hiển thị = ĐÚNG phần header đã khớp trong SOURCE (mục 1A yêu cầu lấy header
-    // thực tế từ SOURCE), không phải cắt chuỗi theo dấu ':' đầu tiên (sai với dạng "Chương: 5").
-    let label = m[0].trim();
-    if(label.length > 60) label = label.slice(0, 60) + '…';
-    out.push({ num: numStr, label });
+      if(wordNum != null) numStr = String(wordNum);
+    } else if(m[7]){
+      const cnNum = sf_parseChineseNumber(m[7]);
+      if(cnNum != null) numStr = String(cnNum);
+    }
+    if(!numStr) continue;
+    let label = trimmed;
+    if(label.length > 65) label = label.slice(0, 65) + '…';
+    out.push({ num: numStr, label, fullLine: trimmed });
   }
   return out;
 }
@@ -6057,20 +6903,339 @@ function buildContextPrefix(idx){
   return '';
 }
 
-// Thay thế tức thì mọi cụm chữ Hán đã có trong Bảng tên riêng / Canon Pack mà AI vô tình để sót trong bản dịch
-function sf_applyGlossaryReplacement(text){
+// 1. TỪ ĐIỂN CỤM TỪ LAI & CHỮ HÁN THÔNG DỤNG HAY BỊ AI ĐỂ SÓT TRONG TRUYỆN CAO VÕ / TIÊN HIỆP / ĐÔ THỊ
+const SF_HYBRID_AND_COMMON_HANZI_FIXES = [
+  // Sửa trực tiếp các từ ghép nửa Việt nửa Hán xuất hiện trong thực tế (như Vương哲, Kim身 Cảnh, thực战...)
+  [/Vương\s*哲/g, 'Vương Triết'],
+  [/Vương\s*猛/g, 'Vương Mãnh'],
+  [/Trì\s*翠柔/g, 'Trì Thúy Nhu'],
+  [/Cao\s*俊飞/g, 'Cao Tuấn Phi'],
+  [/Bạch\s*明诚/g, 'Bạch Minh Thành'],
+  [/Bạch\s*昊天/g, 'Bạch Hạo Thiên'],
+  [/Bạch\s*柳元/g, 'Bạch Liễu Nguyên'],
+  [/Lôi\s*大朝/g, 'Lôi Đại Triều'],
+  [/Triệu\s*美玲/g, 'Triệu Mỹ Linh'],
+  [/Châu\s*凌丝/g, 'Châu Lăng Ti'],
+  [/Từ\s*佳佳/g, 'Từ Giai Giai'],
+  [/Tất\s*云安/g, 'Tất Vân An'],
+  [/Hùng\s*若天/g, 'Hùng Nhược Thiên'],
+  [/Hùng\s*若地/g, 'Hùng Nhược Địa'],
+  [/Dụ\s*宇飞/g, 'Dụ Vũ Phi'],
+  [/Lý\s*思源/g, 'Lý Tư Nguyên'],
+  [/Hoàng\s*立轩/g, 'Hoàng Lập Hiên'],
+  [/Kim\s*身\s*Cảnh/gi, 'Kim Thân Cảnh'],
+  [/Kim\s*身/gi, 'Kim Thân'],
+  [/Đồng\s*皮\s*Thiết\s*骨/gi, 'Đồng Bì Thiết Cốt'],
+  [/Vô\s*漏\s*Cảnh/gi, 'Vô Lậu Cảnh'],
+  [/Thông\s*脉\s*Cảnh/gi, 'Thông Mạch Cảnh'],
+  [/Dược\s*[廠厂]/gi, 'Xưởng dược'],
+  [/đạt\s+chuẩn\s*合格/gi, 'đạt chuẩn'],
+  [/tiêu\s+chuẩn\s*合格/gi, 'tiêu chuẩn đạt chuẩn'],
+  [/合格/g, 'đạt chuẩn'],
+  [/thực\s*战/gi, 'thực chiến'],
+  [/实战/g, 'thực chiến'],
+  [/bế\s*关/gi, 'bế quan'],
+  [/闭关/g, 'bế quan'],
+  [/thiên\s*之骄子/gi, 'thiên chi kiêu tử'],
+  [/天之骄子/g, 'thiên chi kiêu tử'],
+  [/nắn\s*bóp\s*捏/gi, 'nắn bóp'],
+  [/đánh\s*đấm\s*打打杀杀/gi, 'đánh đấm chém giết'],
+  [/江湖不是打打杀杀/g, 'Giang hồ không phải đánh đấm chém giết'],
+  [/江湖不是/g, 'Giang hồ không phải ' ],
+  [/打打杀杀/g, 'đánh đấm chém giết'],
+  [/合法嗑药/g, 'Cắn thuốc hợp pháp'],
+  [/走火入魔/g, 'tẩu hỏa nhập ma'],
+  [/心魔/g, 'tâm ma'],
+  [/气血/g, 'khí huyết'],
+  [/血气/g, 'huyết khí'],
+  [/肉身/g, 'nhục thân'],
+  [/武道/g, 'võ đạo'],
+  [/武技/g, 'võ kỹ'],
+  [/功法/g, 'công pháp'],
+  [/内功/g, 'nội công'],
+  [/外功/g, 'ngoại công'],
+  [/心法/g, 'tâm pháp'],
+  [/境界/g, 'cảnh giới'],
+  [/突破/g, 'đột phá'],
+  [/丹药/g, 'đan dược'],
+  [/药剂/g, 'dược tề'],
+  [/营养液/g, 'dịch dinh dưỡng'],
+  [/副作用/g, 'tác dụng phụ'],
+  [/天赋/g, 'thiên phú'],
+  [/系统/g, 'hệ thống'],
+  [/面板/g, 'bảng thuộc tính'],
+  [/班主任/g, 'giáo viên chủ nhiệm'],
+  [/辅导员/g, 'cố vấn học tập'],
+  [/校长/g, 'hiệu trưởng'],
+  [/教授/g, 'giáo sư'],
+  [/老师/g, 'thầy giáo'],
+  [/同学/g, 'bạn học'],
+  [/先生/g, 'tiên sinh'],
+  [/小姐/g, 'tiểu thư'],
+  [/公子/g, 'công tử'],
+  [/姑娘/g, 'cô nương'],
+  [/前辈/g, 'tiền bối'],
+  [/晚辈/g, 'vãn bối'],
+  [/师兄/g, 'sư huynh'],
+  [/师姐/g, 'sư tỷ'],
+  [/师弟/g, 'sư đệ'],
+  [/师妹/g, 'sư muội'],
+  [/师父/g, 'sư phụ'],
+  [/师尊/g, 'sư tôn'],
+  [/长老/g, 'trưởng lão'],
+  [/宗主/g, 'tông chủ'],
+  [/掌门/g, 'chưởng môn']
+];
+
+// 2. BẢNG ĐỒNG BỘ TÊN NHÂN VẬT & THUẬT NGỮ BỊ LỆCH GIỮA CÁC CHUNK
+const SF_INCONSISTENT_NAME_NORMALIZATIONS = [
+  // Tất Vân An (毕云安) bị dịch lệch thành 5 biến thể
+  [/\b(?:Bì Vân An|Biểu Vân An|Bỉ Vân An|Biên Vân An)\b/g, 'Tất Vân An'],
+  // Lôi Đại Triều (雷大朝) bị dịch lệch
+  [/\b(?:Lôi Đạo Triều|Lôi Đại Cha|Lôi Đại Trá)\b/g, 'Lôi Đại Triều'],
+  // Hùng Nhược Thiên / Hùng Nhược Địa (熊若天 / 熊若地)
+  [/\b(?:Hùng Nhất Thiên|Hùng Rất Thiên)\b/g, 'Hùng Nhược Thiên'],
+  [/\b(?:Hùng Nhất Địa|Hùng Rất Địa)\b/g, 'Hùng Nhược Địa'],
+  // Dụ Vũ Phi (喻宇飞)
+  [/\bYêu Vũ Phi\b/g, 'Dụ Vũ Phi'],
+  // Lý Tư Nguyên (李思源)
+  [/\b(?:Lý Sơ Nguyên|Lý Sơ Viên)\b/g, 'Lý Tư Nguyên'],
+  // Kim Thân Cảnh (金身境)
+  [/\b(?:Kim Sân Cảnh|Kim Sinh Cảnh)\b/g, 'Kim Thân Cảnh'],
+  // Thuốc Cơ Nhục Long (肌肉龙) bị nhầm với bút danh tác giả Cơ Nhục Hải Âu (肌肉海鸥)
+  [/(?:thuốc|dược phẩm|dịch dinh dưỡng|tiêm|chích|uống|mua|hộp|ống|liều)\s+Cơ Nhục Hải Âu/gi, (m)=> m.replace(/Cơ Nhục Hải Âu/i, 'Cơ Nhục Long')],
+  [/Cơ Nhục Hải Âu\s+(?:dạng tiêm|dạng uống|ống tiêm|loại mạnh|liều cao)/gi, (m)=> m.replace(/Cơ Nhục Hải Âu/i, 'Cơ Nhục Long')]
+];
+
+// 3. BẢNG PHIÊN ÂM HÁN-VIỆT ĐƠN TỰ DỰ PHÒNG (Đảm bảo 0 chữ Hán nào có thể lọt qua)
+const SF_HANVIET_SINGLE_CHAR_MAP = {
+  '王':'Vương','哲':'Triết','猛':'Mãnh','邹':'Châu','凌':'Lăng','丝':'Ti','赵':'Triệu','美':'Mỹ','玲':'Linh',
+  '雷':'Lôi','大':'Đại','朝':'Triều','徐':'Từ','佳':'Giai','高':'Cao','俊':'Tuấn','飞':'Phi','毕':'Tất',
+  '云':'Vân','安':'An','熊':'Hùng','若':'Nhược','天':'Thiên','地':'Địa','白':'Bạch','明':'Minh','诚':'Thành',
+  '柳':'Liễu','元':'Nguyên','昊':'Hạo','池':'Trì','翠':'Thúy','柔':'Nhu','喻':'Dụ','宇':'Vũ','李':'Lý',
+  '思':'Tư','源':'Nguồn','黄':'Hoàng','立':'Lập','轩':'Hiên','温':'Ôn','陈':'Trần','林':'Lâm','张':'Trương',
+  '刘':'Lưu','杨':'Dương','周':'Châu','吴':'Ngô','郑':'Trịnh','孙':'Tôn','马':'Mã','朱':'Chu','胡':'Hồ',
+  '郭':'Quách','何':'Hà','罗':'La','梁':'Lương','宋':'Tống','唐':'Đường','许':'Hứa','韩':'Hàn','冯':'Phùng',
+  '邓':'Đặng','曹':'Tào','彭':'Bành','曾':'Tăng','肖':'Tiêu','田':'Điền','董':'Đổng','袁':'Viên','潘':'Phan',
+  '于':'Vu','蒋':'Tưởng','蔡':'Thái','余':'Dư','杜':'Đỗ','叶':'Diệp','程':'Trình','苏':'Tô','魏':'Ngụy',
+  '吕':'Lữ','丁':'Đinh','任':'Nhậm','沈':'Thẩm','姚':'Diêu','卢':'Lư','姜':'Khương','崔':'Thôi','钟':'Chung',
+  '谭':'Đàm','陆':'Lục','汪':'Uông','范':'Phạm','金':'Kim','石':'Thạch','廖':'Liêu','贾':'Giả','夏':'Hạ',
+  '韦':'Vi','付':'Phó','方':'Phương','邹':'Châu','孟':'Mạnh','邱':'Khâu','秦':'Tần','江':'Giang','阎':'Diêm',
+  '薛':'Tiết','尹':'Doãn','段':'Đoạn','贺':'Hạ','龙':'Long','黎':'Lê','史':'Sử','陶':'Đào','顾':'Cố',
+  '毛':'Mao','郝':'Hách','龚':'Cung','邵':'Thiệu','万':'Vạn','钱':'Tiền','严':'Nghiêm','覃':'Đàm','武':'Võ',
+  '戴':'Đái','莫':'Mạc','孔':'Khổng','向':'Hướng','汤':'Thang','身':'Thân','境':'Cảnh','铜':'Đồng','皮':'Bì',
+  '铁':'Thiết','骨':'Cốt','无':'Vô','漏':'Lậu','通':'Thông','脉':'Mạch','换':'Hoán','血':'Huyết','洗':'Tẩy',
+  '髓':'Tủy','宗':'Tông','师':'Sư','神':'Thần','圣':'Thánh','仙':'Tiên','魔':'Ma','妖':'Yêu','鬼':'Quỷ',
+  '灵':'Linh','魂':'Hồn','魄':'Phách','气':'Khí','力':'Lực','功':'Công','法':'Pháp','诀':'Quyết','拳':'Quyền',
+  '掌':'Chưởng','指':'Chỉ','爪':'Trảo','腿':'Thối','步':'Bộ','身':'Thân','剑':'Kiếm','刀':'Đao','枪':'Thương',
+  '棍':'Côn','戟':'Kích','弓':'Cung','箭':'Tiễn','盾':'Thuẫn','甲':'Giáp','丹':'Đan','药':'Dược','草':'Thảo',
+  '花':'Hoa','果':'Quả','木':'Mộc','水':'Thủy','火':'Hỏa','土':'Thổ','风':'Phong','电':'Điện','光':'Quang',
+  '暗':'Ám','冰':'Băng','雪':'Tuyết','霜':'Sương','雾':'Vụ','雨':'Vũ','星':'Tinh','辰':'Thần','日':'Nhật',
+  '月':'Nguyệt','山':'Sơn','川':'Xuyên','河':'Hà','海':'Hải','湖':'Hồ','江':'Giang','城':'Thành','池':'Trì',
+  '殿':'Điện','宫':'Cung','阁':'Các','楼':'Lâu','塔':'Tháp','门':'Môn','派':'Phái','教':'Giáo','帮':'Bang',
+  '会':'Hội','盟':'Minh','院':'Viện','校':'Hiệu','堂':'Đường','房':'Phòng','室':'Thất','厂':'Xưởng','廠':'Xưởng',
+  '局':'Cục','部':'Bộ','司':'Ty','处':'Xử','科':'Khoa','长':'Trưởng','主':'Chủ','皇':'Hoàng','帝':'Đế',
+  '君':'Quân','侯':'Hầu','公':'Công','伯':'Bá','子':'Tử','男':'Nam','女':'Nữ','老':'Lão','少':'Thiếu',
+  '小':'Tiểu','中':'Trung','上':'Thượng','下':'Hạ','左':'Tả','右':'Hữu','前':'Tiền','后':'Hậu','东':'Đông',
+  '西':'Tây','南':'Nam','北':'Bắc','内':'Nội','外':'Ngoại','真':'Chân','假':'Giả','虚':'Hư','实':'Thực',
+  '正':'Chính','邪':'Tà','善':'Thiện','恶':'Ác','生':'Sinh','死':'Tử','胜':'Thắng','败':'Bại','成':'Thành',
+  '合':'Hợp','格':'Cách','战':'Chiến','闭':'Bế','关':'Quan','之':'Chi','骄':'Kiêu','第':'Đệ','章':'Chương',
+  '一':'Nhất','二':'Nhị','三':'Tam','四':'Tứ','五':'Ngũ','六':'Lục','七':'Thất','八':'Bát','九':'Cửu','十':'Thập',
+  '百':'Bách','千':'Thiên','零':'Linh','〇':'Linh','两':'Lưỡng',
+  '不':'bất','是':'thị','的':'','了':'','着':'','过':'qua',
+  '吗':'','呢':'','吧':'','啊':'a','呀':'nha','哦':'ồ',
+  '我':'ta','你':'ngươi','他':'hắn','她':'nàng','它':'nó','们':'',
+  '这':'này','那':'đó','有':'hữu','在':'tại','人':'nhân','心':'tâm',
+  '手':'thủ','眼':'nhãn','目':'mục','头':'đầu','口':'khẩu','耳':'nhĩ',
+  '足':'túc','脚':'cước','肉':'nhục','肌':'cơ','鸥':'âu','药':'dược',
+  '液':'dịch','营':'dinh','养':'dưỡng','剂':'tề','丸':'hoàn','散':'tán',
+  '膏':'cao','汤':'thang','针':'châm','毒':'độc','医':'y','病':'bệnh',
+  '痛':'thống','伤':'thương','残':'tàn','废':'phế','狂':'cuồng','怒':'nộ',
+  '惊':'kinh','恐':'khủng','惧':'cụ','怕':'phạ','喜':'hỷ','乐':'lạc',
+  '悲':'bi','哀':'ai','恨':'hận','怨':'oán','仇':'cừu','杀':'sát',
+  '斩':'trảm','灭':'diệt','破':'phá','碎':'toái','裂':'liệt','断':'đoạn',
+  '绝':'tuyệt','极':'cực','巅':'điên','峰':'phong','顶':'đỉnh','尖':'tiêm',
+  '强':'cường','弱':'nhược','猛':'mãnh','烈':'liệt','霸':'bá','道':'đạo',
+  '理':'lý','义':'nghĩa','仁':'nhân','礼':'lễ','智':'trí','信':'tín',
+  '忠':'trung','孝':'hiếu','勇':'dũng','威':'uy','势':'thế','压':'áp',
+  '迫':'bách','震':'chấn','撼':'hám','动':'động','静':'tĩnh','快':'khoái',
+  '慢':'mạn','疾':'tật','速':'tốc','奔':'bôn','跑':'bào','跳':'khiêu',
+  '跃':'dược','闪':'thiểm','避':'tị','退':'thoái','进':'tiến','攻':'công',
+  '守':'thủ','防':'phòng','御':'ngự','挡':'đáng','击':'kích','打':'đả',
+  '轰':'oanh','爆':'bạo','炸':'trạc','燃':'nhiên','烧':'thiêu','炼':'luyện',
+  '锻':'đoán','铸':'chú','造':'tạo','化':'hóa','生':'sinh','长':'trưởng',
+  '成':'thành','就':'tựu','果':'quả','因':'nhân','缘':'duyên','命':'mệnh',
+  '运':'vận','劫':'kiếp','难':'nạn','灾':'tai','祸':'họa','福':'phúc',
+  '禄':'lộc','寿':'thọ','喜':'hỷ','财':'tài','宝':'bảo','物':'vật',
+  '器':'khí','具':'cụ','件':'kiện','品':'phẩm','质':'chất','量':'lượng',
+  '数':'số','值':'trị','点':'điểm','分':'phân','秒':'miễu','刻':'khắc',
+  '时':'thời','辰':'thần','年':'niên','岁':'tuế','世':'thế','界':'giới',
+  '域':'vực','区':'khu','洲':'châu','国':'quốc','家':'gia','族':'tộc',
+  '氏':'thị','姓':'tính','名':'danh','字':'tự','号':'hiệu','称':'xưng',
+  '呼':'hô','叫':'khiếu','喊':'hảm','喝':'hát','骂':'mạ','笑':'tiếu',
+  '哭':'khốc','泣':'khấp','叹':'thán','息':'tức','吸':'hấp','吐':'thổ',
+  '吞':'thôn','噬':'thệ','咬':'ngao','嚼':'tước','吃':'ngật','饮':'ẩm',
+  '食':'thực','饭':'phạn','菜':'thái','酒':'tửu','茶':'trà','衣':'y',
+  '服':'phục','袍':'bào','衫':'sam','冠':'quan','带':'đái','履':'lữ',
+  '鞋':'hài','车':'xa','马':'mã','舟':'chu','船':'thuyền','桥':'kiều',
+  '路':'lộ','途':'đồ','街':'nhai','巷':'hạng','村':'thôn','庄':'trang',
+  '镇':'trấn','市':'thị','省':'tỉnh','县':'huyện','府':'phủ','州':'châu'
+};
+
+// 4. DỌN SẠCH RÁC PROMPT & LỜI BÌNH CỦA AI (Prompt Leak & Meta-Chatter Stripper)
+function sf_cleanPromptLeakAndMeta(text, origChunkText){
   if(!text) return '';
-  let out = String(text);
-  // Xoá các dấu ngoặc thư danh kiểu Trung Quốc 《...》 hoặc 【...】 nếu bao quanh chữ Việt
-  const pairs = (typeof sfZh_getAllGlossaryPairs === 'function') ? sfZh_getAllGlossaryPairs() : [];
-  // Sắp xếp theo độ dài chữ Hán giảm dần để cụm dài được thay trước cụm ngắn
-  pairs.sort((a,b)=> b.src.length - a.src.length);
-  for(const p of pairs){
-    if(p.src && p.shortTrans && out.includes(p.src)){
-      out = out.split(p.src).join(p.shortTrans);
+  let s = String(text).trim();
+  // Xoá markdown code fence nếu AI bọc bản dịch trong ```...```
+  s = s.replace(/^```(?:markdown|text|vn|vi)?\s*\n?/i, '').replace(/\n?```\s*$/i, '').trim();
+
+  // Xoá các nhãn đánh dấu prompt bị AI lặp lại
+  s = s.replace(/^\s*\[?(?:ĐOẠN VĂN DỊCH CHÍNH THỨC|BẮT ĐẦU ĐOẠN VĂN CẦN DỊCH|ĐOẠN VĂN TIẾNG TRUNG CẦN DỊCH[^\]\n]*|BẢN DỊCH TIẾNG VIỆT HOÀN CHỈNH|BẢN DỊCH TIẾNG VIỆT|BẢN DỊCH CHÍNH THỨC|KẾT QUẢ DỊCH|ĐOẠN VĂN)\]?\s*:?\s*\n*/gim, '');
+  // Xoá trường hợp dòng rác kiểu "[Hành thân phình to... [ĐOẠN VĂN DỊCH CHÍNH THỨC]:"
+  s = s.replace(/^.*\[ĐOẠN VĂN DỊCH CHÍNH THỨC\]\s*:?\s*\n*/gim, '');
+  // Xoá nếu AI lỡ lặp lại khối [BẢNG TÊN RIÊNG...] hoặc [QUY ƯỚC XƯNG HÔ...] hoặc [THAM KHẢO CÂU CUỐI...]
+  s = s.replace(/^\s*\[(?:BẢNG TÊN RIÊNG|QUY ƯỚC XƯNG HÔ|THAM KHẢO CÂU CUỐI|CHỈ DẪN BẮT BUỘC)[^\]]*\][\s\S]*?(?=\n\n|$)/gim, '').trim();
+
+  // Xoá các câu hội thoại mở đầu của AI (Prompt Leak ở đầu chunk)
+  const metaIntroPatterns = [
+    /^\s*(?:E hèm!|A hèm!|Khụ khụ!)?\s*Đã rõ thiết lập bộ truyện[^\n]*\n+(?:Dưới đây là[^\n]*\n+)?/i,
+    /^\s*(?:Cám ơn|Cảm ơn) (?:cậu|bạn)[^\n]*Chào mừng đến với xưởng chế tác ngôn từ[^\n]*\n+/i,
+    /^\s*Kiểm tra lại từng dòng thiết lập, đồng bộ hóa phong cách[^\n]*\n+/i,
+    /^\s*(?:Dưới đây là|Đây là) (?:bản dịch|chương truyện|đoạn văn)[^\n]*được chuyển ngữ[^\n]*:\s*\n+/i,
+    /^\s*(?:Dưới đây là|Đây là) bản (?:dịch|biên tập) tiếng Việt[^\n]*:\s*\n+/i,
+    /^\s*(?:Chắc chắn rồi|Tất nhiên rồi|Tuân lệnh|Đã hiểu)[!,.][^\n]*:\s*\n+/i
+  ];
+  for(const pat of metaIntroPatterns){
+    s = s.replace(pat, '').trim();
+  }
+
+  // Nếu đầu đoạn vẫn còn dòng mở đầu kiểu AI nói chuyện trước dòng "Chương X:" đầu tiên (tối đa 3 dòng đầu)
+  const lines = s.split(/\r?\n/);
+  const firstChapLineIdx = lines.findIndex((l, idx) => idx > 0 && idx <= 4 && /^\s*(?:Chương|Chapter|Đệ|Hồi)\s+\d+/i.test(l.trim()));
+  if(firstChapLineIdx > 0){
+    const preText = lines.slice(0, firstChapLineIdx).join(' ');
+    if(/(?:thiết lập|chuyển ngữ|dịch giả|xưởng chế tác|văn phong|trào phúng|bản dịch|dưới đây là|chào mừng)/i.test(preText)){
+      s = lines.slice(firstChapLineIdx).join('\n').trim();
     }
   }
+
+  // Xoá các câu than thở / ghi chú của AI ở cuối chunk (VD: "(Chịu hết nổi rồi, xin phép nghỉ một chương...)")
+  s = s.replace(/\n*\s*[\(\[（【]?(?:Chịu hết nổi rồi,\s*xin phép nghỉ một chương[^\n\)\]]*|Lưu ý của (?:AI|dịch giả)[^\n\)\]]*|Hết đoạn dịch|Bản dịch đến đây là kết thúc)[\)\]）】]?\s*$/gi, '').trim();
+  // Xoá dòng phân cách "---" rác ở đầu/cuối nếu AI tự thêm kèm lời dẫn
+  s = s.replace(/^(?:---+\s*\n)+/, '').replace(/(?:\n\s*---+)+$/, '').trim();
+
+  // Nếu bản gốc bắt đầu bằng tiêu đề chương (VD: "第5章 标题" hoặc "Chương 5: ...") mà AI dịch sót tiêu đề chương ở dòng 1:
+  if(origChunkText){
+    const origFirstLine = String(origChunkText).trim().split(/\r?\n/)[0] || '';
+    const origHdrs = sf_extractChapterHeaders(origFirstLine);
+    if(origHdrs.length === 1){
+      const chapNum = origHdrs[0].num;
+      const transHdrs = sf_extractChapterHeaders(s);
+      if(!transHdrs.some(h => h.num === chapNum)){
+        // Kiểm tra xem dòng đầu của s có phải là tiêu đề đã dịch nhưng thiếu chữ "Chương X:" không
+        const sLines = s.split(/\r?\n/);
+        if(sLines[0] && sLines[0].trim().length < 65 && !/[.!?。！？]$/.test(sLines[0].trim())){
+          sLines[0] = `Chương ${chapNum}: ${sLines[0].trim().replace(/^[:\-–—\s]+/, '')}`;
+          s = sLines.join('\n');
+        } else {
+          s = `Chương ${chapNum}\n\n` + s;
+        }
+      }
+    }
+  }
+  return s;
+}
+
+// 5. THAY THẾ TỨC THÌ TỪ ĐIỂN + SỬA TỪ LAI NỬA VIỆT NỬA HÁN (Vương哲, Kim身 Cảnh...) + ĐỒNG BỘ TÊN NHÂN VẬT
+function sf_applyGlossaryReplacement(text, origChunkText){
+  if(!text) return '';
+  let out = sf_cleanPromptLeakAndMeta(text, origChunkText);
+
+  // Bước A: Tự động chuyển tiêu đề chương tiếng Trung còn sót (VD: "第232章 标题") sang "Chương 232: 标题"
+  out = out.replace(/^[ \t]*第\s*([0-9零〇一二两三四五六七八九十百千万]+)\s*[章节回][ \t:：\-–—]*(.*)$/gm, (_, rawNum, rest)=>{
+    const n = sf_parseChineseNumber(rawNum);
+    if(n == null) return _;
+    const cleanRest = rest ? rest.trim() : '';
+    return cleanRest ? `Chương ${n}: ${cleanRest}` : `Chương ${n}`;
+  });
+
+  // Bước B: Áp dụng bảng sửa cụm từ lai & từ Hán thông dụng (Vương哲 -> Vương Triết, thực战 -> thực chiến...)
+  for(const [re, rep] of SF_HYBRID_AND_COMMON_HANZI_FIXES){
+    out = out.replace(re, rep);
+  }
+
+  // Bước C: Lấy toàn bộ cặp từ điển của người dùng + từ điển tích hợp sẵn
+  const pairs = (typeof sfZh_getAllGlossaryPairs === 'function') ? sfZh_getAllGlossaryPairs() : [];
+  const seenSrc = new Set(pairs.map(p => p.src));
+  for(const [bSrc, bTrans] of SF_BUILTIN_NOVEL_GLOSSARY){
+    if(!seenSrc.has(bSrc)){
+      pairs.push({ src: bSrc, fullTrans: bTrans, shortTrans: bTrans });
+      seenSrc.add(bSrc);
+    }
+  }
+  pairs.sort((a,b)=> b.src.length - a.src.length);
+
+  for(const p of pairs){
+    if(!p.src || !p.shortTrans) continue;
+    // 1. Thay thế nguyên cụm chữ Hán nếu có mặt
+    if(out.includes(p.src)){
+      out = out.split(p.src).join(p.shortTrans);
+    }
+    // 2. Xử lý lỗi từ lai nửa Việt nửa Hán (VD: p.src="王哲", p.shortTrans="Vương Triết" -> bắt cả "Vương哲", "Vương 哲")
+    const srcChars = Array.from(p.src);
+    const vnWords = p.shortTrans.trim().split(/\s+/);
+    if(srcChars.length >= 2 && srcChars.length === vnWords.length && /[\u4E00-\u9FFF]/.test(out)){
+      // Trường hợp chữ đầu đã dịch sang tiếng Việt, phần đuôi còn chữ Hán (VD: "Vương" + "哲", "Cao" + "俊飞")
+      const firstVn = vnWords[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const tailHan = srcChars.slice(1).join('').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const reTail = new RegExp(firstVn + '\\s*' + tailHan, 'g');
+      out = out.replace(reTail, p.shortTrans);
+      if(srcChars.length === 3){
+        // Trường hợp 2 chữ đầu đã dịch, chữ thứ 3 còn Hán (VD: "Cao Tuấn" + "飞") hoặc chữ đầu + chữ cuối đã dịch, chữ giữa còn Hán (VD: "Kim" + "身" + "Cảnh")
+        const firstTwoVn = (vnWords[0] + '\\s+' + vnWords[1]).replace(/[.*+?^${}()|[\]\\]/g, m=>m);
+        const lastHan = srcChars[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(vnWords[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s+' + vnWords[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*' + lastHan, 'g'), p.shortTrans);
+        const midHan = srcChars[1].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(vnWords[0].replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*' + midHan + '\\s*' + vnWords[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), p.shortTrans);
+      }
+    }
+  }
+
+  // Bước D: Xoá chữ Hán bị AI viết kèm ngay sau từ tiếng Việt đã dịch (VD: "đạt chuẩn合格", "nắn bóp捏", "Cao Tuấn Phi (高俊飞)")
+  out = out.replace(/\(([\u3400-\u4DBF\u4E00-\u9FFF]{1,10})\)/g, '');
+  // Thay dấu ngoặc thư danh Trung Quốc 《...》 quanh chữ Việt thành "..." và 【...】 thành [...]
+  out = out.replace(/《([^《》\u4E00-\u9FFF]+)》/g, '"$1"');
+  out = out.replace(/【([^【】\u4E00-\u9FFF]+)】/g, '[$1]');
+
+  // Bước E: Đồng bộ tên nhân vật & thuật ngữ bị lệch giữa các chunk
+  for(const [re, rep] of SF_INCONSISTENT_NAME_NORMALIZATIONS){
+    out = out.replace(re, rep);
+  }
+
   return out;
+}
+
+// 6. PHIÊN ÂM HÁN-VIỆT TỰ ĐỘNG CHO CÁC KÝ TỰ HÁN LẺ CÒN SÓT (1..15 ký tự) ĐỂ ĐẢM BẢO SẠCH 100% CHỮ HÁN
+function sf_transliterateResidualHanzi(text){
+  if(!text) return '';
+  let out = sf_applyGlossaryReplacement(text);
+  if(sf_countHanziChars(out) === 0) return out;
+
+  // Thay từng cụm chữ Hán ngắn còn sót bằng âm Hán-Việt chuẩn trong bảng SF_HANVIET_SINGLE_CHAR_MAP
+  out = out.replace(/[\u3400-\u4DBF\u4E00-\u9FFF]+/g, (hanCluster)=>{
+    // Nếu cả cụm dài > 10 chữ Hán (cả câu tiếng Trung chưa dịch) thì giữ nguyên để tầng kiểm tra báo lỗi/dịch lại câu
+    if(hanCluster.length > 10) return hanCluster;
+    const syllables = [];
+    for(const ch of hanCluster){
+      if(SF_HANVIET_SINGLE_CHAR_MAP[ch] !== undefined){
+        if(SF_HANVIET_SINGLE_CHAR_MAP[ch]) syllables.push(SF_HANVIET_SINGLE_CHAR_MAP[ch]);
+      } else {
+        syllables.push(ch);
+      }
+    }
+    return ' ' + syllables.join(' ') + ' ';
+  });
+  return out.replace(/[ \t]{2,}/g, ' ').replace(/ +([,.;:!?])/g, '$1');
 }
 
 // Đếm tổng số ký tự chữ Hán trong chuỗi
@@ -6080,30 +7245,34 @@ function sf_countHanziChars(text){
   return m ? m.length : 0;
 }
 
-// Ép dịch lại khi phát hiện AI bị trôi lệnh (trả về nguyên đoạn chữ Hán hoặc viết tiếp truyện bằng tiếng Trung như ở Chunk #15)
+// Ép dịch lại khi phát hiện AI bị trôi lệnh (trả về nguyên đoạn chữ Hán, bị cắt cụt hoặc thiếu tiêu đề chương)
 async function sf_forceStrictRetranslate(origChunkText, chunkGlossBlock, signal){
-  const strictPrompt = `[MỆNH LỆNH BẮT BUỘC — CHẾ ĐỘ DỊCH THUẬT NGHIÊM NGẶT]
-Bạn là dịch giả tiểu thuyết Trung – Việt chuyên nghiệp. Ở lượt trước bạn đã mắc lỗi xuất ra chữ Hán thay vì dịch sang tiếng Việt.
-Nhiệm vụ duy nhất của bạn bây giờ là DỊCH TRỰC TIẾP 100% đoạn văn tiếng Trung dưới đây sang tiếng Việt mượt mà, chuẩn văn phong tiểu thuyết xuất bản.
+  const reqHeaders = sf_extractChapterHeaders(origChunkText);
+  const headerRequirement = reqHeaders.length
+    ? `\n4. BẮT BUỘC GIỮ ĐÚNG TIÊU ĐỀ CHƯƠNG: Đoạn gốc có chương [${reqHeaders.map(h=>'Chương '+h.num).join(', ')}], bản dịch BẮT BUỘC phải có dòng tiêu đề "${reqHeaders.map(h=>'Chương '+h.num+': ...').join(', ')}" tương ứng.`
+    : '';
+  const strictPrompt = `[MỆNH LỆNH BẮT BUỘC — CHẾ ĐỘ DỊCH THUẬT NGHIÊM NGẶT 100% ĐẦY ĐỦ]
+Bạn là dịch giả tiểu thuyết Trung – Việt xuất bản thương mại. Ở lượt trước bản dịch bị lỗi (sót chữ Hán hoặc bị cắt cụt nội dung).
+Nhiệm vụ duy nhất của bạn bây giờ là DỊCH TRỰC TIẾP VÀ ĐẦY ĐỦ 100% đoạn văn tiếng Trung dưới đây sang tiếng Việt mượt mà.
 
 QUY TẮC TUYỆT ĐỐI:
-1. Bản dịch đầu ra PHẢI LÀ 100% TIẾNG VIỆT. CẤM TUYỆT ĐỐI để sót bất kỳ chữ Hán nào (kể cả tên người, họ tên, địa danh, chiêu thức — tất cả phải phiên âm Hán-Việt chuẩn xác, ví dụ 王哲 -> Vương Triết, 雷大朝 -> Lôi Đại Triều, 赵美玲 -> Triệu Mỹ Linh).
-2. CẤM TUYỆT ĐỐI tự sáng tác/viết tiếp câu chuyện bằng tiếng Trung. Dịch đúng từng câu, từng đoạn từ câu đầu tiên đến câu cuối cùng của đoạn văn gốc.
-3. Không giải thích, không lời mở đầu, chỉ trả về bản dịch tiếng Việt.
+1. Bản dịch đầu ra PHẢI LÀ 100% TIẾNG VIỆT. CẤM TUYỆT ĐỐI để sót bất kỳ chữ Hán nào (kể cả tên người, họ tên, địa danh, chiêu thức, cảnh giới — tất cả phải dịch/phiên âm Hán-Việt đầy đủ, ví dụ 王哲 -> Vương Triết, 雷大朝 -> Lôi Đại Triều, 金身境 -> Kim Thân Cảnh, 实战 -> thực chiến, 合格 -> đạt chuẩn).
+2. DỊCH ĐẦY ĐỦ 100% TỪ CÂU ĐẦU TIÊN ĐẾN CÂU CUỐI CÙNG: Cấm tóm tắt, cấm bỏ sót đoạn mở đầu hay đoạn kết, cấm tự ý viết tiếp bằng tiếng Trung.
+3. TUYỆT ĐỐI KHÔNG viết lời dẫn của AI (cấm viết "E hèm!", "Dưới đây là bản dịch...", "[ĐOẠN VĂN DỊCH CHÍNH THỨC]:"). Chỉ xuất trực tiếp nội dung truyện.${headerRequirement}
 
 ${chunkGlossBlock ? chunkGlossBlock + '\n\n' : ''}[ĐOẠN VĂN TIẾNG TRUNG CẦN DỊCH SANG 100% TIẾNG VIỆT]:
 ` + origChunkText;
   return await sfZh_callRawAI(strictPrompt);
 }
 
-// Quét sạch các từ/tên riêng chữ Hán lẻ tẻ còn sót lại trong câu tiếng Việt (ví dụ 1-25 chữ Hán như "Bàn tay phải của 雷大朝... vạt thẳng vào mặt 王哲")
+// Quét sạch các từ/tên riêng chữ Hán lẻ tẻ còn sót lại trong câu tiếng Việt (ví dụ 1-30 chữ Hán)
 async function sf_cleanResidualHanziInText(vietWithSomeHanzi){
   const cleanPrompt = `[NHIỆM VỤ: DỊCH NỐT CÁC CHỮ HÁN CÒN SÓT TRONG BẢN DỊCH TIẾNG VIỆT]
 Đoạn văn tiếng Việt dưới đây bị sót lại một vài từ hoặc tên riêng bằng chữ Hán chưa được phiên âm/dịch sang tiếng Việt.
 YÊU CẦU BẮT BUỘC:
-1. Chuyển toàn bộ các chữ Hán còn sót (như tên người, tên chiêu thức, danh xưng...) sang tên Hán-Việt hoặc từ tiếng Việt tương ứng thật tự nhiên (ví dụ: 王哲 -> Vương Triết, 雷大朝 -> Lôi Đại Triều, 先生 -> tiên sinh).
-2. GIỮ NGUYÊN 100% các câu chữ tiếng Việt đã dịch xung quanh, tuyệt đối không tóm tắt hay cắt bớt bất kỳ dòng nào.
-3. Kết quả trả về phải sạch bóng 100% chữ Hán. Chỉ trả về văn bản đã làm sạch, không giải thích:
+1. Chuyển toàn bộ các chữ Hán còn sót (như tên người, tên chiêu thức, danh xưng, từ ghép...) sang tên Hán-Việt hoặc từ tiếng Việt tương ứng thật tự nhiên (ví dụ: 王哲 -> Vương Triết, 雷大朝 -> Lôi Đại Triều, 金身境 -> Kim Thân Cảnh, 合格 -> đạt chuẩn, 实战 -> thực chiến).
+2. GIỮ NGUYÊN 100% các câu chữ tiếng Việt đã dịch xung quanh, tuyệt đối không tóm tắt, không cắt bớt bất kỳ dòng nào và không thêm lời bình của AI.
+3. Kết quả trả về phải sạch bóng 100% chữ Hán:
 
 ` + vietWithSomeHanzi;
   return await sfZh_callRawAI(cleanPrompt);
@@ -6144,35 +7313,47 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
 
         let res = await callModel(payloadText, keyIdx, abortCtrl.signal);
 
-        // --- HẬU KIỂM TỰ ĐỘNG 3 TẦNG (CHỐNG SÓT CHỮ HÁN & CHỐNG TRẢ VỀ TIẾNG TRUNG) ---
-        // Tầng 1: Thay thế tức thì bằng từ điển đã học
-        res = sf_applyGlossaryReplacement(res);
+        // --- HẬU KIỂM TỰ ĐỘNG 5 TẦNG (CHỐNG RÁC AI, CHỐNG CẮT CỤT CHUNK, CHỐNG MẤT CHƯƠNG & DIỆT 100% HÁN TỰ) ---
+        // Tầng 1 & 2: Dọn sạch rác Prompt AI + thay thế từ điển + sửa từ lai nửa Việt nửa Hán (Vương哲 -> Vương Triết) + đồng bộ tên
+        res = sf_transliterateResidualHanzi(sf_applyGlossaryReplacement(res, origChunkText));
 
-        // Tầng 2: Nếu bản gốc có chữ Hán, kiểm tra xem bản dịch có bị trả về nguyên đoạn chữ Hán (như lỗi Chunk #15) không
         const srcHanCount = sf_countHanziChars(origChunkText);
         if(srcHanCount > 5){
           let outHanCount = sf_countHanziChars(res);
-          // Nếu kết quả trả về có > 20 chữ Hán hoặc tỷ lệ chữ Hán > 8% -> AI đã bị trôi lệnh trả về tiếng Trung!
-          if(outHanCount > 20 || (res.length > 0 && (outHanCount / res.length) > 0.08)){
-            logLine('warn', idx, keyIdx, `Chunk ${idx+1}: Phát hiện AI trả về đoạn chữ Hán (${outHanCount} chữ Hán). Đang tự động ép dịch lại sang 100% tiếng Việt...`);
+          const missingChaps = sf_findMissingHeaders(origChunkText, res);
+          // Kiểm tra chống cắt cụt (Anti-Truncation): 1 chữ Hán dịch sang tiếng Việt trung bình ~3.2 ký tự.
+          // Nếu đoạn gốc >= 180 chữ Hán mà bản dịch ngắn hơn 1.15 lần số chữ Hán -> AI đã bỏ sót/cắt cụt hơn một nửa chunk (như lỗi Chunk #21)!
+          const isTruncated = srcHanCount >= 180 && res.length < (srcHanCount * 1.15);
+
+          // Tầng 3: Nếu kết quả bị trả về nguyên mảng chữ Hán (> 15 chữ Hán), HOẶC bị cắt cụt nội dung, HOẶC làm mất tiêu đề chương
+          if(outHanCount > 15 || (res.length > 0 && (outHanCount / res.length) > 0.06) || isTruncated || missingChaps.length > 0){
+            const reason = outHanCount > 15 ? `sót ${outHanCount} chữ Hán` : (isTruncated ? `bị cắt cụt (${res.length} ký tự Việt / ${srcHanCount} chữ Hán)` : `thiếu tiêu đề chương (${missingChaps.join(', ')})`);
+            logLine('warn', idx, keyIdx, `Chunk ${idx+1}: Phát hiện bản dịch ${reason}. Đang tự động ép dịch lại đầy đủ 100%...`);
             const reTrans = await sf_forceStrictRetranslate(origChunkText, chunkGlossBlock, abortCtrl.signal);
             if(reTrans && reTrans.trim()){
-              res = sf_applyGlossaryReplacement(reTrans.trim());
-              outHanCount = sf_countHanziChars(res);
+              const candRes = sf_transliterateResidualHanzi(sf_applyGlossaryReplacement(reTrans.trim(), origChunkText));
+              // Chỉ nhận bản dịch lại nếu dài hơn bản bị cắt cụt hoặc ít chữ Hán hơn
+              if(!isTruncated || candRes.length > res.length){
+                res = candRes;
+                outHanCount = sf_countHanziChars(res);
+              }
             }
           }
-          // Tầng 3: Nếu chỉ còn sót 1..20 chữ Hán lẻ tẻ (ví dụ tên nhân vật mới 雷大朝 chưa kịp có trong từ điển)
-          if(outHanCount > 0 && outHanCount <= 20){
-            logLine('info', idx, keyIdx, `Chunk ${idx+1}: Tự động làm sạch ${outHanCount} chữ Hán tên riêng còn sót...`);
+
+          // Tầng 4: Nếu vẫn còn sót 1..30 chữ Hán lẻ tẻ (ví dụ tên riêng/thuật ngữ hiếm ngoài bảng đơn tự)
+          outHanCount = sf_countHanziChars(res);
+          if(outHanCount > 0 && outHanCount <= 30){
+            logLine('info', idx, keyIdx, `Chunk ${idx+1}: Tự động dịch nốt ${outHanCount} chữ Hán lẻ còn sót...`);
             try{
               const cleaned = await sf_cleanResidualHanziInText(res);
               if(cleaned && cleaned.trim() && sf_countHanziChars(cleaned) < outHanCount){
-                res = sf_applyGlossaryReplacement(cleaned.trim());
+                res = sf_transliterateResidualHanzi(sf_applyGlossaryReplacement(cleaned.trim(), origChunkText));
               }
             }catch(cleanErr){ console.warn('[SF Output Guard] Bỏ qua lỗi làm sạch chữ Hán lẻ:', cleanErr); }
           }
-          // Nếu sau cả 2 lần ép dịch mà kết quả vẫn toàn chữ Hán (> 35 chữ Hán), ném lỗi để Scheduler thử lại bằng key khác chứ không đánh dấu Đã dịch sai!
-          if(sf_countHanziChars(res) > 35){
+
+          // Tầng 5: Chốt chặn cuối cùng — không bao giờ đánh dấu "100% Đã dịch" nếu chunk vẫn còn nguyên đoạn tiếng Trung (> 20 chữ Hán)
+          if(sf_countHanziChars(res) > 20){
             const hanErr = new Error('Model vẫn trả về tiếng Trung thay vì dịch sang tiếng Việt');
             hanErr.status = 500;
             throw hanErr;
@@ -6492,16 +7673,21 @@ async function runEngine(indices){
 
 async function startTranslate(){
   if(running) return;
-  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
-  if(state.keys.length===0){ alert('Thêm API key.'); return; }
-  if(!state.model){ alert('Nhập model.'); return; }
-  let text = sf_getFullSourceText(); if(!text.trim()){ alert('Dán truyện trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ sfUI.alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ sfUI.alert('Nhập Base URL.'); return; }
+  if(state.keys.length===0){ sfUI.alert('Thêm API key.'); return; }
+  if(!state.model){ sfUI.alert('Nhập model.'); return; }
+  let text = sf_getFullSourceText(); if(!text.trim()){ sfUI.alert('Dán truyện trước.'); return; }
   if(typeof sfZhCfg !== 'undefined'){
     const curHash = sf_computeSourceHash(text);
     if(sfZhCfg._lastHash && sfZhCfg._lastHash !== curHash){
       sfZhCfg.theme = ''; sfZhCfg.tone = ''; sfZhCfg.glossary = ''; sfZhCfg.honorifics = ''; sfZhCfg.style = '';
+      if(typeof sfGlossDB_restoreByHash === 'function'){
+        await sfGlossDB_restoreByHash(curHash);
+      }
       if(typeof sfZh_syncInputsFromCfg === 'function') sfZh_syncInputsFromCfg();
+    } else if(!sfZhCfg.glossary.trim() && typeof sfGlossDB_restoreByHash === 'function'){
+      await sfGlossDB_restoreByHash(curHash);
     }
     sfZhCfg._lastHash = curHash;
     if(sfZhCfg.autoLearn && !sfZhCfg.glossary.trim() && !sfZhCfg.honorifics.trim() && typeof sfZh_autoReadInitial === 'function'){
@@ -6512,7 +7698,7 @@ async function startTranslate(){
   // Bước 8 (Source Integrity): nếu partition/reconstruction không khớp 100% với văn bản gốc,
   // DỪNG NGAY — tuyệt đối không được bắt đầu dịch với chunk map có khả năng làm mất/lặp nội dung.
   if(offsets === null){
-    alert('⚠️ Lỗi toàn vẹn chunk: dữ liệu chia chunk không khớp 100% với văn bản gốc. Đã DỪNG để tránh mất/lặp nội dung. Xem Console (F12) để biết chi tiết, hoặc báo lại đoạn văn bản này.');
+    sfUI.alert('⚠️ Lỗi toàn vẹn chunk: dữ liệu chia chunk không khớp 100% với văn bản gốc. Đã DỪNG để tránh mất/lặp nội dung. Xem Console (F12) để biết chi tiết, hoặc báo lại đoạn văn bản này.');
     return;
   }
   currentResults = new Array(offsets.length).fill(null);
@@ -6556,7 +7742,7 @@ function stopTranslate(){
    Sau RESET, mở lại 📚 Thư viện thì truyện + số chunk DONE vẫn còn nguyên như trước. */
 function sfResetRuntimeSession(){
   if(running){
-    if(!confirm('Đang có tiến trình dịch chạy. Dừng tiến trình và reset phiên hiện tại? (Dữ liệu đã lưu trong Thư viện/Cloud sẽ KHÔNG bị mất)')) return;
+    if(!sfUI.confirm('Đang có tiến trình dịch chạy. Dừng tiến trình và reset phiên hiện tại? (Dữ liệu đã lưu trong Thư viện/Cloud sẽ KHÔNG bị mất)')) return;
     stopFlag = true; pauseFlag = false;
     // ĐỢT 7C — mục III: RESET xoá chunkState/currentResults NGAY bên dưới (không đợi runEngine's
     // Promise.all như stopTranslate()) — nếu có request đang bay resolve SAU khi mảng đã bị xoá,
@@ -6610,12 +7796,12 @@ async function retryFailedChunks(){
 // không tạo request loop riêng, không đổi sourceText/sourceStart/sourceEnd/stableId của chunk.
 // Chỉ chunk được chỉ định mới được dịch lại; các chunk khác không bị ảnh hưởng.
 async function sfRetryChunkForHeader(idx){
-  if(running){ alert('Đang có tiến trình dịch chạy. Vui lòng đợi hoặc dừng trước khi dịch lại chunk này.'); return; }
+  if(running){ sfUI.alert('Đang có tiến trình dịch chạy. Vui lòng đợi hoặc dừng trước khi dịch lại chunk này.'); return; }
   const c = chunkState[idx]; if(!c) return;
-  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ alert('Bật Proxy trước.'); return; }
-  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ alert('Nhập Base URL.'); return; }
-  if(state.keys.length===0){ alert('Thêm API key.'); return; }
-  if(!state.model){ alert('Nhập model.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !state.proxyOn){ sfUI.alert('Bật Proxy trước.'); return; }
+  if(!(window.sfGemActive&&window.sfGemActive()) && !document.getElementById('baseUrl').value.trim()){ sfUI.alert('Nhập Base URL.'); return; }
+  if(state.keys.length===0){ sfUI.alert('Thêm API key.'); return; }
+  if(!state.model){ sfUI.alert('Nhập model.'); return; }
   c.retryCount = 0;
   delete chunkRetryAfter[idx];
   // markChunkWaiting đưa chunk khỏi trạng thái 'done' TẠM THỜI để scheduler chấp nhận dịch lại
@@ -6654,39 +7840,80 @@ function updateProgressUI(){
 
 function downloadOutput(){
   const text = document.getElementById('outputText').value;
-  if(!text.trim()){ alert('Chưa có kết quả để tải.'); return; }
+  if(!text.trim()){ sfUI.alert('Chưa có kết quả để tải.'); return; }
   const blob = new Blob([text], {type:'text/plain;charset=utf-8'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob);
   a.download = sf_buildExportFileName(sfCurrentFileMeta && sfCurrentFileMeta.originalFileName);
   a.click(); setTimeout(()=>URL.revokeObjectURL(a.href), 1000);
 }
 function copyOutput(){ navigator.clipboard?.writeText(document.getElementById('outputText').value).catch(()=>{}); }
-function downloadOutputByChapter(){
+let __sfExportingParts = false;
+async function downloadOutputByChapter(){
+  if(__sfExportingParts){
+    sfUI.alert('Đang xuất các phần file TXT, vui lòng đợi tiến trình hiện tại hoàn tất...');
+    return;
+  }
   const doneChunks = Array.isArray(chunkState) && chunkState.some(c=>c && c.status==='done')
     ? chunkState.map((c,i)=> c.status==='done' ? (c.trans||'') : '').filter(Boolean)
     : [];
   const fullText = (document.getElementById('outputText')?.value || '').trim();
   if(!doneChunks.length && !fullText){
-    alert('Chưa có kết quả dịch để tải theo phần!');
+    sfUI.alert('Chưa có kết quả dịch để tải theo phần!');
     return;
   }
-  const perPartStr = prompt('Nhập số chunk (hoặc số chương) muốn gộp trong mỗi file TXT tải về:', '50');
+  const perPartStr = sfUI.prompt('Nhập số chunk (hoặc số chương) muốn gộp trong mỗi file TXT tải về:', '50');
   if(!perPartStr) return;
   const perPart = Math.max(1, parseInt(perPartStr, 10) || 50);
   const items = doneChunks.length ? doneChunks : sf_parseChaptersForReader().map(c=> c.title + '\n\n' + c.body);
+  const totalParts = Math.ceil(items.length / perPart);
+  if(totalParts <= 0) return;
+
   const baseName = (sfCurrentFileMeta && sfCurrentFileMeta.originalFileName)
     ? String(sfCurrentFileMeta.originalFileName).replace(/\.[^./\\]+$/, '')
     : 'ban-dich';
-  let partIdx = 1;
-  for(let i=0; i<items.length; i+=perPart){
-    const sliceText = items.slice(i, i + perPart).join('\n\n');
-    const blob = new Blob([sliceText], { type:'text/plain;charset=utf-8' });
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${baseName} - Phần ${partIdx} (${i+1}-${Math.min(items.length, i+perPart)}).txt`;
-    a.click();
-    setTimeout(()=> URL.revokeObjectURL(a.href), 1500);
-    partIdx++;
+
+  const wrap = document.getElementById('sfExportProgressWrap');
+  const lbl = document.getElementById('sfExportProgressLabel');
+  const pctEl = document.getElementById('sfExportProgressPct');
+  const bar = document.getElementById('sfExportProgressBar');
+  const btn = document.getElementById('downloadPartsBtn');
+
+  __sfExportingParts = true;
+  if(btn) btn.disabled = true;
+  if(wrap) wrap.style.display = 'block';
+
+  try{
+    let partIdx = 1;
+    for(let i=0; i<items.length; i+=perPart){
+      const fromItem = i + 1;
+      const toItem = Math.min(items.length, i + perPart);
+      const pct = Math.round((partIdx / totalParts) * 100);
+      if(lbl) lbl.textContent = `⏳ Đang xuất Phần ${partIdx}/${totalParts} (Mục ${fromItem}–${toItem})...`;
+      if(pctEl) pctEl.textContent = pct + '%';
+      if(bar) bar.style.width = pct + '%';
+
+      const sliceText = items.slice(i, i + perPart).join('\n\n');
+      const blob = new Blob([sliceText], { type:'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${baseName} - Phần ${partIdx} (${fromItem}-${toItem}).txt`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(()=> URL.revokeObjectURL(url), 4000);
+
+      partIdx++;
+      if(i + perPart < items.length){
+        await new Promise(r => setTimeout(r, 280)); // Dãn nhịp 280ms chống trình duyệt chặn tải nhiều file cùng lúc
+      }
+    }
+    if(lbl) lbl.textContent = `✅ Đã xuất hoàn tất ${totalParts}/${totalParts} phần file TXT!`;
+    sfUI.toast(`Đã xuất thành công ${totalParts} file TXT theo phần!`, 'ok');
+  }finally{
+    __sfExportingParts = false;
+    if(btn) btn.disabled = false;
+    setTimeout(()=>{ if(wrap && !__sfExportingParts) wrap.style.display = 'none'; }, 4500);
   }
 }
 
@@ -6764,7 +7991,7 @@ async function sfQueue_addFiles(fileList){
 }
 
 async function sfQueue_runItem(qid){
-  if(running){ alert('Đang có tiến trình dịch chạy. File này sẽ tự chạy sau khi tiến trình hiện tại hoàn tất.'); return; }
+  if(running){ sfUI.alert('Đang có tiến trình dịch chạy. File này sẽ tự chạy sau khi tiến trình hiện tại hoàn tất.'); return; }
   const item = sfFileQueue.find(q=> q.id === qid);
   if(!item) return;
   item.status = 'running';
@@ -6812,7 +8039,8 @@ async function sfQueue_onCurrentFinished(){
 
 // Điền thông tin dự án Firebase của bạn vào đây (Firebase Console → Project settings).
 // Để trống apiKey/projectId để tắt hẳn Cloud Mode và chỉ chạy Local Mode.S
-const FIREBASE_CONFIG = {
+const SF_FIREBASE_CUSTOM_KEY = 'sf_firebase_custom_cfg_v1';
+const SF_DEFAULT_FIREBASE_CONFIG = {
   apiKey: "AIzaSyB0Ca41FO5KSEMpP7bVkOLgnuBd8F6gXy4",
   authDomain: "dich-truyen-de736.firebaseapp.com",
   projectId: "dich-truyen-de736",
@@ -6820,6 +8048,22 @@ const FIREBASE_CONFIG = {
   messagingSenderId: "678169358639",
   appId: "1:678169358639:web:f856ead1ac88031ccb31da"
 };
+function sf_loadEffectiveFirebaseConfig(){
+  try{
+    const raw = localStorage.getItem(SF_FIREBASE_CUSTOM_KEY);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      if(parsed && parsed.localOnly === true){
+        return { apiKey:'', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' };
+      }
+      if(parsed && typeof parsed === 'object' && parsed.apiKey && parsed.projectId){
+        return parsed;
+      }
+    }
+  }catch(e){}
+  return Object.assign({}, SF_DEFAULT_FIREBASE_CONFIG);
+}
+const FIREBASE_CONFIG = sf_loadEffectiveFirebaseConfig();
 
 const sfCloud = (function(){
   let app=null, auth=null, db=null, storage=null;
@@ -6929,11 +8173,11 @@ const sfCloud = (function(){
   }
 
   function signIn(){
-    if(!available){ alert('Cloud chưa được cấu hình (điền FIREBASE_CONFIG trong file HTML). Hiện tại StoryForge đang chạy Local Mode.'); return; }
+    if(!available){ sfUI.alert('Cloud chưa được cấu hình (điền FIREBASE_CONFIG trong file HTML). Hiện tại StoryForge đang chạy Local Mode.'); return; }
     const provider = new firebase.auth.GoogleAuthProvider();
     auth.signInWithPopup(provider).catch(e=>{
       console.error('[SF Cloud] Đăng nhập lỗi:', e);
-      alert('Đăng nhập Google thất bại: ' + (e && e.message || e));
+      sfUI.alert('Đăng nhập Google thất bại: ' + (e && e.message || e));
     });
   }
   function signOut(){
@@ -7157,7 +8401,7 @@ const sfCloud = (function(){
     try{
       const uid = user.uid;
       const fdoc = await db.collection('users').doc(uid).collection('files').doc(fileId).get();
-      if(!fdoc.exists){ alert('Không tìm thấy truyện này trên Cloud.'); return; }
+      if(!fdoc.exists){ sfUI.alert('Không tìm thấy truyện này trên Cloud.'); return; }
       const meta = fdoc.data();
       let sourceText = '';
       try{
@@ -7171,8 +8415,8 @@ const sfCloud = (function(){
       await saveFileRecord(fileRec);
       if(chunkRecs.length) await saveChunkRecords(chunkRecs);
       await hydrateLibrary();
-      alert('Đã tải "' + (meta.name||fileId) + '" về máy. Mở trong 📚 Thư viện để tiếp tục dịch — các chunk đã DONE sẽ không bị dịch lại.');
-    }catch(e){ console.error('[SF Cloud] downloadFile lỗi:', e); alert('Tải về thất bại: ' + e.message); }
+      sfUI.alert('Đã tải "' + (meta.name||fileId) + '" về máy. Mở trong 📚 Thư viện để tiếp tục dịch — các chunk đã DONE sẽ không bị dịch lại.');
+    }catch(e){ console.error('[SF Cloud] downloadFile lỗi:', e); sfUI.alert('Tải về thất bại: ' + e.message); }
   }
 
   async function refreshCloudHistory(){
@@ -7239,27 +8483,27 @@ const sfCloud = (function(){
     if(!interactive) return null;
     let d, iter;
     if(cur && cur.ciphertext){
-      const pw = prompt('Nhập MẬT KHẨU CLOUD của bạn để mở khoá backup (quên mật khẩu = không khôi phục được; khi đó dùng nút "Xoá backup key trên Cloud" rồi đặt lại):');
+      const pw = sfUI.prompt('Nhập MẬT KHẨU CLOUD của bạn để mở khoá backup (quên mật khẩu = không khôi phục được; khi đó dùng nút "Xoá backup key trên Cloud" rồi đặt lại):');
       if(!pw) return null;
       iter = cur.iter || 150000; d = await deriveKey(pw, cur.salt, iter);
-      try{ await decryptObj(d.key, cur); }catch(e){ alert('Sai mật khẩu Cloud.'); return null; }
+      try{ await decryptObj(d.key, cur); }catch(e){ sfUI.alert('Sai mật khẩu Cloud.'); return null; }
     } else {
-      const pw = prompt('Đặt MẬT KHẨU CLOUD (tối thiểu 10 ký tự). Key được mã hoá bằng mật khẩu này TRƯỚC khi lên Cloud; không ai (kể cả chủ website) đọc được, và KHÔNG khôi phục được nếu bạn quên:');
+      const pw = sfUI.prompt('Đặt MẬT KHẨU CLOUD (tối thiểu 10 ký tự). Key được mã hoá bằng mật khẩu này TRƯỚC khi lên Cloud; không ai (kể cả chủ website) đọc được, và KHÔNG khôi phục được nếu bạn quên:');
       if(!pw) return null;
-      if(pw.length < 10){ alert('Mật khẩu cần tối thiểu 10 ký tự.'); return null; }
-      if(prompt('Nhập lại mật khẩu để xác nhận:') !== pw){ alert('Hai lần nhập không khớp.'); return null; }
+      if(pw.length < 10){ sfUI.alert('Mật khẩu cần tối thiểu 10 ký tự.'); return null; }
+      if(sfUI.prompt('Nhập lại mật khẩu để xác nhận:') !== pw){ sfUI.alert('Hai lần nhập không khớp.'); return null; }
       iter = ITER_NEW; d = await deriveKey(pw, null, iter);
     }
     sessionKey = { uid:user.uid, key:d.key, saltB64:d.saltB64, iter };
-    if(confirm('Nhớ mật khẩu trên thiết bị này để lần sau không phải nhập lại?\n(Chỉ chọn OK trên máy cá nhân, không phải máy dùng chung.)')) await ckSet(user.uid, { key:d.key, saltB64:d.saltB64, iter });
+    if(sfUI.confirm('Nhớ mật khẩu trên thiết bị này để lần sau không phải nhập lại?\n(Chỉ chọn OK trên máy cá nhân, không phải máy dùng chung.)')) await ckSet(user.uid, { key:d.key, saltB64:d.saltB64, iter });
     return sessionKey;
   }
   async function backupNow(silent){
-    if(!available || !user){ if(!silent) alert('Đăng nhập Google trước khi lưu lên Cloud.'); return; }
+    if(!available || !user){ if(!silent) sfUI.alert('Đăng nhập Google trước khi lưu lên Cloud.'); return; }
     try{
       const snap = await settingsRef().get(); const cur = snap.exists ? snap.data() : null;
       const bk = await getBackupKey(!silent, cur);
-      if(!bk){ if(!silent) alert('Đã huỷ — chưa lưu gì lên Cloud.'); return; }
+      if(!bk){ if(!silent) sfUI.alert('Đã huỷ — chưa lưu gì lên Cloud.'); return; }
       let profiles = loadProfiles();
       let gemini = (window.sfGem && sfGem.cloudExport) ? sfGem.cloudExport() : null;
       // Chống ghi đè bằng dữ liệu rỗng: phần nào rỗng thì giữ lại phần đang có trên Cloud (giải mã bằng khoá hiện tại)
@@ -7271,8 +8515,8 @@ const sfCloud = (function(){
       const enc = await encryptObj(bk.key, { profiles, gemini });
       // Chỉ ciphertext + iv + salt được đưa vào hàng đợi/Firestore — KHÔNG BAO GIỜ plaintext.
       await enqueue('settings', { v:3, alg:'AES-256-GCM', kdf:'PBKDF2-SHA256', iter:bk.iter, salt:bk.saltB64, iv:enc.iv, ciphertext:enc.ciphertext, updatedAt:Date.now() });
-      if(!silent) alert('Đã lưu (mã hoá) lên Cloud: ' + profiles.length + ' bộ kết nối + ' + ((gemini&&gemini.keys.length)||0) + ' Gemini key.');
-    }catch(e){ console.error('[SF Cloud] backupNow lỗi:', e && e.name); if(!silent) alert('Lưu Cloud thất bại: ' + e.message); }
+      if(!silent) sfUI.alert('Đã lưu (mã hoá) lên Cloud: ' + profiles.length + ' bộ kết nối + ' + ((gemini&&gemini.keys.length)||0) + ' Gemini key.');
+    }catch(e){ console.error('[SF Cloud] backupNow lỗi:', e && e.name); if(!silent) sfUI.alert('Lưu Cloud thất bại: ' + e.message); }
   }
   function autoBackup(){
     if(restoringBackup || !autoOn() || !available || !user) return;
@@ -7281,17 +8525,17 @@ const sfCloud = (function(){
   async function toggleKeyBackup(){
     const sw = document.getElementById('cloudBackupSwitch');
     if(!sw) return;
-    if(!available || !user){ alert('Đăng nhập Google trước khi bật Backup Cloud.'); return; }
+    if(!available || !user){ sfUI.alert('Đăng nhập Google trước khi bật Backup Cloud.'); return; }
     if(sw.classList.contains('on')){ sw.classList.remove('on'); try{ localStorage.setItem(AB_KEY,'0'); }catch(e){} return; } // chỉ tắt tự động lưu, KHÔNG xoá backup trên Cloud
     sw.classList.add('on'); try{ localStorage.setItem(AB_KEY,'1'); }catch(e){}
     await backupNow(false);
     if(!sessionKey || sessionKey.uid!==user.uid){ sw.classList.remove('on'); try{ localStorage.setItem(AB_KEY,'0'); }catch(e){} }
   }
   async function restoreKeyBackup(){
-    if(!available || !user){ alert('Đăng nhập Google trước.'); return; }
+    if(!available || !user){ sfUI.alert('Đăng nhập Google trước.'); return; }
     try{
       const snap = await settingsRef().get();
-      if(!snap.exists){ alert('Chưa có backup nào trên Cloud cho tài khoản này.'); return; }
+      if(!snap.exists){ sfUI.alert('Chưa có backup nào trên Cloud cho tài khoản này.'); return; }
       const data = snap.data(); let profiles = [], gem = null;
       if(data.ciphertext){
         const bk = await getBackupKey(true, data); if(!bk) return;
@@ -7305,19 +8549,19 @@ const sfCloud = (function(){
         if(typeof renderProfiles === 'function') renderProfiles();
         if(gem && window.sfGem && sfGem.cloudImport) nGem = sfGem.cloudImport(gem);
       } finally { restoringBackup = false; }
-      alert('Đã khôi phục ' + profiles.length + ' bộ kết nối' + (gem ? ' và thêm ' + nGem + ' Gemini key mới' : '') + ' từ Cloud.');
-    }catch(e){ console.error('[SF Cloud] restoreKeyBackup lỗi:', e && e.name); alert('Khôi phục thất bại: ' + e.message); }
+      sfUI.alert('Đã khôi phục ' + profiles.length + ' bộ kết nối' + (gem ? ' và thêm ' + nGem + ' Gemini key mới' : '') + ' từ Cloud.');
+    }catch(e){ console.error('[SF Cloud] restoreKeyBackup lỗi:', e && e.name); sfUI.alert('Khôi phục thất bại: ' + e.message); }
   }
   async function forgetDeviceKey(){
-    if(!user){ alert('Đăng nhập Google trước.'); return; }
+    if(!user){ sfUI.alert('Đăng nhập Google trước.'); return; }
     sessionKey = null; await ckDel(user.uid);
     try{ localStorage.setItem(AB_KEY,'0'); const sw=document.getElementById('cloudBackupSwitch'); if(sw) sw.classList.remove('on'); }catch(e){}
-    alert('Đã xoá mật khẩu/khoá Cloud khỏi thiết bị này và tắt tự động lưu. Lần sau sẽ phải nhập lại mật khẩu.');
+    sfUI.alert('Đã xoá mật khẩu/khoá Cloud khỏi thiết bị này và tắt tự động lưu. Lần sau sẽ phải nhập lại mật khẩu.');
   }
   async function deleteBackup(){
-    if(!available || !user){ alert('Đăng nhập Google trước.'); return; }
-    if(!confirm('Xoá TOÀN BỘ backup key trên Cloud của tài khoản này? (Không đụng tới key trên máy này và không đụng tới thư viện truyện.) Dùng khi quên mật khẩu Cloud hoặc muốn xoá hẳn key khỏi Cloud.')) return;
-    try{ await settingsRef().delete(); await forgetDeviceKey(); }catch(e){ alert('Xoá thất bại: ' + e.message); }
+    if(!available || !user){ sfUI.alert('Đăng nhập Google trước.'); return; }
+    if(!sfUI.confirm('Xoá TOÀN BỘ backup key trên Cloud của tài khoản này? (Không đụng tới key trên máy này và không đụng tới thư viện truyện.) Dùng khi quên mật khẩu Cloud hoặc muốn xoá hẳn key khỏi Cloud.')) return;
+    try{ await settingsRef().delete(); await forgetDeviceKey(); }catch(e){ sfUI.alert('Xoá thất bại: ' + e.message); }
   }
 
   /* ---------- Xoá truyện trên Cloud (chỉ Cloud; bản trong thư viện máy giữ nguyên) ---------- */
@@ -7333,23 +8577,23 @@ const sfCloud = (function(){
   async function deleteCloudFile(fid){
     if(!available || !user) return;
     const f = cloudFilesCache.find(x=> x.id===fid);
-    if(!confirm('Xoá "' + (f ? f.name : fid) + '" khỏi Cloud?\nChỉ xoá bản trên Cloud; bản trong thư viện trên máy này được giữ nguyên.')) return;
+    if(!sfUI.confirm('Xoá "' + (f ? f.name : fid) + '" khỏi Cloud?\nChỉ xoá bản trên Cloud; bản trong thư viện trên máy này được giữ nguyên.')) return;
     const body = document.getElementById('cloudLibraryBody'); if(body) body.textContent = 'Đang xoá…';
-    try{ await deleteFileOnCloud(fid); }catch(e){ console.error(e); alert('Xoá thất bại: ' + e.message); }
+    try{ await deleteFileOnCloud(fid); }catch(e){ console.error(e); sfUI.alert('Xoá thất bại: ' + e.message); }
     await refreshCloudLibrary();
   }
   async function deleteAllCloudFiles(){
     if(!available || !user || !cloudFilesCache.length) return;
     const list = cloudFilesCache.slice(), n = list.length;
-    if(!confirm('Xoá TẤT CẢ ' + n + ' truyện trên Cloud của tài khoản này?\nChỉ xoá Cloud; bản trong thư viện máy này giữ nguyên.')) return;
-    const t = prompt('Gõ XOA để xác nhận xoá toàn bộ ' + n + ' truyện trên Cloud:');
+    if(!sfUI.confirm('Xoá TẤT CẢ ' + n + ' truyện trên Cloud của tài khoản này?\nChỉ xoá Cloud; bản trong thư viện máy này giữ nguyên.')) return;
+    const t = sfUI.prompt('Gõ XOA để xác nhận xoá toàn bộ ' + n + ' truyện trên Cloud:');
     if(!t || t.trim().toUpperCase()!=='XOA') return;
     const body = document.getElementById('cloudLibraryBody'); let ok=0, fail=0;
     for(const f of list){
       if(body) body.textContent = 'Đang xoá ' + (ok+fail+1) + '/' + n + '…';
       try{ await deleteFileOnCloud(f.id); ok++; }catch(e){ console.error(e); fail++; }
     }
-    alert('Đã xoá ' + ok + '/' + n + ' truyện trên Cloud.' + (fail ? ' ' + fail + ' truyện lỗi — thử lại.' : ''));
+    sfUI.alert('Đã xoá ' + ok + '/' + n + ' truyện trên Cloud.' + (fail ? ' ' + fail + ' truyện lỗi — thử lại.' : ''));
     await refreshCloudLibrary();
   }
 
@@ -7372,8 +8616,88 @@ function toggleCloudHistoryPanel(){
   const p = document.getElementById('cloudHistoryPanel');
   const wasShown = p.classList.contains('show');
   document.getElementById('cloudLibraryPanel').classList.remove('show');
+  const cfgP = document.getElementById('cloudConfigPanel');
+  if(cfgP) cfgP.classList.remove('show');
   p.classList.toggle('show', !wasShown);
   if(!wasShown) sfCloud.refreshCloudHistory();
+}
+function toggleCloudConfigPanel(){
+  const p = document.getElementById('cloudConfigPanel');
+  if(!p) return;
+  const wasShown = p.classList.contains('show');
+  document.getElementById('cloudLibraryPanel').classList.remove('show');
+  document.getElementById('cloudHistoryPanel').classList.remove('show');
+  p.classList.toggle('show', !wasShown);
+  if(!wasShown){
+    const cur = sf_loadEffectiveFirebaseConfig();
+    const setV = (id, v)=>{ const el = document.getElementById(id); if(el) el.value = v || ''; };
+    setV('fbCfgApiKey', cur.apiKey);
+    setV('fbCfgProjectId', cur.projectId);
+    setV('fbCfgAuthDomain', cur.authDomain);
+    setV('fbCfgStorageBucket', cur.storageBucket);
+    setV('fbCfgSenderId', cur.messagingSenderId);
+    setV('fbCfgAppId', cur.appId);
+  }
+}
+function sfCloud_saveCustomConfig(){
+  const getV = id => (document.getElementById(id)?.value || '').trim();
+  const cfg = {
+    apiKey: getV('fbCfgApiKey'),
+    projectId: getV('fbCfgProjectId'),
+    authDomain: getV('fbCfgAuthDomain') || (getV('fbCfgProjectId') ? getV('fbCfgProjectId') + '.firebaseapp.com' : ''),
+    storageBucket: getV('fbCfgStorageBucket') || (getV('fbCfgProjectId') ? getV('fbCfgProjectId') + '.firebasestorage.app' : ''),
+    messagingSenderId: getV('fbCfgSenderId'),
+    appId: getV('fbCfgAppId')
+  };
+  if(!cfg.apiKey || !cfg.projectId){
+    sfUI.alert('Vui lòng nhập tối thiểu API Key và Project ID của Firebase (hoặc bấm "Tắt Cloud" nếu chỉ muốn dùng Local Mode).');
+    return;
+  }
+  try{
+    localStorage.setItem(SF_FIREBASE_CUSTOM_KEY, JSON.stringify(cfg));
+    Object.assign(FIREBASE_CONFIG, cfg);
+    sfUI.toast('✅ Đã lưu cấu hình Firebase mới! Đang tải lại kết nối...', 'ok');
+    setTimeout(()=> location.reload(), 900);
+  }catch(e){ sfUI.alert('Không lưu được cấu hình Firebase: ' + e.message); }
+}
+function sfCloud_pasteJsonConfig(){
+  const raw = sfUI.prompt('Dán đoạn mã firebaseConfig hoặc JSON cấu hình từ Firebase Console vào đây:', '');
+  if(!raw || !raw.trim()) return;
+  const extract = (key)=>{
+    const m = new RegExp(key + '\\s*[:=]\\s*["\']([^"\']+)["\']', 'i').exec(raw);
+    return m ? m[1].trim() : '';
+  };
+  const apiKey = extract('apiKey');
+  const projectId = extract('projectId');
+  if(!apiKey || !projectId){
+    sfUI.alert('Không tìm thấy apiKey hoặc projectId trong đoạn văn bản vừa dán!');
+    return;
+  }
+  const setV = (id, v)=>{ const el = document.getElementById(id); if(el && v) el.value = v; };
+  setV('fbCfgApiKey', apiKey);
+  setV('fbCfgProjectId', projectId);
+  setV('fbCfgAuthDomain', extract('authDomain'));
+  setV('fbCfgStorageBucket', extract('storageBucket'));
+  setV('fbCfgSenderId', extract('messagingSenderId'));
+  setV('fbCfgAppId', extract('appId'));
+  sfUI.toast('📋 Đã điền tự động các trường Firebase! Bấm "Lưu cấu hình" để áp dụng.', 'ok');
+}
+function sfCloud_enableStrictLocalOnly(){
+  if(!sfUI.confirm('Chuyển sang chế độ Local-Only (ngắt hoàn toàn kết nối Firebase Cloud mặc định, mọi dữ liệu chỉ lưu trong trình duyệt máy bạn)?')) return;
+  try{
+    localStorage.setItem(SF_FIREBASE_CUSTOM_KEY, JSON.stringify({ localOnly: true }));
+    Object.assign(FIREBASE_CONFIG, { apiKey:'', authDomain:'', projectId:'', storageBucket:'', messagingSenderId:'', appId:'' });
+    sfUI.toast('🛡️ Đã bật chế độ Local-Only an toàn tuyệt đối!', 'ok');
+    setTimeout(()=> location.reload(), 800);
+  }catch(e){}
+}
+function sfCloud_resetDefaultConfig(){
+  try{
+    localStorage.removeItem(SF_FIREBASE_CUSTOM_KEY);
+    Object.assign(FIREBASE_CONFIG, SF_DEFAULT_FIREBASE_CONFIG);
+    sfUI.toast('↺ Đã khôi phục cấu hình Firebase mặc định!', 'ok');
+    setTimeout(()=> location.reload(), 800);
+  }catch(e){}
 }
 function sfShowSecurityRules(){
   document.getElementById('rulesModalOverlay').style.display = 'flex';
@@ -7424,7 +8748,7 @@ sfCloud.init();
 
   async function addTemplate(id, forceReset){
     try{
-      if(typeof sfPromptLibrary==='undefined' || !Array.isArray(sfPromptLibrary)){ alert('Thư viện prompt chưa sẵn sàng, thử lại sau giây lát.'); return; }
+      if(typeof sfPromptLibrary==='undefined' || !Array.isArray(sfPromptLibrary)){ sfUI.alert('Thư viện prompt chưa sẵn sàng, thử lại sau giây lát.'); return; }
       const g = GENRES.find(x=>x[0]===id); if(!g) return;
       const tplId = 'tpl_' + id;
       const existing = sfPromptLibrary.find(p=>p.tplId===tplId);
@@ -7449,7 +8773,7 @@ sfCloud.init();
       }
       for(const r of changed){ await sfPromptDB_put(r); }
       sfPromptLib_render(); sfPrompt_syncToBox(); refreshActive();
-    }catch(e){ console.error('sfTpl', e); alert('Không thêm được mẫu prompt: ' + (e && e.message ? e.message : e)); }
+    }catch(e){ console.error('sfTpl', e); sfUI.alert('Không thêm được mẫu prompt: ' + (e && e.message ? e.message : e)); }
   }
   window.sfTpl_add = addTemplate;
 
@@ -7458,15 +8782,15 @@ sfCloud.init();
 
   async function selectExisting(recId){
     try{
-      if(typeof sfPromptLibrary==='undefined' || !Array.isArray(sfPromptLibrary)){ alert('Thư viện prompt chưa sẵn sàng, thử lại sau giây lát.'); return; }
+      if(typeof sfPromptLibrary==='undefined' || !Array.isArray(sfPromptLibrary)){ sfUI.alert('Thư viện prompt chưa sẵn sàng, thử lại sau giây lát.'); return; }
       const target = sfPromptLibrary.find(p=>p.id===recId);
-      if(!target){ alert('Không tìm thấy prompt này. Hãy bấm "Khôi phục prompt mặc định" rồi thử lại.'); return; }
+      if(!target){ sfUI.alert('Không tìm thấy prompt này. Hãy bấm "Khôi phục prompt mặc định" rồi thử lại.'); return; }
       const changed = [];
       sfPromptLibrary.forEach(p=>{ if(p.id!==recId && p.enabled && !p.pinned){ p.enabled=false; p.updatedAt=sfPrompt_now(); changed.push(p); } });
       if(!target.enabled){ target.enabled=true; target.updatedAt=sfPrompt_now(); changed.push(target); }
       for(const r of changed){ await sfPromptDB_put(r); }
       sfPromptLib_render(); sfPrompt_syncToBox(); refreshActive();
-    }catch(e){ console.error('sfTpl', e); alert('Không chọn được prompt: ' + (e && e.message ? e.message : e)); }
+    }catch(e){ console.error('sfTpl', e); sfUI.alert('Không chọn được prompt: ' + (e && e.message ? e.message : e)); }
   }
 
   function renderBar(){
@@ -7640,14 +8964,14 @@ async function testConnection(){
   el.textContent=m.status==='idle'?'✓ Kết nối được với model '+G.model:'✗ '+(m.lastError||'Không thành công');
 }
 async function fetchModels(){
-  const k=firstKey(), grid=$('gemModelGrid'); if(!k){ alert('Hãy thêm ít nhất 1 key Gemini trước.'); return; }
+  const k=firstKey(), grid=$('gemModelGrid'); if(!k){ sfUI.alert('Hãy thêm ít nhất 1 key Gemini trước.'); return; }
   grid.innerHTML='<div class="hint">Đang tải danh sách model…</div>';
   try{ const r=await fetch(API+'models?pageSize=200',{headers:hdrs(k.key)});
-    if(!r.ok){ const c=classify(r.status,await r.text().catch(()=>'')); grid.innerHTML=''; alert('Không lấy được danh sách model: '+c.vi); return; }
+    if(!r.ok){ const c=classify(r.status,await r.text().catch(()=>'')); grid.innerHTML=''; sfUI.alert('Không lấy được danh sách model: '+c.vi); return; }
     const d=await r.json(); const ids=(d.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>String(m.name).replace(/^models\//,'')).sort();
     grid.innerHTML=''; if(!ids.length){ grid.innerHTML='<div class="hint">API không trả model nào hỗ trợ generateContent.</div>'; return; }
     ids.forEach(id=>{ const c=document.createElement('div'); c.className='modelchip'+(id===G.model?' sel':''); c.dataset.m=id; c.textContent=id; c.onclick=()=>{ setModel(id); $('gemModel').value=id; grid.querySelectorAll('.modelchip').forEach(x=>x.classList.toggle('sel',x.dataset.m===id)); }; grid.appendChild(c); });
-  }catch(e){ grid.innerHTML=''; alert('Lỗi mạng khi lấy models: '+e.message); }
+  }catch(e){ grid.innerHTML=''; sfUI.alert('Lỗi mạng khi lấy models: '+e.message); }
 }
 function setModel(v){ G.model=String(v||'').trim(); if(G.active){ state.model=G.model; $('pillModel').textContent=G.model||'chưa chọn model'; } save(); refreshStatus(); }
 
@@ -7660,14 +8984,14 @@ function addKeys(list,name){
   sync(); render(); refreshStatus(); if(n) log('Đã thêm '+n+' key.'); return n;
 }
 function addOne(){ const k=$('gemNewKey'), nm=$('gemNewName'); if(!k.value.trim()) return; addKeys([k.value],nm.value.trim()); k.value=''; nm.value=''; }
-function addBulk(){ const ta=$('gemBulkInput'); const n=addKeys(ta.value.split(/[\r\n,;]+/)); ta.value=''; toggleBulk(false); if(!n) alert('Không có key mới (trống hoặc trùng).'); }
+function addBulk(){ const ta=$('gemBulkInput'); const n=addKeys(ta.value.split(/[\r\n,;]+/)); ta.value=''; toggleBulk(false); if(!n) sfUI.alert('Không có key mới (trống hoặc trùng).'); }
 function toggleBulk(s){ const b=$('gemBulkBox'); b.style.display=(s===undefined?b.style.display==='none':s)?'block':'none'; }
-function guardRunning(){ if(typeof running!=='undefined'&&running&&G.active){ alert('Hãy dừng dịch trước khi thêm bớt/xoá key (tránh lệch chỉ số key đang chạy).'); return true; } return false; }
-function remove(i){ if(guardRunning()) return; if(!confirm('Xoá '+G.keys[i].name+'?')) return; G.keys.splice(i,1); G.meta.splice(i,1); sync(); render(); refreshStatus(); }
+function guardRunning(){ if(typeof running!=='undefined'&&running&&G.active){ sfUI.alert('Hãy dừng dịch trước khi thêm bớt/xoá key (tránh lệch chỉ số key đang chạy).'); return true; } return false; }
+function remove(i){ if(guardRunning()) return; if(!sfUI.confirm('Xoá '+G.keys[i].name+'?')) return; G.keys.splice(i,1); G.meta.splice(i,1); sync(); render(); refreshStatus(); }
 function toggleKey(i){ if(guardRunning()) return; G.keys[i].enabled=!G.keys[i].enabled; sync(); render(); refreshStatus(); }
 function toggleSafety(){ G.relaxSafety=!G.relaxSafety; $('gemSafetySwitch').classList.toggle('on',G.relaxSafety); save(); }
 function exportCfg(withKeys){
-  if(withKeys && !confirm('File xuất sẽ chứa API key dạng chữ thường. Chỉ cất nơi an toàn, KHÔNG đưa lên GitHub/chia sẻ. Tiếp tục?')) return;
+  if(withKeys && !sfUI.confirm('File xuất sẽ chứa API key dạng chữ thường. Chỉ cất nơi an toàn, KHÔNG đưa lên GitHub/chia sẻ. Tiếp tục?')) return;
   const out={type:'storyforge-gemini-pool',version:1,model:G.model,relaxSafety:G.relaxSafety,keys:G.keys.map(k=>withKeys?{name:k.name,enabled:k.enabled,key:k.key}:{name:k.name,enabled:k.enabled})};
   const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([JSON.stringify(out,null,2)],{type:'application/json'})); a.download=withKeys?'gemini-pool-WITH-KEYS.json':'gemini-pool-config.json'; a.click(); setTimeout(()=>URL.revokeObjectURL(a.href),1000);
 }
@@ -7676,7 +9000,7 @@ function importCfg(){
   f.onchange=async()=>{ try{ const d=JSON.parse(await f.files[0].text()); if(d.type!=='storyforge-gemini-pool') throw new Error('Sai định dạng');
       if(d.model) setModel(d.model), $('gemModel').value=G.model; G.relaxSafety=!!d.relaxSafety; $('gemSafetySwitch').classList.toggle('on',G.relaxSafety);
       const withKey=(d.keys||[]).filter(k=>k&&k.key); const n=withKey.length?addKeys(withKey.map(k=>k.key)):0;
-      alert('Đã nhập cấu hình.'+(withKey.length?' Thêm '+n+' key mới.':' (File không chứa key.)')); }catch(e){ alert('Không nhập được: '+e.message); } };
+      sfUI.alert('Đã nhập cấu hình.'+(withKey.length?' Thêm '+n+' key mới.':' (File không chứa key.)')); }catch(e){ sfUI.alert('Không nhập được: '+e.message); } };
   f.click();
 }
 
@@ -7711,7 +9035,7 @@ function badge(){
 /* ---------- chuyển provider (pool tách riêng) ---------- */
 function activate(on){
   if(on===G.active) return true;
-  if(typeof running!=='undefined'&&running){ alert('Hãy dừng dịch trước khi đổi nguồn dịch.'); return false; }
+  if(typeof running!=='undefined'&&running){ sfUI.alert('Hãy dừng dịch trước khi đổi nguồn dịch.'); return false; }
   if(on){ stash={keys:state.keys,keyMeta:state.keyMeta,model:state.model}; G.active=true; state.model=G.model; sync(); }
   else{ G.active=false; if(stash){ state.keys=stash.keys; state.keyMeta=stash.keyMeta; state.model=stash.model; stash=null; } }
   try{ localStorage.setItem(LSP,on?'gemini':'proxy'); }catch(e){}
@@ -7737,16 +9061,16 @@ window.sfCanon_callExtract=async function(w){
 // Kiểm tra trước khi dịch: model phải tồn tại (404 → dừng sớm, không đổi key vô ích)
 window.startTranslate=async function(){
   if(G.active){
-    const k=firstKey(); if(!k){ alert('Gemini Direct: chưa có key khả dụng.'); return; }
+    const k=firstKey(); if(!k){ sfUI.alert('Gemini Direct: chưa có key khả dụng.'); return; }
     try{ const r=await fetch(API+'models/'+encodeURIComponent(G.model),{headers:hdrs(k.key)});
-      if(r.status===404){ alert(classify(404,'').vi); return; } }catch(e){ /* lỗi mạng: để pipeline retry xử lý */ }
+      if(r.status===404){ sfUI.alert(classify(404,'').vi); return; } }catch(e){ /* lỗi mạng: để pipeline retry xử lý */ }
   }
   return origStart.apply(this,arguments);
 };
 // Các thao tác dành riêng cho Custom Proxy bị khoá khi đang dùng Gemini (tránh lẫn pool)
 ['addKey','removeKey','confirmBulkImportKeys','exportKeys','saveProfileAsNew','updateCurrentProfile','loadProfile','deleteProfile','fetchModels','testAllKeys'].forEach(n=>{
   const o=window[n]; if(typeof o!=='function') return;
-  window[n]=function(){ if(G.active){ alert('Đang bật Gemini Direct. Hãy tắt Gemini Direct để chỉnh Custom Proxy (hai pool key tách riêng).'); return; } return o.apply(this,arguments); }; });
+  window[n]=function(){ if(G.active){ sfUI.alert('Đang bật Gemini Direct. Hãy tắt Gemini Direct để chỉnh Custom Proxy (hai pool key tách riêng).'); return; } return o.apply(this,arguments); }; });
 window.sfGemActive=()=>G.active;
 
 /* ---------- Quota Recovery Scheduler: đếm ngược + trả key về pool khi hết thời gian chờ ---------- */
