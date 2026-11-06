@@ -3527,7 +3527,11 @@ async function sfZh_callRawAI(promptText){
   const key = state.keys[keyIdx];
   const meta = state.keyMeta[keyIdx];
   recordKeyCall(keyIdx);
-  if(meta){ meta.requests++; meta.lastUsed = Date.now(); }
+  if(meta){
+    meta.inFlight = (meta.inFlight || 0) + 1;
+    meta.requests++;
+    meta.lastUsed = Date.now();
+  }
   renderKeys();
 
   const handleHttpErr = (status, retryHeader)=>{
@@ -3541,55 +3545,62 @@ async function sfZh_callRawAI(promptText){
     }
     renderKeys();
   };
-  if(isGem){
-    const api = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(state.model) + ':generateContent';
-    const relax = !(window.sfGem && typeof window.sfGem.isRelaxSafety === 'function') || window.sfGem.isRelaxSafety();
-    const body = {
-      contents: [{ role:'user', parts:[{ text: promptText }] }]
-    };
-    body.safetySettings = ['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({
-      category:'HARM_CATEGORY_'+c,
-      threshold: relax ? 'BLOCK_NONE' : 'BLOCK_ONLY_HIGH'
-    }));
-    let res;
-    try{
-      res = await fetch(api, {
-        method:'POST',
-        headers:{ 'Content-Type':'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify(body)
-      });
-    }catch(netErr){ if(meta){ meta.errors++; renderKeys(); } throw netErr; }
-    if(!res.ok){
-      handleHttpErr(res.status, res.headers.get('retry-after'));
-      const t = await res.text().catch(()=>'');
-      throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
+  try{
+    if(isGem){
+      const api = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(state.model) + ':generateContent';
+      const relax = !(window.sfGem && typeof window.sfGem.isRelaxSafety === 'function') || window.sfGem.isRelaxSafety();
+      const body = {
+        contents: [{ role:'user', parts:[{ text: promptText }] }]
+      };
+      body.safetySettings = ['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({
+        category:'HARM_CATEGORY_'+c,
+        threshold: relax ? 'BLOCK_NONE' : 'BLOCK_ONLY_HIGH'
+      }));
+      let res;
+      try{
+        res = await fetch(api, {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json', 'x-goog-api-key': key },
+          body: JSON.stringify(body)
+        });
+      }catch(netErr){ if(meta){ meta.errors++; renderKeys(); } throw netErr; }
+      if(!res.ok){
+        handleHttpErr(res.status, res.headers.get('retry-after'));
+        const t = await res.text().catch(()=>'');
+        throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
+      }
+      const data = await res.json();
+      if(meta) meta.success++;
+      renderKeys();
+      const cand = data.candidates && data.candidates[0];
+      return (((cand && cand.content && cand.content.parts) || []).filter(p=>!p.thought).map(p=>p.text||'').join('')).trim();
+    } else {
+      let res;
+      try{
+        res = await fetch(wrapUrl(chatUrl()), {
+          method:'POST',
+          headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + key },
+          body: JSON.stringify({
+            model: state.model,
+            messages: [{ role:'user', content: promptText }]
+          })
+        });
+      }catch(netErr){ if(meta){ meta.errors++; renderKeys(); } throw netErr; }
+      if(!res.ok){
+        handleHttpErr(res.status, res.headers.get('retry-after'));
+        const t = await res.text().catch(()=>'');
+        throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
+      }
+      const data = await res.json();
+      if(meta) meta.success++;
+      renderKeys();
+      return (data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '').trim();
     }
-    const data = await res.json();
-    if(meta) meta.success++;
-    renderKeys();
-    const cand = data.candidates && data.candidates[0];
-    return (((cand && cand.content && cand.content.parts) || []).filter(p=>!p.thought).map(p=>p.text||'').join('')).trim();
-  } else {
-    let res;
-    try{
-      res = await fetch(wrapUrl(chatUrl()), {
-        method:'POST',
-        headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer ' + key },
-        body: JSON.stringify({
-          model: state.model,
-          messages: [{ role:'user', content: promptText }]
-        })
-      });
-    }catch(netErr){ if(meta){ meta.errors++; renderKeys(); } throw netErr; }
-    if(!res.ok){
-      handleHttpErr(res.status, res.headers.get('retry-after'));
-      const t = await res.text().catch(()=>'');
-      throw new Error('HTTP ' + res.status + ': ' + t.slice(0,180));
+  } finally {
+    if(meta){
+      meta.inFlight = Math.max(0, (meta.inFlight || 1) - 1);
+      renderKeys();
     }
-    const data = await res.json();
-    if(meta) meta.success++;
-    renderKeys();
-    return (data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '').trim();
   }
 }
 
@@ -4338,7 +4349,13 @@ function updateKeySummary(){
   state.keyMeta.forEach(m=>{ if(m.status==='active'||m.status==='idle') active++; else if(m.status==='ratelimited') ratelimited++; else if(m.status==='error') error++; else idle++; });
   const el = document.getElementById('keySummary');
   if(total===0){ el.textContent = 'Chưa có key nào.'; return; }
-  let parts = [`${active}/${total} key hoạt động`]; if(ratelimited>0) parts.push(`${ratelimited} rate limit`); if(error>0) parts.push(`${error} lỗi`);
+  let parts = [`${active}/${total} key hoạt động`];
+  if(ratelimited>0) parts.push(`${ratelimited} rate limit`);
+  if(error>0) parts.push(`${error} lỗi`);
+  const curP = typeof parallelVal === 'function' ? parallelVal() : 4;
+  if(active > 1){
+    parts.push(`⚖️ Chia tải đều Round-Robin` + (active > curP ? ` (Đang đặt ${curP} luồng song song — có thể tăng Parallel lên ${active} ở Cài đặt chung nếu muốn cả ${active} key chạy cùng lúc)` : ''));
+  }
   el.textContent = parts.join(' · ');
 }
 function addKeyFocus(){ document.getElementById('newKey').focus(); }
@@ -4384,46 +4401,66 @@ function recordKeyCall(keyIndex){
   if(!keyCallLog[keyIndex]) keyCallLog[keyIndex] = [];
   keyCallLog[keyIndex].push(Date.now());
 }
-function keyScore(idx){
-  // Lower score wins. Blends local RPM utilization (adaptive hint), current in-flight load,
-  // and recent error/429 history so requests auto-balance across keys instead of piling onto
-  // whichever key happens to have the lowest RPM count while ignoring everything else
-  // (e.g. a key with low RPM but high in-flight should NOT keep winning).
+let __sfKeyPickSeq = 0;
+function keyScore(idx, minReqs){
+  // Lower score wins.
+  // 1) In-flight load (* 200) guarantees an idle key (inFlight=0) ALWAYS beats a busy key.
+  // 2) Relative total requests ((m.requests - minReqs) * 35) ensures keys with fewer total
+  //    requests across the entire session catch up even after the 60s RPM window slides past.
+  // 3) Local 60s RPM ratio (* 100) + error rate (* 60) + 429 history (* 15).
   const m = state.keyMeta[idx];
   const rpm = keyRpmInfo(idx);
   const errRate = m.requests>0 ? m.errors/m.requests : 0;
-  return (rpm.ratio * 100) + ((m.inFlight||0) * 40) + (errRate * 60) + ((m.c429||0) * 10);
+  const reqDelta = Math.max(0, (m.requests || 0) - (minReqs || 0));
+  return ((m.inFlight || 0) * 200) + (reqDelta * 35) + (rpm.ratio * 100) + (errRate * 60) + ((m.c429 || 0) * 15);
 }
-function pickAvailableKey(){
+function pickAvailableKey(opts){
+  opts = opts || {};
   ensureKeyMeta();
   const n = state.keys.length;
   if(n===0) return -1;
   const now = Date.now();
   for(let m of state.keyMeta){ if(m.status==='ratelimited' && now >= m.rateLimitUntil) m.status='idle'; }
-  // Candidate pool: not permanently invalid (401/403), not under a real 429 cooldown, and not
-  // currently FULL on local RPM (>=100% of the hint). CRITICAL/HIGH/NEAR keys stay eligible —
-  // only FULL is excluded, and only from THIS pick; it is re-evaluated fresh on every call, so
-  // a key returns the instant its oldest timestamp ages out (no permanent/hard block).
+  const startCursor = sfKeyCursor % n;
   const candidates = [];
   for(let i=0; i<n; i++){
-    const idx = (sfKeyCursor + i) % n;
+    const idx = (startCursor + i) % n;
     const m = state.keyMeta[idx];
     if(m.status==='error' || m.status==='disabled') continue; // permanently invalid (401/403)
     if(m.status==='ratelimited' && now < m.rateLimitUntil) continue; // real server 429 cooldown
-    if(keyRpmInfo(idx).status === 'FULL') continue; // temporarily out of local RPM room
+    if(!opts.ignoreRpmFull && keyRpmInfo(idx).status === 'FULL') continue; // temporarily out of local RPM room
     candidates.push(idx);
   }
-  // If every usable key is currently FULL/cooling down, correctly return -1 rather than force
-  // a request onto a key the local hint says has no room — the caller waits the exact time via
-  // getNearestCooldownMs() instead of busy-looping or guessing with a fixed delay.
   if(candidates.length === 0) return -1;
+  let minReqs = Infinity;
+  for(const idx of candidates){
+    const r = (state.keyMeta[idx] && state.keyMeta[idx].requests) || 0;
+    if(r < minReqs) minReqs = r;
+  }
+  if(!isFinite(minReqs)) minReqs = 0;
   candidates.sort((a,b)=>{
-    const sa = keyScore(a), sb = keyScore(b);
-    if(sa !== sb) return sa - sb;
-    return (state.keyMeta[a].lastUsed||0) - (state.keyMeta[b].lastUsed||0); // least-recently-used tiebreak
+    const ma = state.keyMeta[a], mb = state.keyMeta[b];
+    // Ưu tiên 1: Key đang có ít request đang bay (inFlight) hơn luôn thắng tuyệt đối
+    const infA = ma.inFlight || 0, infB = mb.inFlight || 0;
+    if(infA !== infB) return infA - infB;
+    // Ưu tiên 2: Điểm tổng hợp keyScore (bao gồm độ lệch tổng số Req + RPM 60s + lịch sử lỗi)
+    const sa = keyScore(a, minReqs), sb = keyScore(b, minReqs);
+    if(Math.abs(sa - sb) > 0.001) return sa - sb;
+    // Ưu tiên 3: Tổng số request đã gánh từ đầu phiên (key ít Req hơn được chọn trước)
+    const reqA = ma.requests || 0, reqB = mb.requests || 0;
+    if(reqA !== reqB) return reqA - reqB;
+    // Ưu tiên 4: Thứ tự được bốc (_pickSeq tăng đơn điệu chống trùng mili-giây khi bốc song song)
+    const seqA = ma._pickSeq || 0, seqB = mb._pickSeq || 0;
+    if(seqA !== seqB) return seqA - seqB;
+    // Ưu tiên 5: Con trỏ xoay vòng Round-Robin
+    return ((a - startCursor + n) % n) - ((b - startCursor + n) % n);
   });
   const chosen = candidates[0];
   sfKeyCursor = (chosen + 1) % n;
+  if(!opts.peekOnly && state.keyMeta[chosen]){
+    state.keyMeta[chosen]._pickSeq = ++__sfKeyPickSeq;
+    state.keyMeta[chosen].lastUsed = now;
+  }
   return chosen;
 }
 function getNearestCooldownMs(){
@@ -4543,20 +4580,45 @@ async function fetchModels(){
   grid.style.display = '';
   document.getElementById('modelGridToggleBtn').textContent = '🙈 Ẩn models';
   grid.innerHTML = '<div class="hint">Đang tải danh sách model...</div>';
-  const headers = {};
-  if(state.keys.length>0) headers['Authorization'] = 'Bearer ' + state.keys[0]; // most proxies need a key even for GET /models
-  let res;
-  try{
-    res = await fetch(wrapUrl(url), { method:'GET', headers });
-  }catch(networkErr){
+  // Xoay vòng qua các key khả dụng (thay vì chỉ đóng cứng vào state.keys[0]) và tự động failover nếu 1 key lỗi
+  const keyOrder = [];
+  if(state.keys.length > 0){
+    const firstIdx = pickAvailableKey({ ignoreRpmFull: true });
+    if(firstIdx >= 0) keyOrder.push(firstIdx);
+    for(let i=0; i<state.keys.length; i++){
+      const idx = ((firstIdx >= 0 ? firstIdx : 0) + i) % state.keys.length;
+      if(!keyOrder.includes(idx) && (!state.keyMeta[idx] || (state.keyMeta[idx].status !== 'error' && state.keyMeta[idx].status !== 'disabled'))){
+        keyOrder.push(idx);
+      }
+    }
+    for(let i=0; i<state.keys.length; i++){
+      if(!keyOrder.includes(i)) keyOrder.push(i);
+    }
+  } else {
+    keyOrder.push(-1);
+  }
+  let res = null, lastNetErr = null, lastErrText = '';
+  for(const kIdx of keyOrder){
+    const headers = {};
+    if(kIdx >= 0 && state.keys[kIdx]) headers['Authorization'] = 'Bearer ' + state.keys[kIdx];
+    try{
+      res = await fetch(wrapUrl(url), { method:'GET', headers });
+      if(res.ok) break;
+      lastErrText = await res.text().catch(()=>'');
+      if(res.status !== 401 && res.status !== 403 && res.status !== 429 && res.status < 500) break;
+    }catch(networkErr){
+      lastNetErr = networkErr;
+      res = null;
+    }
+  }
+  if(!res){
     grid.innerHTML = '';
-    sfUI.alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + networkErr.message + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
+    sfUI.alert('Không lấy được danh sách model (lỗi mạng/CORS): ' + (lastNetErr ? lastNetErr.message : 'Không rõ') + (corsOn ? '' : '\n\nNếu API không hỗ trợ CORS, thử bật "Dùng CORS proxy nội bộ" bên dưới.'));
     return;
   }
   if(!res.ok){
     grid.innerHTML = '';
-    const t = await res.text().catch(()=>'');
-    sfUI.alert('Không lấy được danh sách model: HTTP ' + res.status + (t ? ('\n' + t.slice(0,300)) : ''));
+    sfUI.alert('Không lấy được danh sách model: HTTP ' + res.status + (lastErrText ? ('\n' + lastErrText.slice(0,300)) : ''));
     return;
   }
   let data;
@@ -5886,24 +5948,35 @@ async function sfCanon_callExtract(windowText){
   const key = state.keys[keyIdx];
   const meta = state.keyMeta[keyIdx];
   recordKeyCall(keyIdx);
-  meta.requests++; meta.lastUsed = Date.now();
+  if(meta){
+    meta.inFlight = (meta.inFlight || 0) + 1;
+    meta.requests++;
+    meta.lastUsed = Date.now();
+  }
   renderKeys();
-  let res;
   try{
-    res = await fetch(wrapUrl(chatUrl()), {
-      method:'POST',
-      headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key },
-      body: JSON.stringify({
-        model: state.model,
-        messages: [{ role:'user', content: SF_CANON_EXTRACT_SYSTEM_PROMPT + windowText }]
-      })
-    });
-  }catch(networkErr){ throw new Error('Lỗi mạng khi quét Canon: '+networkErr.message); }
-  if(!res.ok){ const t = await res.text().catch(()=>''); throw new Error('HTTP '+res.status+' khi quét Canon: '+t.slice(0,200)); }
-  const data = await res.json();
-  const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
-  meta.success++; renderKeys();
-  return content;
+    let res;
+    try{
+      res = await fetch(wrapUrl(chatUrl()), {
+        method:'POST',
+        headers:{ 'Content-Type':'application/json', 'Authorization':'Bearer '+key },
+        body: JSON.stringify({
+          model: state.model,
+          messages: [{ role:'user', content: SF_CANON_EXTRACT_SYSTEM_PROMPT + windowText }]
+        })
+      });
+    }catch(networkErr){ if(meta) meta.errors++; throw new Error('Lỗi mạng khi quét Canon: '+networkErr.message); }
+    if(!res.ok){ if(meta) meta.errors++; const t = await res.text().catch(()=>''); throw new Error('HTTP '+res.status+' khi quét Canon: '+t.slice(0,200)); }
+    const data = await res.json();
+    const content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.text ?? '';
+    if(meta) meta.success++;
+    return content;
+  } finally {
+    if(meta){
+      meta.inFlight = Math.max(0, (meta.inFlight || 1) - 1);
+      renderKeys();
+    }
+  }
 }
 
 // Đếm occurrences/firstSeen/lastSeen THẬT trong toàn bộ source — không tin số AI trả về (mục VI).
@@ -8119,6 +8192,13 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
 
     const abortCtrl = new AbortController();
     activeAbortControllers.add(abortCtrl);
+    let inFlightReleased = false;
+    const releaseKeyInFlight = ()=>{
+        if(!inFlightReleased){
+            inFlightReleased = true;
+            if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, (state.keyMeta[keyIdx].inFlight || 1) - 1);
+        }
+    };
 
     try {
         markChunkRunning(idx, keyIdx);
@@ -8134,6 +8214,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         const payloadText = (preBlocks ? (preBlocks + '\n\n') : '') + strictGuardLine + origChunkText;
 
         let res = await callModel(payloadText, keyIdx, abortCtrl.signal);
+        releaseKeyInFlight();
 
         // --- HẬU KIỂM TỰ ĐỘNG 5 TẦNG (CHỐNG RÁC AI, CHỐNG CẮT CỤT CHUNK, CHỐNG MẤT CHƯƠNG & DIỆT 100% HÁN TỰ) ---
         // Tầng 1 & 2: Dọn sạch rác Prompt AI + thay thế từ điển + sửa từ lai nửa Việt nửa Hán (Vương哲 -> Vương Triết) + đồng bộ tên
@@ -8185,7 +8266,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
           }
         }
 
-        if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
+        releaseKeyInFlight();
         currentResults[idx] = res;
         markChunkDone(idx, res);
         delete chunkRetryAfter[idx];
@@ -8194,7 +8275,7 @@ async function executeDynamicTask(idx, keyIdx, queueRef) {
         return;
 
     } catch(err) {
-        if(state.keyMeta[keyIdx]) state.keyMeta[keyIdx].inFlight = Math.max(0, state.keyMeta[keyIdx].inFlight-1);
+        releaseKeyInFlight();
 
         // ĐỢT 7C — mục III: request bị HUỶ do bấm Dừng — KHÔNG phải lỗi mạng/key thật, nên
         // KHÔNG tăng retryCount, KHÔNG tính vào key.errors, KHÔNG đưa lại hàng đợi (vòng lặp
@@ -9756,21 +9837,55 @@ async function test(i){
   sync(); render(); refreshStatus();
 }
 async function testAll(){ for(let i=0;i<G.keys.length;i++){ if(G.keys[i].enabled) await test(i); await new Promise(r=>setTimeout(r,300)); } }
-const firstKey=()=>{ const i=G.keys.findIndex((k,x)=>k.enabled&&G.meta[x].status!=='error'); return i<0?null:G.keys[i]; };
+let gemPickCursor = 0;
+function orderedGemKeys(){
+  const n = G.keys.length;
+  if(!n) return [];
+  const now = Date.now();
+  const ready = [], fallback = [];
+  for(let step=0; step<n; step++){
+    const i = (gemPickCursor + step) % n;
+    const k = G.keys[i], m = G.meta[i];
+    if(!k || !k.enabled || !m || m.status==='error') continue;
+    if(m.status==='ratelimited' && now < m.rateLimitUntil) fallback.push(k);
+    else ready.push(k);
+  }
+  gemPickCursor = (gemPickCursor + 1) % n;
+  ready.sort((a,b)=>{
+    const ia = G.keys.indexOf(a), ib = G.keys.indexOf(b);
+    const ma = G.meta[ia] || {}, mb = G.meta[ib] || {};
+    if((ma.inFlight||0) !== (mb.inFlight||0)) return (ma.inFlight||0) - (mb.inFlight||0);
+    if((ma.requests||0) !== (mb.requests||0)) return (ma.requests||0) - (mb.requests||0);
+    return (ma.lastUsed||0) - (mb.lastUsed||0);
+  });
+  return ready.concat(fallback);
+}
+const firstKey=()=>{ const list = orderedGemKeys(); return list.length ? list[0] : null; };
 async function testConnection(){
   const k=firstKey(), el=$('gemConnStatus'); if(!k){ el.textContent='Chưa có key khả dụng.'; return; }
-  el.textContent='Đang kiểm tra…'; await test(G.keys.indexOf(k)); const m=G.meta[G.keys.indexOf(k)];
-  el.textContent=m.status==='idle'?'✓ Kết nối được với model '+G.model:'✗ '+(m.lastError||'Không thành công');
+  const idx = G.keys.indexOf(k);
+  el.textContent='Đang kiểm tra (C'+(idx+1)+')…'; await test(idx); const m=G.meta[idx];
+  el.textContent=m.status==='idle'?'✓ Kết nối được với model '+G.model+' (qua C'+(idx+1)+')':'✗ '+(m.lastError||'Không thành công');
 }
 async function fetchModels(){
-  const k=firstKey(), grid=$('gemModelGrid'); if(!k){ sfUI.alert('Hãy thêm ít nhất 1 key Gemini trước.'); return; }
+  const candidates = orderedGemKeys(), grid=$('gemModelGrid'); if(!candidates.length){ sfUI.alert('Hãy thêm ít nhất 1 key Gemini trước.'); return; }
   grid.innerHTML='<div class="hint">Đang tải danh sách model…</div>';
-  try{ const r=await fetch(API+'models?pageSize=200',{headers:hdrs(k.key)});
-    if(!r.ok){ const c=classify(r.status,await r.text().catch(()=>'')); grid.innerHTML=''; sfUI.alert('Không lấy được danh sách model: '+c.vi); return; }
+  let r = null, lastErrTxt = '', lastNetErr = null;
+  for(const k of candidates){
+    try{
+      r = await fetch(API+'models?pageSize=200',{headers:hdrs(k.key)});
+      if(r.ok) break;
+      lastErrTxt = await r.text().catch(()=>'');
+      if(r.status !== 401 && r.status !== 403 && r.status !== 429 && r.status < 500) break;
+    }catch(e){ lastNetErr = e; r = null; }
+  }
+  if(!r){ grid.innerHTML=''; sfUI.alert('Lỗi mạng khi lấy models: '+(lastNetErr ? lastNetErr.message : 'Không kết nối được')); return; }
+  if(!r.ok){ const c=classify(r.status,lastErrTxt); grid.innerHTML=''; sfUI.alert('Không lấy được danh sách model: '+c.vi); return; }
+  try{
     const d=await r.json(); const ids=(d.models||[]).filter(m=>(m.supportedGenerationMethods||[]).includes('generateContent')).map(m=>String(m.name).replace(/^models\//,'')).sort();
     grid.innerHTML=''; if(!ids.length){ grid.innerHTML='<div class="hint">API không trả model nào hỗ trợ generateContent.</div>'; return; }
     ids.forEach(id=>{ const c=document.createElement('div'); c.className='modelchip'+(id===G.model?' sel':''); c.dataset.m=id; c.textContent=id; c.onclick=()=>{ setModel(id); $('gemModel').value=id; grid.querySelectorAll('.modelchip').forEach(x=>x.classList.toggle('sel',x.dataset.m===id)); }; grid.appendChild(c); });
-  }catch(e){ grid.innerHTML=''; sfUI.alert('Lỗi mạng khi lấy models: '+e.message); }
+  }catch(e){ grid.innerHTML=''; sfUI.alert('Lỗi đọc danh sách models: '+e.message); }
 }
 function setModel(v){ G.model=String(v||'').trim(); if(G.active){ state.model=G.model; $('pillModel').textContent=G.model||'chưa chọn model'; } save(); refreshStatus(); }
 
@@ -9863,14 +9978,25 @@ window.refreshStatus=function(){ origRefresh.apply(this,arguments);
 window.sfCanon_callExtract=async function(w){
   if(!G.active) return origCanon.apply(this,arguments);
   let ki=pickAvailableKey(); if(ki===-1){ await new Promise(r=>setTimeout(r,Math.min(5000,getNearestCooldownMs()))); ki=pickAvailableKey(); if(ki===-1) throw new Error('Không có key Gemini khả dụng để quét Canon Pack.'); }
-  return gemCall(null,ki,undefined,SF_CANON_EXTRACT_SYSTEM_PROMPT+w);
+  if(G.meta[ki]) G.meta[ki].inFlight = (G.meta[ki].inFlight || 0) + 1;
+  try{
+    return await gemCall(null,ki,undefined,SF_CANON_EXTRACT_SYSTEM_PROMPT+w);
+  } finally {
+    if(G.meta[ki]){ G.meta[ki].inFlight = Math.max(0, (G.meta[ki].inFlight || 1) - 1); renderKeys(); }
+  }
 };
-// Kiểm tra trước khi dịch: model phải tồn tại (404 → dừng sớm, không đổi key vô ích)
+// Kiểm tra trước khi dịch: model phải tồn tại (404 → dừng sớm, xoay vòng key khả dụng thay vì dồn vào C1)
 window.startTranslate=async function(){
   if(G.active){
-    const k=firstKey(); if(!k){ sfUI.alert('Gemini Direct: chưa có key khả dụng.'); return; }
-    try{ const r=await fetch(API+'models/'+encodeURIComponent(G.model),{headers:hdrs(k.key)});
-      if(r.status===404){ sfUI.alert(classify(404,'').vi); return; } }catch(e){ /* lỗi mạng: để pipeline retry xử lý */ }
+    const candidates = orderedGemKeys();
+    if(!candidates.length){ sfUI.alert('Gemini Direct: chưa có key khả dụng.'); return; }
+    for(const k of candidates){
+      try{
+        const r=await fetch(API+'models/'+encodeURIComponent(G.model),{headers:hdrs(k.key)});
+        if(r.status===404){ sfUI.alert(classify(404,'').vi); return; }
+        if(r.ok) break;
+      }catch(e){ break; /* lỗi mạng: để pipeline retry xử lý */ }
+    }
   }
   return origStart.apply(this,arguments);
 };
