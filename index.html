@@ -955,10 +955,11 @@
           </div>
         </div>
       </div>
-      <div class="statchips" style="margin-bottom:12px;">
+      <div class="statchips" style="margin-bottom:12px; align-items:center;">
         <div class="statchip" id="chOrig">0 ký tự</div>
         <div class="statchip" id="chChunks">0 chunk</div>
         <div class="statchip" id="chEst">~0 giây</div>
+        <button type="button" class="btn small" id="clearSourceBtn" onclick="sf_clearSourceText()" style="margin-left:auto; padding:4px 10px; font-size:11.5px;" title="Xoá nội dung văn bản gốc hiện tại để dán hoặc tải truyện mới">🗑 Xoá văn bản gốc</button>
       </div>
       <textarea id="sourceText" rows="10" placeholder="Nội dung truyện sẽ hiển thị ở đây...&#10;&#10;Bạn cũng có thể paste trực tiếp nội dung vào đây."></textarea>
 
@@ -1219,6 +1220,7 @@ const sfUI = (function(){
       try{ logLine('info', null, null, String(msg||'')); }catch(e){}
     }
   }
+  const __sfConfirmPending = new Map();
   function confirmMsg(msg){
     try{
       const fn = window['con' + 'firm'];
@@ -1227,8 +1229,27 @@ const sfUI = (function(){
         if(typeof res === 'boolean') return res;
       }
     }catch(e){}
-    toast(msg, 'info');
-    return true;
+    const key = String(msg || '').slice(0, 180);
+    const now = Date.now();
+    const prev = __sfConfirmPending.get(key) || 0;
+    if(now - prev < 4500){
+      __sfConfirmPending.delete(key);
+      return true;
+    }
+    __sfConfirmPending.set(key, now);
+    const firstLine = String(msg || '').split('\n')[0].slice(0, 120);
+    toast('⚠️ Bấm lại lần nữa trong 4 giây để xác nhận: ' + firstLine, 'warn');
+    return false;
+  }
+  function confirmOptionalMsg(msg, fallbackWhenBlocked){
+    try{
+      const fn = window['con' + 'firm'];
+      if(typeof fn === 'function'){
+        const res = fn.call(window, msg);
+        if(typeof res === 'boolean') return res;
+      }
+    }catch(e){}
+    return fallbackWhenBlocked !== undefined ? !!fallbackWhenBlocked : true;
   }
   function promptMsg(msg, defVal){
     try{
@@ -1240,7 +1261,7 @@ const sfUI = (function(){
     }catch(e){}
     return defVal != null ? String(defVal) : '';
   }
-  return { toast, alert: alertMsg, confirm: confirmMsg, prompt: promptMsg };
+  return { toast, alert: alertMsg, confirm: confirmMsg, confirmOptional: confirmOptionalMsg, prompt: promptMsg };
 })();
 
 let __sfErrorLog = [];
@@ -1338,11 +1359,15 @@ window.__sourceIsTruncatedPreview = false;
 const SF_LARGE_TEXT_THRESHOLD = 300000;
 let __sf_statsCache = { chunks: 0, n: 0 };
 function sf_getFullSourceText(){
-  if(typeof window.__loadedSourceText === 'string' && window.__loadedSourceText.length > 0){
+  if(window.__sourceIsTruncatedPreview && typeof window.__loadedSourceText === 'string'){
     return window.__loadedSourceText;
   }
   const ta = document.getElementById('sourceText');
-  return ta ? ta.value : '';
+  if(ta && !window.__sourceIsTruncatedPreview){
+    window.__loadedSourceText = ta.value;
+    return ta.value;
+  }
+  return typeof window.__loadedSourceText === 'string' ? window.__loadedSourceText : '';
 }
 // CƠ CHẾ CHUNG #1: Tự động tách dòng các tiêu đề chương bị dính liền vào cuối câu trước (hỗ trợ mọi nguồn truyện Trung/Việt/Anh)
 function sf_autoUnstickChapterHeaders(rawText){
@@ -1365,14 +1390,41 @@ function sf_setSourceText(fullText, opts){
   if(fullText.length > SF_LARGE_TEXT_THRESHOLD){
     window.__sourceIsTruncatedPreview = true;
     if(ta){
+      ta.readOnly = true;
+      ta.title = 'Đang ở chế độ Xem trước tệp lớn (>300.000 ký tự). Bấm "🗑 Xoá văn bản gốc" phía trên nếu muốn dán văn bản mới.';
       ta.value = '[Tệp dung lượng lớn (' + fullText.length.toLocaleString('vi-VN') +
-        ' ký tự) đã nạp thành công vào bộ nhớ ngầm. Chỉ hiển thị xem trước đoạn đầu để chống đơ máy.]\n\n' +
+        ' ký tự) đã nạp thành công vào bộ nhớ ngầm. Chỉ hiển thị xem trước đoạn đầu để chống đơ máy — bấm "🗑 Xoá văn bản gốc" nếu muốn dán truyện khác.]\n\n' +
         fullText.slice(0, 1000) + '...';
     }
   } else {
     window.__sourceIsTruncatedPreview = false;
-    if(ta) ta.value = fullText;
+    if(ta){
+      ta.readOnly = false;
+      ta.title = '';
+      ta.value = fullText;
+    }
   }
+}
+function sf_clearSourceText(){
+  if(typeof running !== 'undefined' && running){
+    sfUI.alert('Đang có tiến trình dịch chạy. Vui lòng dừng dịch trước khi xoá văn bản gốc.');
+    return;
+  }
+  window.__loadedSourceText = '';
+  window.__sourceIsTruncatedPreview = false;
+  sfLastUploadName = '';
+  const ta = document.getElementById('sourceText');
+  if(ta){
+    ta.readOnly = false;
+    ta.title = '';
+    ta.value = '';
+    ta.focus();
+  }
+  const fi = document.getElementById('fileInput');
+  if(fi) fi.value = '';
+  if(typeof sf_updateStatsPreview === 'function') sf_updateStatsPreview();
+  if(typeof sf_refreshFileNamePreviewUI === 'function') sf_refreshFileNamePreviewUI();
+  sfUI.toast('🗑 Đã xoá văn bản gốc. Bạn có thể dán hoặc tải truyện mới.', 'info');
 }
 
 /* =====================================================================
@@ -1992,6 +2044,7 @@ async function sf_prepareFileForTranslation(text, offsets){
     translatedChunks: 0,
     errorChunks: 0,
     model: state.model,
+    provider: (window.sfGemActive && window.sfGemActive()) ? 'gemini' : 'proxy',
     baseUrl: document.getElementById('baseUrl').value.trim(),
     prompt: document.getElementById('promptBox').value,
     config: cfg,
@@ -2062,14 +2115,26 @@ async function restoreFile(fileId){
 
   if(fileRec.baseUrl) document.getElementById('baseUrl').value = fileRec.baseUrl;
   if(fileRec.model){
-    state.model = fileRec.model;
-    if(window.sfGemActive && window.sfGemActive() && window.sfGem){
-      window.sfGem.setModel(fileRec.model);
-      if(document.getElementById('gemModel')) document.getElementById('gemModel').value = fileRec.model;
+    const isGemNow = !!(window.sfGemActive && window.sfGemActive() && window.sfGem);
+    const recIsGem = fileRec.provider === 'gemini' || (!fileRec.provider && /^(?:models\/)?(?:gemini|learnlm|gemma)-/i.test(fileRec.model));
+    if(isGemNow){
+      if(recIsGem){
+        state.model = fileRec.model;
+        window.sfGem.setModel(fileRec.model);
+        if(document.getElementById('gemModel')) document.getElementById('gemModel').value = fileRec.model;
+      } else {
+        if(document.getElementById('modelInput')) document.getElementById('modelInput').value = fileRec.model;
+      }
     } else {
-      if(document.getElementById('modelInput')) document.getElementById('modelInput').value = fileRec.model;
+      if(!recIsGem){
+        state.model = fileRec.model;
+        if(document.getElementById('modelInput')) document.getElementById('modelInput').value = fileRec.model;
+        if(document.getElementById('pillModel')) document.getElementById('pillModel').textContent = fileRec.model;
+      } else {
+        if(window.sfGem && typeof window.sfGem.setModel === 'function') window.sfGem.setModel(fileRec.model);
+        if(document.getElementById('gemModel')) document.getElementById('gemModel').value = fileRec.model;
+      }
     }
-    if(document.getElementById('pillModel')) document.getElementById('pillModel').textContent = fileRec.model;
   }
   if(fileRec.prompt && !fileRec.promptMigrated){
     await sfPromptLib_migrateLegacyString(fileRec.prompt, fileRec.name);
@@ -2195,7 +2260,7 @@ async function sf_runHeaderRepairPass(){
         c.headerRepairAttempts = (c.headerRepairAttempts||0) + 1;
         c.retryCount = 0; delete chunkRetryAfter[i];
         markChunkWaiting(i); // KHÔNG tạo chunk mới — chỉ tạm rời 'done' để scheduler nhận dịch lại đúng chunk này
-        try{ await runEngine([i]); } // dịch lại CHÍNH XÁC 1 chunk này; markChunkDone sẽ tự re-check header
+        try{ await runEngine([i], { preserveTimer: true }); } // dịch lại CHÍNH XÁC 1 chunk này; giữ nguyên đồng hồ tổng
         catch(e){ sf_recordRuntimeError('header-repair-chunk-'+i, e && e.message ? e.message : String(e)); break; }
       }
       if(c.headerWarning && c.headerWarning.length){
@@ -2236,8 +2301,8 @@ async function continueUnfinishedTranslation(fileId){
   sfCurrentFileMeta.status = 'translating';
   await saveFileRecord(sfCurrentFileMeta);
 
-  await runEngine(chunkState.map((_,i)=> i));
-  await sf_onEngineFinished();
+  const okRun = await runEngine(chunkState.map((_,i)=> i));
+  if(okRun !== false) await sf_onEngineFinished();
 }
 async function openLibraryFile(fileId){ await restoreFile(fileId); }
 
@@ -2266,6 +2331,9 @@ async function resumeRestart(){
   if(!sfUI.confirm('Bắt đầu dịch lại toàn bộ truyện này từ đầu? Bản dịch đã có của truyện này sẽ được dịch lại.')) return;
   const rec = await restoreFile(sfResumeCandidateId);
   if(!rec) return;
+  chunkState = [];
+  chunkStats = { waiting:0, running:0, done:0, error:0 };
+  currentResults = [];
   document.getElementById('resumeBanner').style.display = 'none';
   await startTranslate(); // startTranslate() sẽ dùng lại sfCurrentFileId, tạo bộ khung chunk mới
 }
@@ -2714,16 +2782,19 @@ async function exportLibraryFileTxt(fileId){
 
 /* ---------- 15. Xóa (mục 3 & 14: SAFE DELETE, phân biệt RESET / DELETE / CLEAR) ---------- */
 async function deleteLibraryFile(fileId){
-  if(!sfUI.confirm('Xóa truyện này khỏi thư viện? Hành động này không thể hoàn tác.')) return;
+  const signedInCloud = (typeof sfCloud !== 'undefined' && typeof sfCloud.isSignedIn === 'function' && sfCloud.isSignedIn());
+  const confirmPrompt = signedInCloud
+    ? 'Xóa truyện này khỏi thư viện máy VÀ xoá luôn bản sao trên Cloud của tài khoản Google đang đăng nhập? Hành động này không thể hoàn tác.'
+    : 'Xóa truyện này khỏi thư viện? Hành động này không thể hoàn tác.';
+  if(!sfUI.confirm(confirmPrompt)) return;
   await deleteChunksForFile(fileId);
   await deleteFileRecord(fileId);
   await deleteSession('sess_' + fileId);
   if(sfCurrentFileId === fileId){ sfCurrentFileId = null; sfCurrentFileMeta = null; }
   if(sfResumeCandidateId === fileId) sfResumeCandidateId = null;
   await hydrateLibrary();
-  if(typeof sfCloud !== 'undefined'){
-    const alsoCloud = sfCloud.isSignedIn() ? sfUI.confirm('Đồng thời xoá truyện này khỏi Cloud của tài khoản Google đang đăng nhập?') : false;
-    if(alsoCloud) sfCloud.enqueueDeleteFile(fileId);
+  if(signedInCloud){
+    sfCloud.enqueueDeleteFile(fileId);
   }
 }
 async function clearEntireFileLibrary(){
@@ -2746,6 +2817,10 @@ async function sf_onSourceLoaded(text, name){
     if(existing){
       existing.sourceText = text;
       existing.updatedAt = now;
+      if(state.model){
+        existing.model = state.model;
+        existing.provider = (window.sfGemActive && window.sfGemActive()) ? 'gemini' : 'proxy';
+      }
       if(name) existing.name = name;
       if(name) existing.originalFileName = name;
       if(!existing.translatedFileName && name){
@@ -2790,6 +2865,7 @@ async function sf_onSourceLoaded(text, name){
         totalChars: text.length,
         totalChunks: 0, translatedChunks: 0, errorChunks: 0,
         model: state.model,
+        provider: (window.sfGemActive && window.sfGemActive()) ? 'gemini' : 'proxy',
         baseUrl: document.getElementById('baseUrl').value.trim(),
         prompt: document.getElementById('promptBox').value,
         config: sf_collectConfig(),
@@ -3467,10 +3543,14 @@ async function sfZh_callRawAI(promptText){
   };
   if(isGem){
     const api = 'https://generativelanguage.googleapis.com/v1beta/models/' + encodeURIComponent(state.model) + ':generateContent';
+    const relax = !(window.sfGem && typeof window.sfGem.isRelaxSafety === 'function') || window.sfGem.isRelaxSafety();
     const body = {
-      contents: [{ role:'user', parts:[{ text: promptText }] }],
-      safetySettings: ['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({category:'HARM_CATEGORY_'+c,threshold:'BLOCK_NONE'}))
+      contents: [{ role:'user', parts:[{ text: promptText }] }]
     };
+    body.safetySettings = ['HARASSMENT','HATE_SPEECH','SEXUALLY_EXPLICIT','DANGEROUS_CONTENT'].map(c=>({
+      category:'HARM_CATEGORY_'+c,
+      threshold: relax ? 'BLOCK_NONE' : 'BLOCK_ONLY_HIGH'
+    }));
     let res;
     try{
       res = await fetch(api, {
@@ -3891,7 +3971,7 @@ function sfZh_init(){
    +'<div style="margin-top:10px;"><div style="font-weight:600;font-size:13px;">🛠 Prompt phụ trợ (copy dùng riêng)</div><div class="btn-row" style="gap:6px;margin-top:6px;"><button type="button" class="btn small" data-cp="p6">📋 Copy Prompt 6 — Biên tập & chuốt văn</button><button type="button" class="btn small" data-cp="p7">📋 Copy Prompt 7 — Trích bảng thuật ngữ</button></div></div>';
   const g=document.getElementById('sfZhGenres'), $=id=>document.getElementById(id);
   const paintG=()=>g.querySelectorAll('.modelchip').forEach(b=>b.classList.toggle('sel',b.dataset.g===sfZhCfg.genre));
-  SF_ZH_GENRES.forEach(x=>{ const d=document.createElement('div'); d.className='modelchip'; d.dataset.g=x[0]; d.textContent=x[1]; d.onclick=()=>{ sfZhCfg.genre=x[0]; if($('sfZhEditSel')&&x[0]){ $('sfZhEditSel').value=x[0]; $('sfZhEdit').value=sfZh_txt(x[0]); } paintG(); sfZh_save(); }; g.appendChild(d); });
+  SF_ZH_GENRES.forEach(x=>{ const d=document.createElement('div'); d.className='modelchip'; d.dataset.g=x[0]; d.textContent=x[1]; d.onclick=()=>{ sfZhCfg.genre=x[0]; if($('sfZhEditSel')&&x[0]){ $('sfZhEditSel').value=x[0]; $('sfZhEdit').value=sfZh_txt(x[0]); } paintG(); sfZh_save(); if(x[0] && typeof window.sfTpl_add === 'function' && sfZh_mode() !== 'zh'){ window.sfTpl_add(x[0], false); } }; g.appendChild(d); });
   paintG();
   [['sfZhTheme','theme'],['sfZhTone','tone'],['sfZhGloss','glossary'],['sfZhHon','honorifics'],['sfZhStyle','style']].forEach(([id,k])=>{ $(id).value=sfZhCfg[k]||''; $(id).addEventListener('input',()=>{ sfZhCfg[k]=$(id).value; sfZh_save(); }); });
   $('sfZhFew').checked=!!sfZhCfg.fewshot; $('sfZhFew').onchange=()=>{ sfZhCfg.fewshot=$('sfZhFew').checked; sfZh_save(); };
@@ -3947,6 +4027,15 @@ async function sfPromptLib_init(){
     const zex = list.find(p=>p.id==='zhvi_default');
     if(zex && !zex.pinned){ zex.pinned = true; zex.enabled = true; zex.updatedAt = sfPrompt_now(); await sfPromptDB_put(zex); }
     try{ localStorage.setItem('sf_zhvi_seeded','1'); }catch(e){}
+    for(const item of list){
+      if(item && item.id){
+        const cleanId = String(item.id).replace(/[^a-zA-Z0-9_\-]/g, '_');
+        if(cleanId !== item.id){
+          item.id = cleanId || sfPrompt_newId('p');
+          try{ await sfPromptDB_put(item); }catch(e){}
+        }
+      }
+    }
     sfPromptLibrary = list.sort((a,b)=> (a.createdAt||0)-(b.createdAt||0));
   }catch(e){
     sf_recordRuntimeError('prompt-library-init', e && e.message ? e.message : String(e));
@@ -4086,21 +4175,24 @@ function sfPromptLib_render(){
     if(!sfPromptLibrary.length){ wrap.innerHTML = '<div class="hint">Đang tải Thư viện Prompt…</div>'; return; }
     wrap.innerHTML = sfPromptLibrary.map(p=>{
       const isProtected = !!p.protected;
-      return `<div class="sf-prompt-card" data-id="${p.id}" style="border:1px solid var(--panel-border); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:var(--input-bg);">
+      const safeId = sf_escapeHtml(String(p.id || '').replace(/[^a-zA-Z0-9_\-]/g, ''));
+      const safeType = sf_escapeHtml(sfPromptLib_typeLabel[p.type] || p.type || '');
+      return `<div class="sf-prompt-card" data-id="${safeId}" style="border:1px solid var(--panel-border); border-radius:10px; padding:10px 12px; margin-bottom:10px; background:var(--input-bg);">
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:6px;">
-          <div class="switch ${p.enabled?'on':''}" onclick="sfPromptLib_toggle('${p.id}')" title="Bật/Tắt prompt này"></div>
+          <div class="switch ${p.enabled?'on':''}" onclick="sfPromptLib_toggle('${safeId}')" title="Bật/Tắt prompt này"></div>
           <input type="text" value="${sf_escapeHtml(p.name)}" style="flex:1; min-width:120px; font-weight:600; padding:6px 8px;"
-            onchange="sfPromptLib_rename('${p.id}', this.value)" ${isProtected? '' : ''} />
-          <span class="acc-badge config" style="white-space:nowrap;">${sfPromptLib_typeLabel[p.type]||p.type}</span>
+            onchange="sfPromptLib_rename('${safeId}', this.value)" ${isProtected? '' : ''} />
+          <span class="acc-badge config" style="white-space:nowrap;">${safeType}</span>
           <div class="btn-row" style="gap:6px;">
-            ${p.type==='translation' ? `<button type="button" class="btn small" onclick="sfPromptLib_setDefault('${p.id}')" title="Chỉ dùng prompt dịch này">⭐ Đặt mặc định</button>` : ''}
-            <button type="button" class="btn small" onclick="sfPromptLib_duplicate('${p.id}')" title="Nhân bản">⧉ Nhân bản</button>
-            ${isProtected ? '' : `<button type="button" class="btn small danger" onclick="sfPromptLib_delete('${p.id}')" title="Xoá">🗑 Xoá</button>`}
+            ${p.type==='translation' ? `<button type="button" class="btn small" onclick="sfPromptLib_setDefault('${safeId}')" title="Chỉ dùng prompt dịch này">⭐ Đặt mặc định</button>` : ''}
+            <button type="button" class="btn small" onclick="sfPromptLib_duplicate('${safeId}')" title="Nhân bản">⧉ Nhân bản</button>
+            ${isProtected ? '' : `<button type="button" class="btn small danger" onclick="sfPromptLib_delete('${safeId}')" title="Xoá">🗑 Xoá</button>`}
           </div>
         </div>
-        <textarea rows="4" style="font-size:12.5px;" placeholder="Nội dung prompt…" onchange="sfPromptLib_editContent('${p.id}', this.value)">${sf_escapeHtml(p.content)}</textarea>
+        <textarea rows="4" style="font-size:12.5px;" placeholder="Nội dung prompt…" onchange="sfPromptLib_editContent('${safeId}', this.value)">${sf_escapeHtml(p.content)}</textarea>
       </div>`;
     }).join('');
+    if(typeof window.sfTpl_refreshActive === 'function') window.sfTpl_refreshActive();
   }catch(e){ sf_recordRuntimeError('prompt-library-render', e && e.message ? e.message : String(e)); }
 }
 
@@ -4173,13 +4265,46 @@ function modelsUrl(){ let u = normalizeBase(document.getElementById('baseUrl').v
 document.getElementById('baseUrl').addEventListener('input', ()=>{ document.getElementById('chatUrlPreview').textContent = chatUrl() || '—'; document.getElementById('modelsUrlPreview').textContent = modelsUrl() || '—'; markProfileDirty(); refreshStatus(); });
 document.getElementById('modelInput').addEventListener('input', (e)=>{ state.model = e.target.value.trim(); markProfileDirty(); refreshStatus(); document.getElementById('pillModel').textContent = state.model || 'chưa chọn model'; document.querySelectorAll('.modelchip').forEach(c=>c.classList.toggle('sel', c.dataset.m===state.model)); });
 
+function sf_updateGeneralSummaryUI(){
+  const langEl = document.getElementById('sourceLang');
+  const langMap = { auto:'🔍 Tự động phát hiện', zh:'🈶 Tiếng Trung', en:'🇬🇧 Tiếng Anh', ko:'🇰🇷 Tiếng Hàn', ja:'🇯🇵 Tiếng Nhật' };
+  const langTxt = langEl ? (langMap[langEl.value] || '🔍 Tự động phát hiện') : '🔍 Tự động phát hiện';
+  const pVal = typeof parallelVal === 'function' ? parallelVal() : 4;
+  const rVal = typeof rpmVal === 'function' ? rpmVal() : 15;
+  const cVal = typeof chunkSizeVal === 'function' ? chunkSizeVal() : 3500;
+  const genSum = document.getElementById('generalSummary');
+  if(genSum) genSum.textContent = `${langTxt} · ${pVal} luồng · ${rVal} RPM/key · ${cVal} ký tự`;
+  const rpmEst = document.getElementById('rpmEstimate');
+  if(rpmEst){
+    const keyCnt = Math.max(1, (state.keys && state.keys.length) ? state.keys.length : 1);
+    rpmEst.textContent = `Ước tính: ${keyCnt} key × ${rVal} RPM = tối đa ${keyCnt * rVal} request/phút.`;
+  }
+}
 function refreshStatus(){
   let line = 'chưa cấu hình proxy'; let summary = 'chưa cấu hình · ' + state.keys.length + ' key';
-  if(state.proxyOn && document.getElementById('baseUrl').value.trim()){
+  const hasBase = !!(document.getElementById('baseUrl') && document.getElementById('baseUrl').value.trim());
+  if(state.proxyOn && hasBase){
     line = 'Custom Proxy · ' + (state.model || 'model?') + ' · ' + state.keys.length + ' key'; summary = (state.model || 'model?') + ' · ' + state.keys.length + ' key';
   }
   document.getElementById('statusLine').textContent = line; document.getElementById('proxySummary').textContent = summary; document.getElementById('pillProxy').classList.toggle('on', state.proxyOn);
   const badge = document.getElementById('proxyBadge'); badge.textContent = state.proxyOn ? '✓ Đang dùng' : 'Tắt'; badge.classList.toggle('using', state.proxyOn); badge.classList.toggle('off', !state.proxyOn);
+  const netProxyEl = document.getElementById('netProxy');
+  const netKeysEl = document.getElementById('netKeys');
+  const activeKeyCnt = (state.keyMeta || []).filter(m=>m && m.status!=='error' && m.status!=='disabled').length;
+  if(netProxyEl && !(window.sfGemActive && window.sfGemActive())){
+    if(state.proxyOn && hasBase){
+      netProxyEl.textContent = '🟢 Custom Proxy (' + (state.model || 'chưa chọn model') + ')';
+      netProxyEl.style.color = 'var(--green)';
+    } else {
+      netProxyEl.textContent = 'chưa cấu hình';
+      netProxyEl.style.color = 'var(--text-dim)';
+    }
+  }
+  if(netKeysEl){
+    netKeysEl.textContent = activeKeyCnt + '/' + state.keys.length;
+    netKeysEl.style.color = activeKeyCnt > 0 ? 'var(--green)' : 'var(--text-dim)';
+  }
+  sf_updateGeneralSummaryUI();
 }
 
 const KEY_COLOR_PALETTE = ['#5b8cff','#b06cff','#ff9f43','#ff6ec7','#f5d547','#38d996','#3ad1c9','#ff6b6b','#8c9eff','#c471ed'];
@@ -4373,11 +4498,43 @@ function loadProfiles(){ try{ return JSON.parse(localStorage.getItem(PROFILES_KE
 function saveProfilesToStorage(list){ try{ localStorage.setItem(PROFILES_KEY, JSON.stringify(list)); }catch(e){} try{ sfCloud.autoBackup(); }catch(e){} }
 function markProfileDirty(){ if(state.currentProfile) state.profileDirty = true; renderProfileStatus(); }
 function renderProfileStatus(){ const el = document.getElementById('profileStatus'); if(!state.currentProfile){ el.textContent = 'Chưa lưu'; } else { el.textContent = state.profileDirty ? 'Có thay đổi' : 'Đang dùng: '+state.currentProfile; } }
-function renderProfiles(){ const chipsEl = document.getElementById('profileChips'); chipsEl.innerHTML=''; loadProfiles().forEach(p=>{ const chip = document.createElement('div'); chip.className = 'profilechip' + (p.name===state.currentProfile ? ' sel' : ''); chip.innerHTML = `<span onclick="loadProfile('${encodeURIComponent(p.name)}')">🧩 ${sf_escapeHtml(p.name)}</span><span class="x" onclick="deleteProfile('${encodeURIComponent(p.name)}')">✕</span>`; chipsEl.appendChild(chip); }); renderProfileStatus(); }
+function renderProfiles(){
+  const chipsEl = document.getElementById('profileChips');
+  if(!chipsEl) return;
+  chipsEl.innerHTML='';
+  const list = loadProfiles();
+  const emptyEl = document.getElementById('profileEmpty');
+  if(emptyEl) emptyEl.style.display = list.length > 0 ? 'none' : 'block';
+  list.forEach(p=>{
+    const chip = document.createElement('div');
+    chip.className = 'profilechip' + (p.name===state.currentProfile ? ' sel' : '');
+    chip.innerHTML = `<span onclick="loadProfile('${encodeURIComponent(p.name)}')">🧩 ${sf_escapeHtml(p.name)}</span><span class="x" onclick="deleteProfile('${encodeURIComponent(p.name)}')">✕</span>`;
+    chipsEl.appendChild(chip);
+  });
+  renderProfileStatus();
+}
 function currentProfileData(name){ return { name, baseUrl: document.getElementById('baseUrl').value.trim(), model: state.model, keys: state.keys.slice() }; }
 function saveProfileAsNew(){ const name = document.getElementById('profileName').value.trim(); if(!name) return; const profiles = loadProfiles().filter(p=>p.name!==name); profiles.push(currentProfileData(name)); saveProfilesToStorage(profiles); state.currentProfile = name; state.profileDirty = false; renderProfiles(); }
 function updateCurrentProfile(){ if(!state.currentProfile) return; const profiles = loadProfiles().filter(p=>p.name!==state.currentProfile); profiles.push(currentProfileData(state.currentProfile)); saveProfilesToStorage(profiles); state.profileDirty = false; renderProfiles(); }
-function loadProfile(encName){ const name = decodeURIComponent(encName); const p = loadProfiles().find(x=>x.name===name); if(!p) return; document.getElementById('baseUrl').value = p.baseUrl || ''; state.model = p.model || ''; state.keys = (p.keys || []).slice(); state.keyMeta = state.keys.map(()=> newKeyMeta()); renderKeys(); state.currentProfile = name; state.profileDirty = false; renderProfiles(); refreshStatus(); }
+function loadProfile(encName){
+  const name = decodeURIComponent(encName);
+  const p = loadProfiles().find(x=>x.name===name);
+  if(!p) return;
+  document.getElementById('baseUrl').value = p.baseUrl || '';
+  state.model = p.model || '';
+  const mi = document.getElementById('modelInput'); if(mi) mi.value = state.model;
+  const pm = document.getElementById('pillModel'); if(pm) pm.textContent = state.model || 'chưa chọn model';
+  const cu = document.getElementById('chatUrlPreview'); if(cu) cu.textContent = chatUrl() || '—';
+  const mu = document.getElementById('modelsUrlPreview'); if(mu) mu.textContent = modelsUrl() || '—';
+  document.querySelectorAll('.modelchip').forEach(c=>c.classList.toggle('sel', c.dataset.m===state.model));
+  state.keys = (p.keys || []).slice();
+  state.keyMeta = state.keys.map(()=> newKeyMeta());
+  renderKeys();
+  state.currentProfile = name;
+  state.profileDirty = false;
+  renderProfiles();
+  refreshStatus();
+}
 function deleteProfile(encName){ const name = decodeURIComponent(encName); const profiles = loadProfiles().filter(p=>p.name!==name); saveProfilesToStorage(profiles); if(state.currentProfile===name) state.currentProfile=null; renderProfiles(); }
 async function fetchModels(){
   const url = modelsUrl();
@@ -4661,6 +4818,23 @@ function readFile(f){
   });
 }
 document.getElementById('fileInput').addEventListener('change', e=>{ if(e.target.files[0]) readFile(e.target.files[0]); });
+(function(){
+  const dz = document.getElementById('dropzone');
+  if(!dz) return;
+  ['dragenter','dragover'].forEach(evName=>{
+    dz.addEventListener(evName, e=>{ e.preventDefault(); e.stopPropagation(); dz.classList.add('drag'); });
+  });
+  ['dragleave','dragend'].forEach(evName=>{
+    dz.addEventListener(evName, e=>{ e.preventDefault(); e.stopPropagation(); dz.classList.remove('drag'); });
+  });
+  dz.addEventListener('drop', e=>{
+    e.preventDefault();
+    e.stopPropagation();
+    dz.classList.remove('drag');
+    const files = e.dataTransfer && e.dataTransfer.files;
+    if(files && files[0]) readFile(files[0]);
+  });
+})();
 
 /* ---------- QUÉT & XỬ LÝ HÁN TỰ CÒN SÓT TRONG BẢN DỊCH ---------- */
 async function scanHanTu(){
@@ -5233,8 +5407,8 @@ async function sfRepair_startDeltaTranslationNow(){
     sfUI.alert('Toàn bộ các chương đều đã ở trạng thái Hoàn thành (100% Đã dịch)!');
     return;
   }
-  await runEngine(pendingIndices);
-  await sf_onEngineFinished();
+  const okRun = await runEngine(pendingIndices);
+  if(okRun !== false) await sf_onEngineFinished();
 }
 
 /* ---------- ĐỌC THEO CHƯƠNG & XUẤT HTML ĐỌC OFFLINE ---------- */
@@ -5493,7 +5667,8 @@ let __sfLastSearchQuery = '';
 let __sfLastSearchTarget = '';
 
 function sf_jumpToMatch(idx){
-  const targetId = document.getElementById('searchTarget')?.value === 'source' ? 'sourceText' : 'outputText';
+  const isSource = (__sfLastSearchTarget || document.getElementById('searchTarget')?.value) === 'source';
+  const targetId = isSource ? 'sourceText' : 'outputText';
   const ta = document.getElementById(targetId);
   const countEl = document.getElementById('searchCount');
   if(!ta || !__sfSearchMatches.length){
@@ -5503,6 +5678,24 @@ function sf_jumpToMatch(idx){
   __sfSearchCursor = ((idx % __sfSearchMatches.length) + __sfSearchMatches.length) % __sfSearchMatches.length;
   const pos = __sfSearchMatches[__sfSearchCursor];
   const qLen = __sfLastSearchQuery.length;
+  if(isSource && window.__sourceIsTruncatedPreview){
+    const fullSrc = sf_getFullSourceText();
+    const snippetStart = Math.max(0, pos - 35);
+    const snippetEnd = Math.min(fullSrc.length, pos + qLen + 45);
+    const snippet = fullSrc.slice(snippetStart, snippetEnd).replace(/\s+/g, ' ');
+    let chunkHint = '';
+    if(Array.isArray(sfChunkOffsets) && sfChunkOffsets.length > 0){
+      const cIdx = sfChunkOffsets.findIndex(c => c && pos >= c.start && pos < c.end);
+      if(cIdx >= 0){
+        chunkHint = ` · Chunk #${cIdx + 1}`;
+        chunkCurrentPage = Math.floor(cIdx / CHUNK_PAGE_SIZE);
+        chunkExpanded.add(cIdx);
+        if(typeof renderChunkPage === 'function') renderChunkPage();
+      }
+    }
+    if(countEl) countEl.textContent = `Kết quả ${__sfSearchCursor + 1}/${__sfSearchMatches.length} (ký tự ${pos.toLocaleString('vi-VN')}${chunkHint}): "...${snippet}..."`;
+    return;
+  }
   ta.focus();
   ta.setSelectionRange(pos, pos + qLen);
   const textBefore = ta.value.slice(0, pos);
@@ -5518,8 +5711,9 @@ function runSearch(){
   const countEl = document.getElementById('searchCount');
   if(!q){ if(countEl) countEl.textContent = 'Nhập từ khoá cần tìm.'; return; }
   const ta = document.getElementById(target === 'source' ? 'sourceText' : 'outputText');
-  if(!ta || !ta.value){ if(countEl) countEl.textContent = 'Ô văn bản đang trống.'; return; }
-  const hay = ta.value.toLowerCase();
+  const rawText = (target === 'source') ? sf_getFullSourceText() : (ta ? ta.value : '');
+  if(!rawText){ if(countEl) countEl.textContent = 'Ô văn bản đang trống.'; return; }
+  const hay = rawText.toLowerCase();
   const needle = q.toLowerCase();
   __sfSearchMatches = [];
   let pos = 0;
@@ -6024,8 +6218,10 @@ async function sfCanon_importJson(file){
     const parsed = sf_safeJSONParse(text, null);
     if(!parsed || !Array.isArray(parsed.entities)){ sfUI.alert('File Canon Pack không đúng định dạng.'); return; }
     const now = Date.now();
-    const records = parsed.entities.filter(e=>e && e.sourceName).map(e=>({
-      id: (typeof e.id === 'string' && /^[a-zA-Z0-9_\-]+$/.test(e.id)) ? e.id : sfCanon_newId(), fileId: sfCurrentFileId,
+    const records = parsed.entities.filter(e=>e && e.sourceName).map(e=>{
+      const normId = typeof e.id === 'string' ? e.id.trim().replace(/[^a-zA-Z0-9_\-]/g, '_') : '';
+      return {
+      id: normId || sfCanon_newId(), fileId: sfCurrentFileId,
       sourceHash: sfCurrentFileMeta ? sfCurrentFileMeta.sourceHash : (e.sourceHash||''),
       sourceName: e.sourceName, normalizedName: e.normalizedName || sfCanon_normalize(e.sourceName),
       category: SF_CANON_CATEGORIES.includes(e.category) ? e.category : 'TERM',
@@ -6033,7 +6229,8 @@ async function sfCanon_importJson(file){
       confidence: typeof e.confidence === 'number' ? e.confidence : 0.5,
       occurrences: e.occurrences||0, firstSeen: e.firstSeen!=null?e.firstSeen:null, lastSeen: e.lastSeen!=null?e.lastSeen:null,
       notes: e.notes||'', status: e.status || 'pending', createdAt: e.createdAt||now, updatedAt: now
-    }));
+    };
+    });
     await sfCanonDB_putMany(records);
     await sfCanon_ensureLoadedForCurrentFile();
     sfUI.alert('Đã nhập ' + records.length + ' thực thể Canon Pack.');
@@ -6109,6 +6306,7 @@ function sfCanon_renderModalTable(){
     if(!sfCanonEntities.length){ wrap.innerHTML = '<div class="hint">Chưa có thực thể nào — bấm "🔍 Quét toàn bộ file" trước.</div>'; return; }
     const sorted = sfCanonEntities.slice().sort((a,b)=> (b.occurrences||0)-(a.occurrences||0));
     wrap.innerHTML = sorted.map(e=>{
+      const safeId = sf_escapeHtml(String(e.id || '').replace(/[^a-zA-Z0-9_\-]/g, ''));
       const statusColor = e.status==='confirmed' ? 'var(--green)' : (e.status==='rejected' ? 'var(--red)' : 'var(--amber)');
       const statusLabel = e.status==='confirmed' ? '✅ Đã xác nhận' : (e.status==='rejected' ? '🚫 Đã từ chối' : '⏳ Chờ xác nhận');
       return `<div class="sf-prompt-card" style="border:1px solid var(--panel-border); border-radius:10px; padding:10px 12px; margin-bottom:8px; background:var(--input-bg);">
@@ -6119,14 +6317,14 @@ function sfCanon_renderModalTable(){
           <span class="hint" style="margin:0;">×${e.occurrences||0} · độ tin cậy ${(Math.round((e.confidence||0)*100))}%</span>
         </div>
         <div class="row" style="gap:8px;">
-          <div class="col"><label>Bản dịch</label><input type="text" value="${sf_escapeHtml(e.translation||'')}" onchange="sfCanon_editEntity('${e.id}','translation', this.value)"></div>
-          <div class="col"><label>Bí danh / cách viết khác (phân cách bởi dấu phẩy)</label><input type="text" value="${sf_escapeHtml((e.aliases||[]).join(', '))}" onchange="sfCanon_editEntity('${e.id}','aliases', this.value)"></div>
+          <div class="col"><label>Bản dịch</label><input type="text" value="${sf_escapeHtml(e.translation||'')}" onchange="sfCanon_editEntity('${safeId}','translation', this.value)"></div>
+          <div class="col"><label>Bí danh / cách viết khác (phân cách bởi dấu phẩy)</label><input type="text" value="${sf_escapeHtml((e.aliases||[]).join(', '))}" onchange="sfCanon_editEntity('${safeId}','aliases', this.value)"></div>
         </div>
         ${e.notes ? `<div class="hint">Ghi chú: ${sf_escapeHtml(e.notes)}</div>` : ''}
         <div class="btn-row" style="margin-top:6px;">
-          <button type="button" class="btn small" onclick="sfCanon_setStatus('${e.id}','confirmed')">✅ Confirm</button>
-          <button type="button" class="btn small" onclick="sfCanon_setStatus('${e.id}','rejected')">🚫 Reject</button>
-          <button type="button" class="btn small" onclick="sfCanon_promptMerge('${e.id}')">🔗 Merge vào...</button>
+          <button type="button" class="btn small" onclick="sfCanon_setStatus('${safeId}','confirmed')">✅ Confirm</button>
+          <button type="button" class="btn small" onclick="sfCanon_setStatus('${safeId}','rejected')">🚫 Reject</button>
+          <button type="button" class="btn small" onclick="sfCanon_promptMerge('${safeId}')">🔗 Merge vào...</button>
         </div>
       </div>`;
     }).join('');
@@ -6198,6 +6396,7 @@ function setChunkSizePreset(size){
     b.classList.toggle('active', b.textContent.trim() === String(size));
   });
   updateStats();
+  if(typeof sf_updateGeneralSummaryUI === 'function') sf_updateGeneralSummaryUI();
   if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
 }
 
@@ -6206,6 +6405,12 @@ function setChunkSizePreset(size){
 // '.ctxmode-preset.active').dataset.cm) — không tạo luồng dịch waterfall mới.
 function setContextMode(mode){
   document.querySelectorAll('.ctxmode-preset').forEach(b=> b.classList.toggle('active', b.dataset.cm === mode));
+  const hintEl = document.getElementById('ctxModeHint');
+  if(hintEl){
+    hintEl.textContent = (mode === 'waterfall')
+      ? 'Waterfall (Chuỗi tuần tự): dịch lần lượt từng chunk (1 luồng) để lấy bản dịch thật của chunk trước làm ngữ cảnh cho chunk sau.'
+      : 'Hybrid: giữ nguyên số luồng song song, chunk chưa dịch xong sẽ gối ngữ cảnh bằng bản gốc của chunk trước thay vì để trống.';
+  }
   if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
 }
 
@@ -6221,6 +6426,7 @@ function applySpeedPreset(preset){
     const parallelEl = document.getElementById('parallel'); if(parallelEl) parallelEl.value = p.parallel;
     const rpmEl = document.getElementById('rpm'); if(rpmEl) rpmEl.value = p.rpm;
   }
+  if(typeof sf_updateGeneralSummaryUI === 'function') sf_updateGeneralSummaryUI();
   if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
 }
 
@@ -6956,6 +7162,15 @@ function splitChunks(text, size){
       splitChunksWithOffsets() để có số chunk/token chính xác). Không còn được gọi từ sự kiện
       gõ phím nữa — chỉ còn được gọi từ các thời điểm hợp lệ theo mục II.B: nạp file mới
       (readFile), đổi cấu hình chunking cần re-chunk (setChunkSizePreset), hoặc reset phiên. */
+function sf_estimateTotalSeconds(chunkCount){
+  if(!chunkCount || chunkCount <= 0) return 0;
+  const effP = Math.max(1, typeof parallelVal === 'function' ? parallelVal() : 4);
+  const keyCnt = Math.max(1, (state.keys && state.keys.length) ? state.keys.length : 1);
+  const rpm = Math.max(1, typeof rpmVal === 'function' ? rpmVal() : 15);
+  const byParallel = (chunkCount / effP) * 6.5;
+  const byRpm = (chunkCount / (keyCnt * rpm)) * 60;
+  return Math.max(1, Math.round(Math.max(byParallel, byRpm)));
+}
 function sf_updateStatsPreview(){
   const text = sf_getFullSourceText();
   const n = text.length;
@@ -6963,6 +7178,7 @@ function sf_updateStatsPreview(){
   if(n === 0){
     __sf_statsCache = { chunks: 0, n: 0 };
     document.getElementById('chChunks').textContent = '0 chunk';
+    const estEl = document.getElementById('chEst'); if(estEl) estEl.textContent = '~0 giây';
     document.getElementById('startInfo').innerHTML = '';
     updateDashboard();
     return;
@@ -6979,6 +7195,7 @@ function sf_updateStatsPreview(){
   const approxChunks = Math.max(1, Math.ceil(approxTokens / targetTokens));
   __sf_statsCache = { chunks: approxChunks, n };
   document.getElementById('chChunks').textContent = `~${approxChunks} chunk (ước tính nhanh, ~${approxTokens.toLocaleString('vi-VN')} token/chunk mục tiêu ${targetTokens.toLocaleString('vi-VN')})`;
+  const estEl = document.getElementById('chEst'); if(estEl) estEl.textContent = '~' + formatDuration(sf_estimateTotalSeconds(approxChunks));
   document.getElementById('startInfo').innerHTML = `Ước tính nhanh: <b>~${approxChunks}</b> chunk, tổng ~<b>${approxTokens.toLocaleString('vi-VN')}</b> token đầu vào. Số chunk chính xác sẽ được tính khi bắt đầu dịch.`;
   updateDashboard();
 }
@@ -6996,6 +7213,7 @@ function sf_updateStatsFromRestoredFile(fileRec){
   document.getElementById('chOrig').textContent = n.toLocaleString('vi-VN') + ' ký tự';
   document.getElementById('chChunks').textContent = count + ' chunk' +
     (count>0 && totalTokens!=null ? ` (~${Math.round(totalTokens/count).toLocaleString('vi-VN')} token/chunk ước tính)` : '');
+  const estEl = document.getElementById('chEst'); if(estEl) estEl.textContent = count > 0 ? '~' + formatDuration(sf_estimateTotalSeconds(count)) : '~0 giây';
   document.getElementById('startInfo').innerHTML = (n>0
     ? `Sẵn sàng: <b>${count}</b> chunk sẽ được dịch${totalTokens!=null ? ` (tổng ước tính ~<b>${totalTokens.toLocaleString('vi-VN')}</b> token đầu vào)` : ''}.`
     : '');
@@ -7011,20 +7229,31 @@ function updateStats(){
   document.getElementById('chChunks').textContent = invalid
     ? '⚠️ Lỗi chunk!'
     : stats.count + ' chunk' + (stats.count>0 ? ` (~${stats.avgTokens.toLocaleString('vi-VN')} token/chunk ước tính)` : '');
+  const estEl = document.getElementById('chEst'); if(estEl) estEl.textContent = stats.count > 0 ? '~' + formatDuration(sf_estimateTotalSeconds(stats.count)) : '~0 giây';
   document.getElementById('startInfo').innerHTML = invalid
     ? `<b style="color:#e05252">⚠️ Lỗi toàn vẹn chunk — xem Console để biết chi tiết. Không thể bắt đầu dịch.</b>`
     : (text.length>0 ? `Sẵn sàng: <b>${stats.count}</b> chunk sẽ được dịch (tổng ước tính ~<b>${stats.totalTokens.toLocaleString('vi-VN')}</b> token đầu vào).` : '');
+  if(typeof sf_updateGeneralSummaryUI === 'function') sf_updateGeneralSummaryUI();
   updateDashboard();
 }
 // ĐỢT 7A: input trên textarea nguồn giờ CHỈ chạy preview nhanh (không Smart Chunking) —
 // khắc phục P0 (trước đây còn có thêm oninput="updateStats()" trực tiếp trên thẻ <textarea>,
 // chạy đồng bộ, KHÔNG debounce, trên MỌI ký tự — đã bị xoá, xem thẻ textarea #sourceText).
-document.getElementById('sourceText').addEventListener('input', ()=>{ clearTimeout(window._sT); window._sT=setTimeout(sf_updateStatsPreview, 250); });
+document.getElementById('sourceText').addEventListener('input', (e)=>{
+  if(!window.__sourceIsTruncatedPreview){
+    window.__loadedSourceText = e.target.value;
+  }
+  clearTimeout(window._sT);
+  window._sT = setTimeout(sf_updateStatsPreview, 250);
+});
 
 /* Mục 12 AUTOSAVE CONFIG: mọi thay đổi cấu hình liên quan được lưu kèm file đang active */
 ['chunkSize','parallel','rpm','maxTokensCap','sourceLang','canonInput'].forEach(id=>{
   const el = document.getElementById(id);
-  if(el) el.addEventListener('input', ()=>{ if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); });
+  if(el) el.addEventListener('input', ()=>{
+    if(typeof sf_updateGeneralSummaryUI === 'function') sf_updateGeneralSummaryUI();
+    if(typeof saveLastSessionConfig==='function') saveLastSessionConfig();
+  });
 });
 document.getElementById('promptBox').addEventListener('input', ()=>{ if(typeof saveLastSessionConfig==='function') saveLastSessionConfig(); });
 
@@ -7541,24 +7770,24 @@ const SF_HYBRID_AND_COMMON_HANZI_FIXES = [
 // 2. BẢNG ĐỒNG BỘ TÊN NHÂN VẬT & THUẬT NGỮ BỊ LỆCH GIỮA CÁC CHUNK
 const SF_INCONSISTENT_NAME_NORMALIZATIONS = [
   // Tất Vân An (毕云安) bị dịch lệch thành 5 biến thể
-  [/\b(?:Bì Vân An|Biểu Vân An|Bỉ Vân An|Biên Vân An)\b/g, 'Tất Vân An'],
+  [/(?<![\p{L}\p{N}_])(?:Bì Vân An|Biểu Vân An|Bỉ Vân An|Biên Vân An)(?![\p{L}\p{N}_])/gu, 'Tất Vân An'],
   // Lôi Đại Triều (雷大朝) bị dịch lệch
-  [/\b(?:Lôi Đạo Triều|Lôi Đại Cha|Lôi Đại Trá)\b/g, 'Lôi Đại Triều'],
+  [/(?<![\p{L}\p{N}_])(?:Lôi Đạo Triều|Lôi Đại Cha|Lôi Đại Trá)(?![\p{L}\p{N}_])/gu, 'Lôi Đại Triều'],
   // Hùng Nhược Thiên / Hùng Nhược Địa (熊若天 / 熊若地)
-  [/\b(?:Hùng Nhất Thiên|Hùng Rất Thiên)\b/g, 'Hùng Nhược Thiên'],
-  [/\b(?:Hùng Nhất Địa|Hùng Rất Địa)\b/g, 'Hùng Nhược Địa'],
+  [/(?<![\p{L}\p{N}_])(?:Hùng Nhất Thiên|Hùng Rất Thiên)(?![\p{L}\p{N}_])/gu, 'Hùng Nhược Thiên'],
+  [/(?<![\p{L}\p{N}_])(?:Hùng Nhất Địa|Hùng Rất Địa)(?![\p{L}\p{N}_])/gu, 'Hùng Nhược Địa'],
   // Dụ Vũ Phi (喻宇飞)
-  [/\bYêu Vũ Phi\b/g, 'Dụ Vũ Phi'],
+  [/(?<![\p{L}\p{N}_])Yêu Vũ Phi(?![\p{L}\p{N}_])/gu, 'Dụ Vũ Phi'],
   // Lý Tư Nguyên (李思源)
-  [/\b(?:Lý Sơ Nguyên|Lý Sơ Viên)\b/g, 'Lý Tư Nguyên'],
+  [/(?<![\p{L}\p{N}_])(?:Lý Sơ Nguyên|Lý Sơ Viên)(?![\p{L}\p{N}_])/gu, 'Lý Tư Nguyên'],
   // Kim Thân Cảnh (金身境)
-  [/\b(?:Kim Sân Cảnh|Kim Sinh Cảnh)\b/g, 'Kim Thân Cảnh'],
+  [/(?<![\p{L}\p{N}_])(?:Kim Sân Cảnh|Kim Sinh Cảnh)(?![\p{L}\p{N}_])/gu, 'Kim Thân Cảnh'],
   // Đồng bộ Lư Tri Thu -> Lô Tri Thu, Abiman -> A Bỉ Mạn, Hà Phối Đình -> Hà Bái Đình
-  [/\bLư Tri Thu\b/g, 'Lô Tri Thu'],
-  [/\bAbiman\b/g, 'A Bỉ Mạn'],
-  [/\bHà Phối Đình\b/g, 'Hà Bái Đình'],
-  // CƠ CHẾ CHUNG #5: Tự động đảo ngược cấu trúc [Họ] + [Chức danh] bị dịch ngược kiểu Trung sang chuẩn tiếng Việt cho MỌI bộ truyện
-  [/\b(Vương|Lý|Trương|Lưu|Trần|Dương|Hoàng|Triệu|Chu|Châu|Ngô|Từ|Tôn|Mã|Hồ|Quách|Hà|Cao|Lâm|La|Trịnh|Lương|Tạ|Tống|Đường|Hứa|Hàn|Phùng|Đặng|Tào|Bành|Tăng|Tiêu|Điền|Đổng|Viên|Phan|Vu|Tưởng|Thái|Dư|Đỗ|Diệp|Trình|Tô|Ngụy|Lữ|Đinh|Nhậm|Thẩm|Diêu|Lô|Lư|Khương|Thôi|Chung|Đàm|Lục|Uông|Phạm|Kim|Thạch|Liêu|Giả|Hạ|Vi|Phó|Phương|Mạnh|Khâu|Tần|Giang|Diêm|Tiết|Doãn|Đoạn|Lôi|Bạch|Hùng|Tất|Trì|Dụ|Ô|Ôn|An|Mộ Dung|Âu Dương|Thượng Quan|Tư Mã|Độc Cô|Nam Cung|Gia Cát)\s+(huấn luyện viên|tài phán trưởng|giáo sư|cục trưởng|bộ trưởng|hiệu trưởng|viện trưởng|chủ nhiệm|quản lý|tổng giám đốc|chủ tịch|đội trưởng|trưởng lão|chưởng môn|tông chủ|đạo nhân|tiên sinh|lão sư|bác sĩ|thầy giáo)\b/g, (_, surname, title)=> title.charAt(0).toUpperCase() + title.slice(1) + ' ' + surname],
+  [/(?<![\p{L}\p{N}_])Lư Tri Thu(?![\p{L}\p{N}_])/gu, 'Lô Tri Thu'],
+  [/(?<![\p{L}\p{N}_])Abiman(?![\p{L}\p{N}_])/gu, 'A Bỉ Mạn'],
+  [/(?<![\p{L}\p{N}_])Hà Phối Đình(?![\p{L}\p{N}_])/gu, 'Hà Bái Đình'],
+  // CƠ CHẾ CHUNG #5: Tự động đảo ngược cấu trúc [Họ] + [Chức danh] bị dịch ngược kiểu Trung sang chuẩn tiếng Việt cho MỌI bộ truyện (hỗ trợ biên giới từ Unicode tiếng Việt)
+  [/(?<![\p{L}\p{N}_])(Vương|Lý|Trương|Lưu|Trần|Dương|Hoàng|Triệu|Chu|Châu|Ngô|Từ|Tôn|Mã|Hồ|Quách|Hà|Cao|Lâm|La|Trịnh|Lương|Tạ|Tống|Đường|Hứa|Hàn|Phùng|Đặng|Tào|Bành|Tăng|Tiêu|Điền|Đổng|Viên|Phan|Vu|Tưởng|Thái|Dư|Đỗ|Diệp|Trình|Tô|Ngụy|Lữ|Đinh|Nhậm|Thẩm|Diêu|Lô|Lư|Khương|Thôi|Chung|Đàm|Lục|Uông|Phạm|Kim|Thạch|Liêu|Giả|Hạ|Vi|Phó|Phương|Mạnh|Khâu|Tần|Giang|Diêm|Tiết|Doãn|Đoạn|Lôi|Bạch|Hùng|Tất|Trì|Dụ|Ô|Ôn|An|Mộ Dung|Âu Dương|Thượng Quan|Tư Mã|Độc Cô|Nam Cung|Gia Cát)\s+(huấn luyện viên|tài phán trưởng|giáo sư|cục trưởng|bộ trưởng|hiệu trưởng|viện trưởng|chủ nhiệm|quản lý|tổng giám đốc|chủ tịch|đội trưởng|trưởng lão|chưởng môn|tông chủ|đạo nhân|tiên sinh|lão sư|bác sĩ|thầy giáo)(?![\p{L}\p{N}_])/gu, (_, surname, title)=> title.charAt(0).toUpperCase() + title.slice(1) + ' ' + surname],
   // Thuốc Cơ Nhục Long (肌肉龙) bị nhầm với bút danh tác giả Cơ Nhục Hải Âu (肌肉海鸥)
   [/(?:thuốc|dược phẩm|dịch dinh dưỡng|tiêm|chích|uống|mua|hộp|ống|liều)\s+Cơ Nhục Hải Âu/gi, (m)=> m.replace(/Cơ Nhục Hải Âu/i, 'Cơ Nhục Long')],
   [/Cơ Nhục Hải Âu\s+(?:dạng tiêm|dạng uống|ống tiêm|loại mạnh|liều cao)/gi, (m)=> m.replace(/Cơ Nhục Hải Âu/i, 'Cơ Nhục Long')]
@@ -8168,9 +8397,12 @@ function SFCreateDispatchQueue(initialIndices){
     };
 }
 
-async function runEngine(indices){
+let __sfEngineRunId = 0;
+async function runEngine(indices, opts){
+    opts = opts || {};
+    const myRunId = ++__sfEngineRunId;
     running = true; stopFlag = false; pauseFlag = false;
-    translateStartTime = Date.now();
+    if(!opts.preserveTimer || !translateStartTime) translateStartTime = Date.now();
     
     document.getElementById('startBtn').disabled = true;
     document.getElementById('stopBtn').style.display = 'inline-block';
@@ -8186,14 +8418,14 @@ async function runEngine(indices){
 
     logLine('info', null, null, `🚀 Khởi động Dynamic Window Scheduler. Hàng đợi: ${queue.readyRemainingCount()} chunk. Parallel: ${parallelVal()}`);
 
-    while((queue.hasPending() || activeRequests > 0) && !stopFlag) {
+    while((queue.hasPending() || activeRequests > 0) && !stopFlag && myRunId === __sfEngineRunId) {
         await waitWhilePaused();
-        if(stopFlag) break;
+        if(stopFlag || myRunId !== __sfEngineRunId) break;
 
         queue.promoteExpired(Date.now());
 
         const effParallel = (typeof sf_getActiveContextMode === 'function' && sf_getActiveContextMode() === 'waterfall') ? 1 : parallelVal();
-        while(queue.hasPending() && activeRequests < effParallel && !stopFlag && !pauseFlag) {
+        while(queue.hasPending() && activeRequests < effParallel && !stopFlag && !pauseFlag && myRunId === __sfEngineRunId) {
             queue.promoteExpired(Date.now());
             // pickNext() = ĐÚNG NGỮ NGHĨA cũ: chunk đầu tiên (a) không đang dispatching, (b) chưa
             // 'done', (c) đã qua backoff (BACKOFF heap chỉ promote khi readyAt<=now nên mọi phần tử
@@ -8254,6 +8486,7 @@ async function runEngine(indices){
     
     // Wait for trailing tasks if stopped
     await Promise.all(Array.from(activePromises));
+    if(myRunId !== __sfEngineRunId) return false;
 
     // Finish
     running = false;
@@ -8267,6 +8500,7 @@ async function runEngine(indices){
     
     if(stopFlag) logLine('warn', null, null, '⏹ Đã dừng dịch.');
     else logLine('ok', null, null, '🎉 Hoàn tất hàng đợi!');
+    return true;
 }
 
 async function startTranslate(){
@@ -8288,8 +8522,8 @@ Bấm Cancel nếu bạn thực sự muốn XÓA LÀM LẠI từ đầu.`);
         sfCurrentFileMeta.status = 'translating';
         await saveFileRecord(sfCurrentFileMeta);
       }
-      await runEngine(chunkState.map((_,i)=> i));
-      await sf_onEngineFinished();
+      const okDelta = await runEngine(chunkState.map((_,i)=> i));
+      if(okDelta !== false) await sf_onEngineFinished();
       return;
     }
   }
@@ -8334,8 +8568,8 @@ Bấm Cancel nếu bạn thực sự muốn XÓA LÀM LẠI từ đầu.`);
 
   const indices = sfChunkOffsets.map((_,i)=>i);
   offsets = null; // buông tham chiếu cục bộ còn giữ .text — không cần tới suốt phiên dịch (có thể rất dài với file lớn)
-  await runEngine(indices);
-  await sf_onEngineFinished();
+  const okMain = await runEngine(indices);
+  if(okMain !== false) await sf_onEngineFinished();
 }
 
 function stopTranslate(){
@@ -8378,6 +8612,7 @@ function sfResetRuntimeSession(){
   chunkRetryAfter = Object.create(null);
   logEntries = [];
   if(typeof __sfDynamicEntityLockMap !== 'undefined') __sfDynamicEntityLockMap.clear();
+  __sfEngineRunId++;
   stopFlag = false; pauseFlag = false; running = false;
   translateStartTime = 0;
   // Chỉ "buông" con trỏ RAM tới truyện đang mở — record thật trong IndexedDB/Cloud không đổi.
@@ -8404,8 +8639,8 @@ async function retryFailedChunks(){
   const indices = chunkState.map((c,i)=>c.status==='error'?i:-1).filter(i=>i>=0);
   if(!indices.length) return;
   indices.forEach(i=> { if(chunkState[i]) chunkState[i].retryCount = 0; delete chunkRetryAfter[i]; markChunkWaiting(i); });
-  await runEngine(indices);
-  await sf_onEngineFinished();
+  const okRetry = await runEngine(indices);
+  if(okRetry !== false) await sf_onEngineFinished();
 }
 
 // Mục 4 — RETRY CHUNK THỦ CÔNG (chỉ dùng khi chunk bị cảnh báo thiếu header).
@@ -8426,8 +8661,8 @@ async function sfRetryChunkForHeader(idx){
   // mới thất bại, markChunkError sẽ hiển thị lỗi như bình thường — đây là hành vi retry sẵn có,
   // không phải logic mới. Nếu thành công, markChunkDone sẽ tự kiểm tra lại header (mục 1A).
   markChunkWaiting(idx);
-  await runEngine([idx]);
-  await sf_onEngineFinished();
+  const okSingle = await runEngine([idx], { preserveTimer: true });
+  if(okSingle !== false) await sf_onEngineFinished();
 }
 
 function updateProgressUI(){
@@ -8447,6 +8682,33 @@ function updateProgressUI(){
   document.getElementById('progElapsed').textContent = formatDuration(elapsedSec);
   const speed = elapsedSec>0 ? done/(elapsedSec/60) : 0;
   document.getElementById('progSpeed').textContent = done>0 ? speed.toFixed(1) + ' chunk/phút' : 'Đang tính...';
+  const etaEl = document.getElementById('progEta');
+  if(etaEl){
+    const rem = waiting + running;
+    if(done > 0 && rem > 0 && speed > 0){
+      etaEl.textContent = formatDuration(Math.round((rem / speed) * 60));
+    } else if(total > 0 && done >= total){
+      etaEl.textContent = '00:00:00';
+    } else {
+      etaEl.textContent = '--:--:--';
+    }
+  }
+  const progCharsEl = document.getElementById('progChars');
+  if(progCharsEl){
+    const totalChars = __sf_statsCache.n || sf_getFullSourceText().length || 0;
+    let doneChars = 0;
+    if(Array.isArray(sfChunkOffsets) && sfChunkOffsets.length === total && total > 0){
+      for(let i=0; i<total; i++){
+        if(chunkState[i] && chunkState[i].status === 'done' && sfChunkOffsets[i]){
+          doneChars += Math.max(0, (sfChunkOffsets[i].end || 0) - (sfChunkOffsets[i].start || 0));
+        }
+      }
+    } else if(total > 0){
+      doneChars = Math.round((done / total) * totalChars);
+    }
+    const charPct = totalChars > 0 ? Math.min(100, Math.round((doneChars / totalChars) * 100)) : 0;
+    progCharsEl.textContent = `Đã xử lý: ${doneChars.toLocaleString('vi-VN')}/${totalChars.toLocaleString('vi-VN')} ký tự (${charPct}%)`;
+  }
   
   const retryBox = document.getElementById('retryFailedBox');
   if(retryBox){
@@ -8588,6 +8850,7 @@ async function sfQueue_addFiles(fileList){
         totalChars: text.length,
         totalChunks: 0, translatedChunks: 0, errorChunks: 0,
         model: state.model,
+        provider: (window.sfGemActive && window.sfGemActive()) ? 'gemini' : 'proxy',
         baseUrl: document.getElementById('baseUrl').value.trim(),
         prompt: document.getElementById('promptBox').value,
         config: sf_collectConfig()
@@ -8658,8 +8921,7 @@ async function sfQueue_onCurrentFinished(){
    ===================================================================== */
 
 // Điền thông tin dự án Firebase của bạn vào đây (Firebase Console → Project settings).
-// Để trống apiKey/projectId để tắt hẳn Cloud Mode và chỉ chạy Local Mode.S
-const SF_FIREBASE_CUSTOM_KEY = 'sf_firebase_custom_cfg_v1';
+// Để trống apiKey/projectId để tắt hẳn Cloud Mode và chỉ chạy Local Mode.
 const SF_DEFAULT_FIREBASE_CONFIG = {
   apiKey: "AIzaSyB0Ca41FO5KSEMpP7bVkOLgnuBd8F6gXy4",
   authDomain: "dich-truyen-de736.firebaseapp.com",
@@ -9015,7 +9277,9 @@ const sfCloud = (function(){
       try{
         const ref = storage.ref('users/'+uid+'/files/'+fileId+'/source.txt');
         const url = await ref.getDownloadURL();
-        sourceText = await (await fetch(url)).text();
+        const resp = await fetch(url);
+        if(resp.ok) sourceText = await resp.text();
+        else console.warn('[SF Cloud] HTTP ' + resp.status + ' khi tải source.txt');
       }catch(e){ console.warn('[SF Cloud] Không tải được source.txt:', e); }
       const csnap = await db.collection('users').doc(uid).collection('chunks').where('fileId','==',fileId).get();
       const chunkRecs = csnap.docs.map(d=> d.data());
@@ -9103,7 +9367,10 @@ const sfCloud = (function(){
       iter = ITER_NEW; d = await deriveKey(pw, null, iter);
     }
     sessionKey = { uid:user.uid, key:d.key, saltB64:d.saltB64, iter };
-    if(sfUI.confirm('Nhớ mật khẩu trên thiết bị này để lần sau không phải nhập lại?\n(Chỉ chọn OK trên máy cá nhân, không phải máy dùng chung.)')) await ckSet(user.uid, { key:d.key, saltB64:d.saltB64, iter });
+    const rememberDevice = (typeof sfUI.confirmOptional === 'function')
+      ? sfUI.confirmOptional('Nhớ mật khẩu trên thiết bị này để lần sau không phải nhập lại?\n(Chỉ chọn OK trên máy cá nhân, không phải máy dùng chung.)', true)
+      : sfUI.confirm('Nhớ mật khẩu trên thiết bị này để lần sau không phải nhập lại?\n(Chỉ chọn OK trên máy cá nhân, không phải máy dùng chung.)');
+    if(rememberDevice) await ckSet(user.uid, { key:d.key, saltB64:d.saltB64, iter });
     return sessionKey;
   }
   async function backupNow(silent){
@@ -9297,6 +9564,11 @@ sfCloud.init();
         sfPromptLibrary.push(rec); changed.push(rec);
       }
       for(const r of changed){ await sfPromptDB_put(r); }
+      if(typeof sfZhCfg !== 'undefined'){
+        sfZhCfg.genre = id;
+        try{ sfZh_save(); }catch(e){}
+        document.querySelectorAll('#sfZhGenres .modelchip').forEach(b=>b.classList.toggle('sel', b.dataset.g===id));
+      }
       sfPromptLib_render(); sfPrompt_syncToBox(); refreshActive();
     }catch(e){ console.error('sfTpl', e); sfUI.alert('Không thêm được mẫu prompt: ' + (e && e.message ? e.message : e)); }
   }
@@ -9375,8 +9647,10 @@ sfCloud.init();
     if(btn) btn.addEventListener('click', ()=>{ showAll = !showAll; applyHide(); });
     applyHide();
   })();
+  window.sfTpl_refreshActive = refreshActive;
   renderBar();
-  setInterval(refreshActive, 800);
+  refreshActive();
+  setInterval(()=>{ if(!document.hidden) refreshActive(); }, 2500);
 })();
 </script>
 <script>
@@ -9389,10 +9663,10 @@ sfCloud.init();
 (function(){
 'use strict';
 const LS='sf_gemini_pool_v1', LSP='sf_provider_v1', API='https://generativelanguage.googleapis.com/v1beta/';
-const G={keys:[],meta:[],model:'gemini-2.5-flash',relaxSafety:false,active:false,log:[]};
+const G={keys:[],meta:[],model:'gemini-2.5-flash',relaxSafety:true,active:false,log:[]};
 let stash=null;
 const $=id=>document.getElementById(id);
-const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const redact=t=>String(t||'').replace(/AIza[0-9A-Za-z_\-]{16,}/g,'AIza••••');
 const mask=k=>k.length>10?k.slice(0,4)+'••••••'+k.slice(-4):'••••';
 const newId=()=>'gk_'+Math.random().toString(36).slice(2,8);
@@ -9401,7 +9675,7 @@ const newId=()=>'gk_'+Math.random().toString(36).slice(2,8);
 function save(){ try{ localStorage.setItem(LS, JSON.stringify({model:G.model,relaxSafety:G.relaxSafety,keys:G.keys,
   meta:G.meta.map(m=>({status:(m.status==='active'||m.status==='testing')?'idle':m.status,requests:m.requests,success:m.success,errors:m.errors,retries:m.retries,c429:m.c429,c401:m.c401,lastUsed:m.lastUsed,rateLimitUntil:m.rateLimitUntil,lastError:m.lastError||''}))})); }catch(e){} }
 function load(){ try{ const d=JSON.parse(localStorage.getItem(LS)||'null'); if(!d) return;
-  G.model=d.model||G.model; G.relaxSafety=!!d.relaxSafety; G.keys=Array.isArray(d.keys)?d.keys:[];
+  G.model=d.model||G.model; G.relaxSafety=(d.relaxSafety!==undefined)?!!d.relaxSafety:true; G.keys=Array.isArray(d.keys)?d.keys:[];
   G.meta=G.keys.map((_,i)=>Object.assign(newKeyMeta(),{status:'unknown'},(d.meta&&d.meta[i])||{})); }catch(e){} }
 function sync(){
   G.keys.forEach((k,i)=>{ const m=G.meta[i]; if(!k.enabled) m.status='disabled'; else if(m.status==='disabled') m.status='idle'; });
@@ -9575,7 +9849,15 @@ const origCall=window.callModel, origRenderKeys=window.renderKeys, origRefresh=w
 window.callModel=function(t,k,s){ return G.active?gemCall(t,k,s):origCall.apply(this,arguments); };
 window.renderKeys=function(){ if(G.active){ render(); if(typeof updateDashboard==='function') updateDashboard(); refreshStatus(); } else origRenderKeys.apply(this,arguments); };
 window.refreshStatus=function(){ origRefresh.apply(this,arguments);
-  if(G.active){ $('statusLine').textContent='Gemini Direct · '+(G.model||'model?')+' · '+G.keys.filter(k=>k.enabled).length+' key'; $('pillProxy').textContent='Gemini Direct'; $('pillProxy').classList.add('on'); $('pillModel').textContent=G.model||'chưa chọn model'; }
+  if(G.active){
+    const enCnt = G.keys.filter(k=>k.enabled).length;
+    $('statusLine').textContent='Gemini Direct · '+(G.model||'model?')+' · '+enCnt+' key';
+    $('pillProxy').textContent='Gemini Direct';
+    $('pillProxy').classList.add('on');
+    $('pillModel').textContent=G.model||'chưa chọn model';
+    const np=$('netProxy'); if(np){ np.textContent='🟢 Gemini Direct ('+(G.model||'model?')+')'; np.style.color='var(--green)'; }
+    const nk=$('netKeys'); if(nk){ nk.textContent=enCnt+'/'+G.keys.length; nk.style.color=enCnt>0?'var(--green)':'var(--text-dim)'; }
+  }
   else if($('pillProxy')) $('pillProxy').textContent='Custom Proxy';
   badge(); };
 window.sfCanon_callExtract=async function(w){
@@ -9608,7 +9890,7 @@ setInterval(()=>{
 
 function cloudExport(){ return {model:G.model,keys:G.keys.map(k=>({name:k.name,enabled:k.enabled,key:k.key}))}; }
 function cloudImport(d){ if(!d) return 0; if(d.model&&!G.keys.length){ setModel(d.model); $('gemModel').value=G.model; } return addKeys((d.keys||[]).map(k=>k&&k.key).filter(Boolean)); }
-window.sfGem={cloudExport,cloudImport,toggleProvider,setModel,fetchModels,testConnection,testAll,test,addOne,addBulk,toggleBulk,remove,toggleKey,toggleSafety,exportCfg,importCfg,_classify:classify};
+window.sfGem={cloudExport,cloudImport,toggleProvider,setModel,fetchModels,testConnection,testAll,test,addOne,addBulk,toggleBulk,remove,toggleKey,toggleSafety,isRelaxSafety:()=>G.relaxSafety,exportCfg,importCfg,_classify:classify};
 load(); $('gemModel').value=G.model; sync(); render();
 let prov='proxy'; try{ prov=localStorage.getItem(LSP)||'proxy'; }catch(e){}
 if(prov==='gemini') activate(true); else{ refreshStatus(); }
